@@ -50,6 +50,7 @@ def _blob_upload(zip_path: Path, username: str, token: str) -> str:
             "fileName": zip_path.name,
             "contentLength": stat.st_size,
             "lastModifiedEpochSeconds": int(stat.st_mtime),
+            "resourceType": "Dataset",
         },
         timeout=30,
     )
