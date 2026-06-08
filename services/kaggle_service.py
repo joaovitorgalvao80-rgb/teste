@@ -54,16 +54,25 @@ def _blob_upload(zip_path: Path, username: str, token: str) -> str:
         },
         timeout=30,
     )
-    resp.raise_for_status()
+    if not resp.ok:
+        raise RuntimeError(f"blob upload {resp.status_code}: {resp.text[:600]}")
     data = resp.json()
+    create_url = data.get("createUrl") or data.get("create_url") or ""
+    if not create_url:
+        raise RuntimeError(f"createUrl ausente na resposta: {resp.text[:400]}")
     with open(zip_path, "rb") as f:
-        requests.put(
-            data["createUrl"],
+        put = requests.put(
+            create_url,
             data=f,
             headers={"Content-Type": "application/octet-stream"},
             timeout=600,
-        ).raise_for_status()
-    return data["token"]
+        )
+        if not put.ok:
+            raise RuntimeError(f"GCS upload {put.status_code}: {put.text[:400]}")
+    blob_token = data.get("token") or data.get("blobToken") or ""
+    if not blob_token:
+        raise RuntimeError(f"token ausente na resposta: {resp.text[:400]}")
+    return blob_token
 
 
 def _dataset_exists(slug: str, username: str, token: str) -> bool:
