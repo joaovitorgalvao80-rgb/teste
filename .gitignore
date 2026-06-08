@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+
+data/
+workdir/
+kaggle_work/
+*.log
