@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }} — B-rolls{% endblock %}
+{% block content %}
+<div class="row-between">
+  <div>
+    <a class="muted small" href="/projects">&larr; Projetos</a>
+    <h1>{{ project.name }} <span class="badge status-{{ project.status }}">{{ project.status }}</span></h1>
+  </div>
+</div>
+
+<div class="card toolbar">
+  <div class="steps">
+    <form method="post" action="/projects/{{ project.id }}/generate-map">
+      <button class="primary" type="submit">1 · Gerar mapa visual</button>
+    </form>
+    <form method="post" action="/projects/{{ project.id }}/search">
+      <button class="secondary" type="submit" {% if not scenes %}disabled{% endif %}>2 · Buscar assets</button>
+    </form>
+    <form method="post" action="/projects/{{ project.id }}/package">
+      <button class="accent" type="submit" {% if selected_count == 0 %}disabled{% endif %}>
+        3 · Preparar pacote ({{ selected_count }}/{{ scenes|length }})
+      </button>
+    </form>
+    {% if project.status == 'packaged' %}
+    <a class="btn ghost small" href="/projects/{{ project.id }}/download-zip" style="padding:8px 12px;font-size:13px;border:1px solid var(--border-2);color:var(--muted);border-radius:8px;">⬇ ZIP</a>
+    {% endif %}
+    <button class="kaggle-btn" id="btn-kaggle"
+            onclick="sendToKaggle({{ project.id }})"
+            {% if project.status not in ['packaged'] %}disabled{% endif %}>
+      4 · Renderizar no Kaggle
+    </button>
+  </div>
+  <div id="kaggle-status-bar" class="kaggle-panel"
+       {% if not project.kaggle_kernel_slug %}style="display:none"{% endif %}>
+    <div class="kaggle-row">
+      <span id="kaggle-dot" class="kaggle-dot"></span>
+      <div class="kaggle-info">
+        <strong>Render no Kaggle</strong>
+        <span id="kaggle-status-text" class="kaggle-state">{{ project.kaggle_status or 'verificando...' }}</span>
+      </div>
+      <div class="kaggle-links">
+        <a id="kaggle-video" class="btn kaggle-dl" href="#" download style="display:none">⬇ Baixar vídeo</a>
+        <a id="kaggle-link" href="https://www.kaggle.com/code/{{ user.kaggle_username }}/{{ project.kaggle_kernel_slug }}" target="_blank" class="small muted">abrir no Kaggle ↗</a>
+      </div>
+    </div>
+  </div>
+  {% if not has_keys %}
+    <p class="alert">Cadastre chaves de Pexels/Pixabay em <a href="/settings">APIs</a> para buscar assets.</p>
+  {% endif %}
+</div>
+
+{% if not scenes %}
+  <div class="card empty">
+    <p>Sem mapa visual ainda. Clique em <b>Gerar mapa visual</b> para dividir o roteiro em cenas e gerar keywords.</p>
+  </div>
+{% endif %}
+
+{% for scene in scenes %}
+  <section class="scene zone-{{ scene.zone|lower }}" id="scene-{{ scene.id }}" data-scene="{{ scene.id }}">
+    <div class="scene-head">
+      <div>
+        <h2>
+          <span class="zone zone-{{ scene.zone|lower }}">{{ scene.zone or 'CENA' }}</span>
+          {{ scene.scene_id }}
+          <span class="time">{{ '%.1f'|format(scene.start_time) }}s – {{ '%.1f'|format(scene.end_time) }}s</span>
+          <span class="dur">({{ '%.1f'|format(scene.duration) }}s)</span>
+        </h2>
+        <p class="narration">{{ scene.narration }}</p>
+        <p class="goal"><b>Objetivo:</b> {{ scene.visual_goal }}</p>
+        <p class="keywords">
+          <b>Keywords:</b>
+          <span class="kw-list" id="kw-{{ scene.id }}">{{ scene.keywords|join(', ') }}</span>
+        </p>
+        {% if scene.must_not_show %}
+          <p class="muted small">Evitar: {{ scene.must_not_show|join(', ') }}</p>
+        {% endif %}
+      </div>
+      <div class="scene-actions">
+        <span class="safe-tag">avatar: {{ scene.avatar_safe_area }}</span>
+        <div class="media-pick">
+          <button class="ghost" onclick="searchMore({{ scene.id }}, this, 'video')">+ vídeos</button>
+          <button class="ghost" onclick="searchMore({{ scene.id }}, this, 'image')">+ imagens</button>
+        </div>
+        <button class="ghost" onclick="regenKeywords({{ scene.id }})">↻ novas keywords</button>
+      </div>
+    </div>
+
+    <div class="grid" id="grid-{{ scene.id }}">
+      {% for a in scene.assets %}
+        <article class="acard state-{{ a.state }}" id="asset-{{ a.id }}" data-id="{{ a.id }}">
+          <div class="thumb">
+            {% if a.asset_type == 'video' %}
+              <video muted loop preload="none" poster="{{ a.preview_url }}"
+                     src="{{ a.download_url }}"
+                     onmouseover="this.play()" onmouseout="this.pause()"></video>
+              <span class="type-tag">vid</span>
+            {% else %}
+              <img loading="lazy" src="{{ a.preview_url or a.download_url }}" alt="">
+              <span class="type-tag img">img</span>
+            {% endif %}
+          </div>
+          <div class="meta">
+            <span>{{ a.source }} · {{ a.width }}x{{ a.height }}{% if a.duration %} · {{ a.duration }}s{% endif %}</span>
+            <span class="kw">{{ a.keyword }}</span>
+            {% if a.author %}<a class="muted small" href="{{ a.author_url }}" target="_blank" rel="noopener">{{ a.author }}</a>{% endif %}
+          </div>
+          <div class="actions">
+            <button class="sel" onclick="setState({{ a.id }}, 'selected')">Selecionar</button>
+            <button class="fav" onclick="setState({{ a.id }}, 'favorite')">★</button>
+            <button class="rej" onclick="setState({{ a.id }}, 'rejected')">Rejeitar</button>
+          </div>
+        </article>
+      {% endfor %}
+    </div>
+    {% if not scene.assets %}
+      <p class="muted empty-grid">Nenhum asset buscado para esta cena. Use <b>Buscar assets</b> ou <b>buscar mais</b>.</p>
+    {% endif %}
+  </section>
+{% endfor %}
+{% endblock %}

@@ -1,0 +1,553 @@
+"""Sistema 1 — Plataforma Web de Coleta e Curadoria de B-rolls."""
+from __future__ import annotations
+
+import json
+import os
+import sys
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Optional
+
+from fastapi import FastAPI, File, Form, Request, HTTPException, UploadFile
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.sessions import SessionMiddleware
+
+import database as db
+from services import asset_search, groq_service, packager, kaggle_service
+from services.script_parser import parse_script
+
+ROOT = Path(__file__).resolve().parent
+
+# ------------------------------------------------------------------
+# Configuracao via variaveis de ambiente
+# ------------------------------------------------------------------
+def _require_secret() -> str:
+    key = os.getenv("APP_SECRET_KEY", "")
+    if not key:
+        # em dev, avisa e usa chave fixa previsivel para nao perder sessao entre restarts
+        key = "dev-insecure-key-change-in-production-please"
+        if not os.getenv("APP_ENV") == "dev":
+            print(
+                "[AVISO] APP_SECRET_KEY nao definida. "
+                "Sessoes nao persistem entre restarts. "
+                "Defina APP_SECRET_KEY no ambiente antes de fazer deploy.",
+                file=sys.stderr,
+            )
+    return key
+
+DATA_DIR = Path(os.getenv("DATA_DIR", str(ROOT / "data")))
+WORK_DIR = DATA_DIR / "work"
+
+DEFAULT_CONFIG = {
+    "format": "16:9",
+    "resolution": "1920x1080",
+    "avatar_safe_area": "right",
+    "avatar_safe_width_ratio": 0.30,
+    "asset_type_priority": "video",
+    "image_fallback": False,
+    "visual_style": "realistic editorial YouTube B-roll, concrete scenes, rural Brazil when relevant",
+    "script_language": "pt-BR",
+    "keyword_language": "english",
+    "scene_duration": 4.0,
+    "per_keyword": 8,
+    "max_download_mb": 90,
+}
+
+# ------------------------------------------------------------------
+# App
+# ------------------------------------------------------------------
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # garante pastas e banco antes de servir qualquer request
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    db.DATA_DIR = DATA_DIR
+    db.DB_PATH = DATA_DIR / "plataforma.db"
+    db.init_db()
+    yield
+
+
+app = FastAPI(title="B-rolls — Plataforma de Curadoria", lifespan=lifespan)
+
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=_require_secret(),
+    max_age=60 * 60 * 24 * 7,
+    https_only=os.getenv("APP_ENV") == "production",
+)
+
+# static/ e criada antes do mount para evitar crash na inicializacao
+_static_dir = ROOT / "static"
+_static_dir.mkdir(exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
+templates = Jinja2Templates(directory=str(ROOT / "templates"))
+
+# ------------------------------------------------------------------
+# Error handlers (mostra pagina HTML em vez de JSON cru)
+# ------------------------------------------------------------------
+@app.exception_handler(StarletteHTTPException)
+async def html_error_handler(request: Request, exc: StarletteHTTPException):
+    if exc.status_code == 401:
+        return RedirectResponse(f"/login?next={request.url.path}", status_code=303)
+    user = current_user(request)
+    return templates.TemplateResponse(
+        request,
+        "error.html",
+        {"user": user, "status_code": exc.status_code, "detail": exc.detail},
+        status_code=exc.status_code,
+    )
+
+# ------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------
+def current_user(request: Request) -> Optional[dict]:
+    uid = request.session.get("user_id")
+    return db.get_user(uid) if uid else None
+
+
+def require_user(request: Request) -> dict:
+    user = current_user(request)
+    if not user:
+        raise HTTPException(status_code=401)
+    return user
+
+
+def project_config(project: dict) -> dict:
+    cfg = dict(DEFAULT_CONFIG)
+    try:
+        cfg.update(json.loads(project.get("config_json") or "{}"))
+    except json.JSONDecodeError:
+        pass
+    return cfg
+
+
+# ------------------------------------------------------------------
+# Auth
+# ------------------------------------------------------------------
+@app.get("/", response_class=HTMLResponse)
+def home(request: Request):
+    if current_user(request):
+        return RedirectResponse("/projects", status_code=303)
+    return RedirectResponse("/login", status_code=303)
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request, error: str = "", next: str = ""):
+    return templates.TemplateResponse(request, "login.html", {"error": error, "next": next})
+
+
+@app.post("/login")
+def login(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    next: str = Form(""),
+):
+    user = db.get_user_by_name(username.strip())
+    if not user or not db.verify_password(password, user["password_hash"]):
+        return RedirectResponse("/login?error=Credenciais+invalidas", status_code=303)
+    request.session["user_id"] = user["id"]
+    return RedirectResponse(next or "/projects", status_code=303)
+
+
+@app.post("/register")
+def register(request: Request, username: str = Form(...), password: str = Form(...)):
+    username = username.strip()
+    if not username or len(password) < 4:
+        return RedirectResponse("/login?error=Usuario+ou+senha+invalidos", status_code=303)
+    if db.get_user_by_name(username):
+        return RedirectResponse("/login?error=Usuario+ja+existe", status_code=303)
+    uid = db.create_user(username, password)
+    request.session["user_id"] = uid
+    return RedirectResponse("/settings", status_code=303)
+
+
+@app.get("/logout")
+def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse("/login", status_code=303)
+
+
+# ------------------------------------------------------------------
+# Settings (APIs)
+# ------------------------------------------------------------------
+@app.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request, saved: str = ""):
+    user = require_user(request)
+    return templates.TemplateResponse(request, "settings.html", {
+        "user": user,
+        "saved": saved,
+        "groq_models": groq_service.GROQ_MODELS,
+    })
+
+
+@app.get("/settings/test-kaggle")
+def test_kaggle(request: Request):
+    user = require_user(request)
+    username = user.get("kaggle_username", "")
+    token = user.get("kaggle_token", "")
+    if not username or not token:
+        return JSONResponse({"ok": False, "detail": "Username ou token não configurados."})
+    import requests as req
+    from requests.auth import HTTPBasicAuth
+    try:
+        r = req.get(
+            "https://www.kaggle.com/api/v1/kernels",
+            auth=HTTPBasicAuth(username, token),
+            params={"pageSize": 1},
+            timeout=15,
+        )
+        if r.status_code == 200:
+            return JSONResponse({"ok": True, "detail": "Credenciais válidas ✓"})
+        return JSONResponse({"ok": False, "detail": f"HTTP {r.status_code}: {r.text[:300]}"})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "detail": str(exc)})
+
+
+@app.post("/settings")
+def settings_save(
+    request: Request,
+    pexels: str = Form(""),
+    pixabay: str = Form(""),
+    groq: str = Form(""),
+    groq_model: str = Form(""),
+    kaggle_username: str = Form(""),
+    kaggle_token: str = Form(""),
+):
+    user = require_user(request)
+    db.update_api_keys(user["id"], pexels.strip(), pixabay.strip(), groq.strip(), groq_model.strip())
+    db.update_kaggle_keys(user["id"], kaggle_username.strip(), kaggle_token.strip())
+    return RedirectResponse("/settings?saved=1", status_code=303)
+
+
+# ------------------------------------------------------------------
+# Transcrição de áudio (Groq Whisper → timestamps)
+# ------------------------------------------------------------------
+@app.post("/transcribe-audio")
+async def transcribe_audio(request: Request, audio: UploadFile = File(...)):
+    user = require_user(request)
+    if not user.get("groq_key"):
+        raise HTTPException(400, "Configure a chave Groq em /settings para usar transcrição.")
+    data = await audio.read()
+    if len(data) > 100 * 1024 * 1024:
+        raise HTTPException(400, "Arquivo muito grande (máximo 100 MB).")
+    try:
+        transcript = groq_service.transcribe_audio(data, audio.filename or "audio.mp3", user["groq_key"])
+        return JSONResponse({"transcript": transcript})
+    except Exception as exc:
+        raise HTTPException(500, f"Transcrição falhou: {exc}") from exc
+
+
+# ------------------------------------------------------------------
+# Projects
+# ------------------------------------------------------------------
+@app.get("/projects", response_class=HTMLResponse)
+def projects_page(request: Request):
+    user = require_user(request)
+    projects = db.list_projects(user["id"])
+    return templates.TemplateResponse(request, "projects.html", {"user": user, "projects": projects})
+
+
+@app.get("/projects/new", response_class=HTMLResponse)
+def new_project_page(request: Request):
+    user = require_user(request)
+    return templates.TemplateResponse(request, "new_project.html", {"user": user, "config": DEFAULT_CONFIG})
+
+
+@app.post("/projects/new")
+def new_project(
+    request: Request,
+    name: str = Form(...),
+    script: str = Form(...),
+    avatar_safe_area: str = Form("right"),
+    visual_style: str = Form(DEFAULT_CONFIG["visual_style"]),
+    resolution: str = Form("1920x1080"),
+    scene_duration: float = Form(4.0),
+    image_fallback: str = Form(""),
+):
+    user = require_user(request)
+    config = dict(DEFAULT_CONFIG)
+    config.update({
+        "avatar_safe_area": avatar_safe_area,
+        "visual_style": visual_style.strip() or DEFAULT_CONFIG["visual_style"],
+        "resolution": resolution,
+        "scene_duration": float(scene_duration or 4.0),
+        "image_fallback": bool(image_fallback),
+    })
+    pid = db.create_project(user["id"], name.strip() or "projeto", script, config)
+    return RedirectResponse(f"/projects/{pid}", status_code=303)
+
+
+@app.post("/projects/{project_id}/delete")
+def delete_project(request: Request, project_id: int):
+    user = require_user(request)
+    db.delete_project(project_id, user["id"])
+    return RedirectResponse("/projects", status_code=303)
+
+
+@app.get("/projects/{project_id}", response_class=HTMLResponse)
+def project_page(request: Request, project_id: int):
+    user = require_user(request)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    config = project_config(project)
+    scenes = db.list_scenes(project_id)
+    for s in scenes:
+        s["assets"] = db.list_assets(s["id"])
+        s["selected"] = next((a for a in s["assets"] if a["state"] == "selected"), None)
+    selected_count = sum(1 for s in scenes if s.get("selected"))
+    return templates.TemplateResponse(
+        request,
+        "project.html",
+        {
+            "user": user,
+            "project": project,
+            "config": config,
+            "scenes": scenes,
+            "selected_count": selected_count,
+            "has_keys": bool(user["pexels_key"] or user["pixabay_key"]),
+        },
+    )
+
+
+# ------------------------------------------------------------------
+# Gerar mapa visual
+# ------------------------------------------------------------------
+@app.post("/projects/{project_id}/generate-map")
+def generate_map(request: Request, project_id: int):
+    user = require_user(request)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    config = project_config(project)
+
+    base_scenes = parse_script(project["script"], config["scene_duration"])
+    if not base_scenes:
+        raise HTTPException(400, "Roteiro vazio ou invalido.")
+
+    briefs = groq_service.generate_briefs(
+        base_scenes,
+        groq_key=user["groq_key"],
+        style=config["visual_style"],
+        avatar_safe_area=config["avatar_safe_area"],
+        safe_ratio=config["avatar_safe_width_ratio"],
+        model=user.get("groq_model") or groq_service.DEFAULT_MODEL,
+    )
+    brief_by_id = {b["scene_id"]: b for b in briefs}
+    merged = []
+    for s in base_scenes:
+        b = brief_by_id.get(s["scene_id"], {})
+        merged.append({
+            **s,
+            "visual_goal": b.get("visual_goal", ""),
+            "keywords": b.get("keywords", []),
+            "must_show": b.get("must_show", []),
+            "must_not_show": b.get("must_not_show", []),
+            "asset_type": b.get("asset_type", "video"),
+            "overlay_text": b.get("overlay_text", ""),
+            "avatar_safe_area": b.get("avatar_safe_area", config["avatar_safe_area"]),
+        })
+    db.replace_scenes(project_id, merged)
+    db.set_project_status(project_id, "mapped")
+    return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+
+# ------------------------------------------------------------------
+# Buscar assets
+# ------------------------------------------------------------------
+@app.post("/projects/{project_id}/search")
+def search_all(request: Request, project_id: int):
+    user = require_user(request)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    config = project_config(project)
+    if not user["pexels_key"] and not user["pixabay_key"]:
+        raise HTTPException(400, "Cadastre ao menos uma chave de API em /settings.")
+
+    max_w = int(config["resolution"].split("x")[0])
+    scenes = db.list_scenes(project_id)
+    seen: set = set()
+    for scene in scenes:
+        results = asset_search.search_scene(
+            scene["keywords"],
+            user["pexels_key"],
+            user["pixabay_key"],
+            max_w=max_w,
+            per_keyword=config["per_keyword"],
+            allow_images=bool(config["image_fallback"]),
+            seen_urls=seen,
+        )
+        db.add_assets(scene["id"], results)
+    db.set_project_status(project_id, "searched")
+    return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+
+@app.post("/scenes/{scene_db_id}/search-more")
+def search_more(request: Request, scene_db_id: int, media: str = Form("all")):
+    user = require_user(request)
+    scene = db.get_scene(scene_db_id)
+    if not scene:
+        raise HTTPException(404)
+    project = db.get_project(scene["project_id"], user["id"])
+    if not project:
+        raise HTTPException(404)
+    config = project_config(project)
+    if media not in {"all", "video", "image"}:
+        media = "all"
+    max_w = int(config["resolution"].split("x")[0])
+    existing = {a["download_url"] for a in db.list_assets(scene_db_id)}
+    results = asset_search.search_scene(
+        scene["keywords"],
+        user["pexels_key"],
+        user["pixabay_key"],
+        max_w=max_w,
+        per_keyword=config["per_keyword"] + 4,
+        allow_images=True,
+        seen_urls=existing,
+        media=media,
+    )
+    added = db.add_assets(scene_db_id, results)
+    return JSONResponse({"added": added, "media": media})
+
+
+@app.post("/scenes/{scene_db_id}/regen-keywords")
+def regen_keywords(request: Request, scene_db_id: int):
+    user = require_user(request)
+    scene = db.get_scene(scene_db_id)
+    if not scene:
+        raise HTTPException(404)
+    project = db.get_project(scene["project_id"], user["id"])
+    if not project:
+        raise HTTPException(404)
+    config = project_config(project)
+    kws = groq_service.regenerate_keywords(
+        scene.get("narration", ""), scene.get("visual_goal", ""), user["groq_key"], config["visual_style"]
+    )
+    db.update_scene_keywords(scene_db_id, kws)
+    return JSONResponse({"keywords": kws})
+
+
+# ------------------------------------------------------------------
+# Curadoria
+# ------------------------------------------------------------------
+@app.post("/assets/{asset_id}/state")
+def asset_state(request: Request, asset_id: int, state: str = Form(...)):
+    require_user(request)
+    if state not in {"pending", "selected", "rejected", "favorite"}:
+        raise HTTPException(400, "Estado invalido.")
+    updated = db.set_asset_state(asset_id, state)
+    if not updated:
+        raise HTTPException(404)
+    return JSONResponse({"id": asset_id, "state": updated["state"]})
+
+
+# ------------------------------------------------------------------
+# Gerar pacote (ZIP)
+# ------------------------------------------------------------------
+@app.post("/projects/{project_id}/package")
+def package(request: Request, project_id: int):
+    user = require_user(request)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    config = project_config(project)
+    scenes = db.list_scenes(project_id)
+
+    selected_rows = db.list_assets_by_state(project_id, ["selected"])
+    selected_by_scene = {row["scene_id"]: row for row in selected_rows}
+    rejected = db.list_assets_by_state(project_id, ["rejected"])
+
+    if not selected_by_scene:
+        raise HTTPException(400, "Selecione ao menos um asset antes de gerar o pacote.")
+
+    project_work = WORK_DIR / f"project_{project_id}"
+    packager.build_zip(
+        project=project,
+        config=config,
+        scenes=scenes,
+        selected_by_scene=selected_by_scene,
+        rejected_assets=[
+            {"scene_id": r["scene_code"], "source": r["source"], "url": r["download_url"], "keyword": r["keyword"]}
+            for r in rejected
+        ],
+        work_dir=project_work,
+        max_download_mb=config["max_download_mb"],
+    )
+    db.set_project_status(project_id, "packaged")
+    return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+
+@app.get("/projects/{project_id}/download-zip")
+def download_zip(request: Request, project_id: int):
+    user = require_user(request)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    project_work = WORK_DIR / f"project_{project_id}"
+    zips = list(project_work.glob("*.zip"))
+    if not zips:
+        raise HTTPException(404, "ZIP não encontrado. Gere o pacote primeiro.")
+    return FileResponse(zips[0], filename=zips[0].name, media_type="application/zip")
+
+
+# ------------------------------------------------------------------
+# Kaggle — enviar para render
+# ------------------------------------------------------------------
+@app.post("/projects/{project_id}/send-to-kaggle")
+def send_to_kaggle(request: Request, project_id: int):
+    user = require_user(request)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    if not user.get("kaggle_username") or not user.get("kaggle_token"):
+        raise HTTPException(400, "Configure o Kaggle username e token em /settings.")
+
+    # precisa ter ZIP gerado (work_dir/project_{id}/*.zip)
+    project_work = WORK_DIR / f"project_{project_id}"
+    zips = list(project_work.glob("*.zip"))
+    if not zips:
+        raise HTTPException(400, "Gere o pacote ZIP primeiro (botão 3).")
+    zip_path = zips[0]
+
+    try:
+        ds_slug = kaggle_service.upload_dataset(
+            zip_path, project["name"], user["kaggle_username"], user["kaggle_token"]
+        )
+        k_slug = kaggle_service.push_kernel(
+            ds_slug, project["name"], user["kaggle_username"], user["kaggle_token"]
+        )
+        db.update_kaggle_job(project_id, ds_slug, k_slug, "queued")
+        kernel_url = f"https://www.kaggle.com/code/{user['kaggle_username']}/{k_slug}"
+        return JSONResponse({"status": "queued", "kernel_url": kernel_url, "kernel_slug": k_slug})
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.get("/projects/{project_id}/kaggle-status")
+def kaggle_status(request: Request, project_id: int):
+    user = require_user(request)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    k_slug = project.get("kaggle_kernel_slug", "")
+    if not k_slug:
+        return JSONResponse({"status": "none"})
+    try:
+        info = kaggle_service.get_status(k_slug, user["kaggle_username"], user["kaggle_token"])
+        db.update_kaggle_status(project_id, info["status"])
+        return JSONResponse(info)
+    except Exception as exc:
+        return JSONResponse({"status": "error", "error": str(exc)})
+
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", "8000"))
+    host = os.getenv("HOST", "127.0.0.1")
+    uvicorn.run("app:app", host=host, port=port, reload=os.getenv("APP_ENV") == "dev")

@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Novo projeto — B-rolls{% endblock %}
+{% block content %}
+<h1>Novo projeto</h1>
+
+<div class="card">
+  <form method="post" action="/projects/new" id="new-project-form">
+
+    <label>Nome do projeto
+      <input name="name" required placeholder="video_dengue_bti">
+    </label>
+
+    <div class="transcribe-zone" id="transcribe-zone">
+      <div class="transcribe-header">
+        <span class="small muted">Tem a narração gravada?</span>
+        <label class="audio-pick-btn" for="audio-upload">
+          🎙 Transcrever áudio automaticamente
+          <input type="file" id="audio-upload" accept="audio/*,video/*" style="display:none">
+        </label>
+      </div>
+      <div id="transcribe-progress" style="display:none" class="transcribe-progress">
+        <span class="spinner"></span> Transcrevendo com Groq Whisper…
+      </div>
+      <div id="transcribe-error" class="alert" style="display:none"></div>
+    </div>
+
+    <label>Roteiro ou transcrição com timestamps
+      <textarea name="script" id="script-area" rows="12" required
+        placeholder="[00:00.0 - 00:04.2] Você sabia que existe uma forma barata de controlar mosquito?&#10;[00:04.2 - 00:08.0] O problema é que quase ninguém fala disso.&#10;&#10;Ou cole um roteiro em texto corrido — o sistema fatia em cenas automaticamente."></textarea>
+    </label>
+    <p class="muted small">Formato ideal: <code>[mm:ss.s - mm:ss.s] fala</code>. Sem timestamps o sistema corta em blocos de duração média.</p>
+
+    <div class="grid-2">
+      <label>Área segura do avatar
+        <select name="avatar_safe_area">
+          <option value="right" selected>Direita</option>
+          <option value="left">Esquerda</option>
+        </select>
+      </label>
+      <label>Resolução alvo
+        <select name="resolution">
+          <option value="1920x1080" selected>1920×1080 (Full HD)</option>
+          <option value="1280x720">1280×720 (HD)</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="grid-2">
+      <label>Duração média por cena (s) — usada sem timestamps
+        <input name="scene_duration" type="number" step="0.5" min="2" max="8" value="4">
+      </label>
+      <label class="check">
+        <input type="checkbox" name="image_fallback" value="1"> Permitir imagem como fallback
+      </label>
+    </div>
+
+    <label>Estilo visual
+      <input name="visual_style" value="{{ config.visual_style }}">
+    </label>
+
+    <button class="primary" type="submit">Criar projeto</button>
+  </form>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+document.getElementById("audio-upload").addEventListener("change", async function () {
+  const file = this.files[0];
+  if (!file) return;
+  const progress = document.getElementById("transcribe-progress");
+  const errDiv = document.getElementById("transcribe-error");
+  const area = document.getElementById("script-area");
+  progress.style.display = "";
+  errDiv.style.display = "none";
+  this.disabled = true;
+  try {
+    const fd = new FormData();
+    fd.append("audio", file);
+    const res = await fetch("/transcribe-audio", { method: "POST", body: fd });
+    if (!res.ok) {
+      const t = await res.text();
+      throw new Error(t);
+    }
+    const data = await res.json();
+    area.value = data.transcript;
+    area.style.borderColor = "var(--accent)";
+    progress.style.display = "none";
+  } catch (e) {
+    progress.style.display = "none";
+    errDiv.style.display = "";
+    errDiv.textContent = "Erro na transcrição: " + e.message;
+    this.disabled = false;
+  }
+});
+</script>
+{% endblock %}

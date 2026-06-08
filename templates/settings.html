@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Configurações — B-rolls{% endblock %}
+{% block content %}
+<h1>Configurações</h1>
+{% if saved %}<p class="alert ok">Salvo com sucesso.</p>{% endif %}
+
+<div class="settings-grid">
+  <form method="post" action="/settings" class="settings-form">
+
+    <section class="settings-section">
+      <h2 class="settings-heading">Assets</h2>
+      <p class="muted small">Necessário para buscar vídeos e imagens.</p>
+      <label>Pexels API Key
+        <input name="pexels" value="{{ user.pexels_key }}" placeholder="cole sua chave Pexels">
+      </label>
+      <label>Pixabay API Key
+        <input name="pixabay" value="{{ user.pixabay_key }}" placeholder="cole sua chave Pixabay">
+      </label>
+    </section>
+
+    <section class="settings-section">
+      <h2 class="settings-heading">Groq <span class="muted small">(IA + transcrição de áudio)</span></h2>
+      <p class="muted small">Usado para gerar o mapa visual e transcrever narração.</p>
+      <label>Groq API Key
+        <input name="groq" value="{{ user.groq_key }}" placeholder="gsk_...">
+      </label>
+      <label>Modelo de geração
+        <select name="groq_model">
+          {% for value, label in groq_models %}
+          <option value="{{ value }}" {% if user.groq_model == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </section>
+
+    <section class="settings-section">
+      <h2 class="settings-heading">Kaggle <span class="muted small">(render automático)</span></h2>
+      <p class="muted small">Para renderizar o vídeo final via kernel Kaggle.</p>
+      <label>Kaggle Username
+        <input name="kaggle_username" value="{{ user.kaggle_username }}" placeholder="seu username no Kaggle">
+      </label>
+      <label>Kaggle API Token
+        <input name="kaggle_token" value="{{ user.kaggle_token }}" placeholder="KGAT_...">
+      </label>
+      <button type="button" class="ghost" onclick="testKaggle(this)" style="margin-top:4px">Verificar credenciais</button>
+      <span id="kaggle-test-result" style="font-size:13px;margin-left:10px"></span>
+    </section>
+
+    <button class="primary" type="submit">Salvar configurações</button>
+  </form>
+
+  <aside class="settings-help">
+    <div class="card hint">
+      <h3>Onde conseguir as chaves</h3>
+      <ul class="help-list">
+        <li><strong>Pexels</strong><br><code>pexels.com/api</code></li>
+        <li><strong>Pixabay</strong><br><code>pixabay.com/api/docs</code></li>
+        <li><strong>Groq</strong><br><code>console.groq.com</code></li>
+        <li><strong>Kaggle</strong><br><code>kaggle.com/settings</code> → API → Create New Token</li>
+      </ul>
+    </div>
+    <div class="card hint" style="margin-top:16px">
+      <h3>Sobre o modelo Groq</h3>
+      <p class="small muted">O modelo afeta a qualidade das keywords e do mapa visual. O Llama 3.3 70B é o melhor custo-benefício. O 8B Instant é mais rápido para projetos longos.</p>
+    </div>
+  </aside>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+async function testKaggle(btn) {
+  const result = document.getElementById("kaggle-test-result");
+  btn.disabled = true;
+  result.textContent = "testando...";
+  result.style.color = "var(--muted)";
+  try {
+    const r = await fetch("/settings/test-kaggle");
+    const d = await r.json();
+    result.textContent = d.detail;
+    result.style.color = d.ok ? "var(--accent)" : "var(--danger)";
+  } catch(e) {
+    result.textContent = "Erro: " + e.message;
+    result.style.color = "var(--danger)";
+  }
+  btn.disabled = false;
+}
+</script>
+{% endblock %}

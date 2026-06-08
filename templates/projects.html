@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Projetos — B-rolls{% endblock %}
+{% block content %}
+<div class="row-between" style="margin-bottom:24px">
+  <h1 style="margin-bottom:0">Projetos</h1>
+  <a class="primary btn" href="/projects/new">+ Novo projeto</a>
+</div>
+
+{% if not projects %}
+  <div class="card empty">
+    <p style="font-size:15px;margin-bottom:16px">Nenhum projeto ainda.</p>
+    <a class="primary btn" href="/projects/new">Criar o primeiro</a>
+  </div>
+{% else %}
+  <div class="project-list">
+    {% for p in projects %}
+      <div class="project-item">
+        <div class="project-meta">
+          <a class="project-name" href="/projects/{{ p.id }}">{{ p.name }}</a>
+          <span class="badge status-{{ p.status }}">{{ p.status }}</span>
+          {% if p.kaggle_status and p.kaggle_status not in ['', 'none'] %}
+            <span class="badge" style="background:rgba(26,143,199,0.15);color:#7dcff5">kaggle: {{ p.kaggle_status }}</span>
+          {% endif %}
+        </div>
+        <form method="post" action="/projects/{{ p.id }}/delete" onsubmit="return confirm('Apagar este projeto?')">
+          <button class="ghost danger" type="submit">apagar</button>
+        </form>
+      </div>
+    {% endfor %}
+  </div>
+{% endif %}
+{% endblock %}
