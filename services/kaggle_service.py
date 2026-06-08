@@ -31,7 +31,7 @@ def dataset_slug(project_name: str) -> str:
 
 
 def kernel_slug(project_name: str) -> str:
-    return ("brolls-render-" + _slug(project_name))[:50]
+    return ("b-rolls-render-" + _slug(project_name))[:50]
 
 
 def _run(args: list[str], username: str, token: str, **kwargs) -> subprocess.CompletedProcess:
