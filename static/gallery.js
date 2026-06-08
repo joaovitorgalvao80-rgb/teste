@@ -87,7 +87,9 @@ function renderKaggleState(data) {
   const link = document.getElementById("kaggle-link");
   const dl = document.getElementById("kaggle-video");
   const status = (data.status || "").toLowerCase();
-  if (txt) txt.textContent = KAGGLE_LABELS[status] || status || "verificando…";
+  let label = KAGGLE_LABELS[status] || status || "verificando…";
+  if (status === "error" && data.error) label = "erro: " + data.error.slice(0, 200);
+  if (txt) txt.textContent = label;
   if (dot) {
     dot.className = "kaggle-dot";
     if (status === "complete") dot.classList.add("ok");
@@ -104,7 +106,6 @@ function renderKaggleState(data) {
       dl.style.display = "none";
     }
   }
-  if (txt && status === "error" && data.error) txt.title = data.error;
 }
 
 async function sendToKaggle(projectId) {
