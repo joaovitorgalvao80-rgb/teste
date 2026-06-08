@@ -38,27 +38,6 @@ def _kernel_ref(username: str, k_slug: str) -> str:
     return f"{username}/{k_slug}"
 
 
-def _normalize_status(raw_status: str) -> str:
-    raw = re.sub(r"[^a-z]", "", (raw_status or "").lower())
-    if raw in {"complete", "completewithwarning"}:
-        return "complete"
-    if raw == "running":
-        return "running"
-    if raw in {"error", "failed", "cancelacknowledged", "cancelled", "canceled"}:
-        return "error"
-    return "queued"
-
-
-def _parse_cli_status(output: str) -> str:
-    match = re.search(r'\bstatus\s+"([^"]+)"', output or "", flags=re.IGNORECASE)
-    return match.group(1) if match else "queued"
-
-
-def _parse_failure_message(output: str) -> str:
-    match = re.search(r'Failure message:\s*"([^"]+)"', output or "", flags=re.IGNORECASE)
-    return match.group(1) if match else ""
-
-
 def _extract_kernel_slug(push_output: str, username: str, fallback_slug: str) -> str:
     patterns = [
         rf"kaggle\.com/code/{re.escape(username)}/([a-z0-9][a-z0-9-]*)",
@@ -69,6 +48,43 @@ def _extract_kernel_slug(push_output: str, username: str, fallback_slug: str) ->
         if match:
             return match.group(1).lower()
     return fallback_slug
+
+
+def _looks_like_missing_kernel_error(error: str) -> bool:
+    low = (error or "").lower()
+    return "404" in low or "not found" in low or "does not exist" in low
+
+
+def _looks_like_auth_error(error: str) -> bool:
+    low = (error or "").lower()
+    return "401" in low or "403" in low or "unauthorized" in low or "forbidden" in low
+
+
+def kernel_exists(k_slug: str, username: str, token: str) -> tuple[bool, str]:
+    """Confirma existencia sem chamar kernels status/GetKernelSessionStatus."""
+    kernel = _kernel_ref(username, k_slug)
+    try:
+        _run(["kernels", "files", kernel, "-v", "--page-size", "200"], username, token, timeout=60)
+        return True, ""
+    except RuntimeError as exc:
+        err = str(exc)
+        if _looks_like_missing_kernel_error(err) or _looks_like_auth_error(err):
+            return False, err
+
+    try:
+        result = _run(
+            ["kernels", "list", "--mine", "--search", k_slug, "--page-size", "20", "-v", "--sort-by", "dateRun"],
+            username,
+            token,
+            timeout=60,
+        )
+        out = (result.stdout or "") + (result.stderr or "")
+        return (k_slug.lower() in out.lower()), out
+    except RuntimeError as exc:
+        err = str(exc)
+        if _looks_like_missing_kernel_error(err) or _looks_like_auth_error(err):
+            return False, err
+        return True, err
 
 
 def _run(args: list[str], username: str, token: str, **kwargs) -> subprocess.CompletedProcess:
@@ -188,25 +204,24 @@ def get_status(k_slug: str, username: str, token: str) -> dict:
     kernel = _kernel_ref(username, k_slug)
     page_url = f"https://www.kaggle.com/code/{kernel}"
     try:
-        result = _run(["kernels", "status", kernel], username, token, timeout=60)
-        output = (result.stdout or "") + (result.stderr or "")
-        status = _normalize_status(_parse_cli_status(output))
-        error = _parse_failure_message(output) if status == "error" else ""
-    except RuntimeError as exc:
-        err = str(exc)
-        low = err.lower()
-        if "404" in low or "not found" in low:
-            err = "Kernel nao encontrado no Kaggle. Reenvie o render ou confira o link do notebook."
+        video_url = get_video_url(k_slug, username, token)
+    except Exception:
+        video_url = ""
+
+    if video_url:
+        return {"status": "complete", "url": page_url, "video_url": video_url, "error": ""}
+
+    exists, detail = kernel_exists(k_slug, username, token)
+    if not exists:
+        err = detail or "Kernel nao encontrado no Kaggle. Reenvie o render ou confira o link do notebook."
         return {"status": "error", "url": page_url, "video_url": "", "error": err[:400]}
 
-    video_url = ""
-    if status == "complete":
-        try:
-            video_url = get_video_url(k_slug, username, token)
-        except Exception:
-            video_url = ""
-
-    return {"status": status, "url": page_url, "video_url": video_url, "error": error}
+    return {
+        "status": "queued",
+        "url": page_url,
+        "video_url": "",
+        "error": "Render enviado; aguardando o Kaggle disponibilizar o video.",
+    }
 
 
 def get_video_url(k_slug: str, username: str, token: str) -> str:

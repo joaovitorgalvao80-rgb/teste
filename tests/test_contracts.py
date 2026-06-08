@@ -146,39 +146,46 @@ class DeployContractsTest(unittest.TestCase):
             self.assertEqual(len(scenes), 1)
             self.assertEqual(scenes[0]["duration"], 1.5)
 
-    def test_kaggle_status_uses_cli_status_command(self) -> None:
-        calls = []
-        original_run = kaggle_service._run
-        try:
-            def fake_run(args, username, token, **kwargs):
-                calls.append((args, username, token, kwargs))
-                return SimpleNamespace(stdout='user/kernel has status "running"\n', stderr="")
-
-            kaggle_service._run = fake_run
-            result = kaggle_service.get_status("kernel", "user", "token")
-        finally:
-            kaggle_service._run = original_run
-
-        self.assertEqual(result["status"], "running")
-        self.assertEqual(result["url"], "https://www.kaggle.com/code/user/kernel")
-        self.assertEqual(calls[0][0], ["kernels", "status", "user/kernel"])
-
-    def test_kaggle_status_complete_fetches_video_url(self) -> None:
-        original_run = kaggle_service._run
+    def test_kaggle_status_complete_when_video_output_exists(self) -> None:
         original_video = kaggle_service.get_video_url
         try:
-            kaggle_service._run = lambda *_args, **_kwargs: SimpleNamespace(
-                stdout='user/kernel has status "complete"\n',
-                stderr="",
-            )
             kaggle_service.get_video_url = lambda *_args, **_kwargs: "https://video.example/out.mp4"
             result = kaggle_service.get_status("kernel", "user", "token")
         finally:
-            kaggle_service._run = original_run
             kaggle_service.get_video_url = original_video
 
         self.assertEqual(result["status"], "complete")
         self.assertEqual(result["video_url"], "https://video.example/out.mp4")
+
+    def test_kaggle_status_waits_without_status_endpoint_when_output_missing(self) -> None:
+        original_video = kaggle_service.get_video_url
+        original_exists = kaggle_service.kernel_exists
+        try:
+            kaggle_service.get_video_url = lambda *_args, **_kwargs: ""
+            kaggle_service.kernel_exists = lambda *_args, **_kwargs: (True, "")
+            result = kaggle_service.get_status("kernel", "user", "token")
+        finally:
+            kaggle_service.get_video_url = original_video
+            kaggle_service.kernel_exists = original_exists
+
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(result["url"], "https://www.kaggle.com/code/user/kernel")
+
+    def test_kernel_exists_uses_files_command_not_status_endpoint(self) -> None:
+        calls = []
+        original_run = kaggle_service._run
+        try:
+            def fake_run(args, username, token, **kwargs):
+                calls.append(args)
+                return SimpleNamespace(stdout="fileName,totalBytes\nlog_render.txt,10\n", stderr="")
+
+            kaggle_service._run = fake_run
+            exists, _detail = kaggle_service.kernel_exists("kernel", "user", "token")
+        finally:
+            kaggle_service._run = original_run
+
+        self.assertTrue(exists)
+        self.assertEqual(calls[0], ["kernels", "files", "user/kernel", "-v", "--page-size", "200"])
 
     def test_push_kernel_uses_actual_slug_from_push_output(self) -> None:
         original_run = kaggle_service._run
