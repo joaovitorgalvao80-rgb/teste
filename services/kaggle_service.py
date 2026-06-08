@@ -67,12 +67,12 @@ def upload_dataset(zip_path: Path, project_name: str, username: str, token: str)
         # tenta criar versão nova; se falhar, cria dataset novo
         try:
             _run(
-                ["datasets", "version", "-p", str(tmp), "-m", "update", "--dir-mode", "zip"],
+                ["datasets", "version", "-p", str(tmp), "-m", "update"],
                 username, token, timeout=300,
             )
         except RuntimeError:
             _run(
-                ["datasets", "create", "-p", str(tmp), "--no-compress"],
+                ["datasets", "create", "-p", str(tmp)],
                 username, token, timeout=300,
             )
 
