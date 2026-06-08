@@ -518,12 +518,12 @@ def send_to_kaggle(request: Request, project_id: int):
         ds_slug = kaggle_service.upload_dataset(
             zip_path, project["name"], user["kaggle_username"], user["kaggle_token"]
         )
-        k_slug = kaggle_service.push_kernel(
+        k_slug, push_out = kaggle_service.push_kernel(
             ds_slug, project["name"], user["kaggle_username"], user["kaggle_token"]
         )
         db.update_kaggle_job(project_id, ds_slug, k_slug, "queued")
         kernel_url = f"https://www.kaggle.com/code/{user['kaggle_username']}/{k_slug}"
-        return JSONResponse({"status": "queued", "kernel_url": kernel_url, "kernel_slug": k_slug})
+        return JSONResponse({"status": "queued", "kernel_url": kernel_url, "kernel_slug": k_slug, "push_out": push_out})
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
@@ -543,6 +543,34 @@ def kaggle_status(request: Request, project_id: int):
         return JSONResponse(info)
     except Exception as exc:
         return JSONResponse({"status": "error", "error": str(exc)})
+
+
+@app.get("/projects/{project_id}/kaggle-debug")
+def kaggle_debug(request: Request, project_id: int):
+    """Retorna output bruto do CLI para diagnóstico."""
+    user = require_user(request)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    u = user.get("kaggle_username", "")
+    t = user.get("kaggle_token", "")
+    k_slug = project.get("kaggle_kernel_slug", "")
+    ds_slug = project.get("kaggle_dataset_slug", "")
+    out = {}
+    import subprocess, sys
+    env = {**__import__("os").environ, "KAGGLE_USERNAME": u, "KAGGLE_KEY": t}
+    for label, args in [
+        ("kernels_status", ["kernels", "status", f"{u}/{k_slug}"]),
+        ("kernels_list", ["kernels", "list", "--mine"]),
+        ("datasets_list", ["datasets", "list", "--mine"]),
+    ]:
+        try:
+            r = subprocess.run([sys.executable, "-m", "kaggle"] + args,
+                               env=env, capture_output=True, text=True, timeout=20)
+            out[label] = {"stdout": r.stdout, "stderr": r.stderr, "code": r.returncode}
+        except Exception as e:
+            out[label] = {"error": str(e)}
+    return JSONResponse({"k_slug": k_slug, "ds_slug": ds_slug, "results": out})
 
 
 if __name__ == "__main__":

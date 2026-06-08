@@ -2,10 +2,11 @@
 
 Usa subprocess + kaggle CLI em vez da API Python para evitar
 incompatibilidades entre versões do pacote.
+
+O montador.py é enviado junto no dataset — sem embutir base64 no kernel.
 """
 from __future__ import annotations
 
-import base64
 import json
 import os
 import re
@@ -37,16 +38,16 @@ def _run(args: list[str], username: str, token: str, **kwargs) -> subprocess.Com
     env = os.environ.copy()
     env["KAGGLE_USERNAME"] = username
     env["KAGGLE_KEY"] = token
-    # usa "python -m kaggle" para garantir que pega o pacote instalado no venv
     cmd = [sys.executable, "-m", "kaggle"] + args
     result = subprocess.run(cmd, env=env, capture_output=True, text=True, **kwargs)
     if result.returncode != 0:
-        raise RuntimeError((result.stderr or result.stdout or "erro desconhecido")[-600:])
+        out = (result.stderr or "") + (result.stdout or "")
+        raise RuntimeError((out or "erro desconhecido")[-800:])
     return result
 
 
 # ------------------------------------------------------------------
-# Upload do ZIP como dataset
+# Upload do ZIP como dataset (inclui montador.py junto)
 # ------------------------------------------------------------------
 def upload_dataset(zip_path: Path, project_name: str, username: str, token: str) -> str:
     slug = dataset_slug(project_name)
@@ -54,6 +55,10 @@ def upload_dataset(zip_path: Path, project_name: str, username: str, token: str)
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
         shutil.copy2(zip_path, tmp / zip_path.name)
+
+        montador_src = ROOT / "montador.py"
+        if montador_src.exists():
+            shutil.copy2(montador_src, tmp / "montador.py")
 
         metadata = {
             "title": f"B-rolls {project_name}"[:50],
@@ -64,7 +69,7 @@ def upload_dataset(zip_path: Path, project_name: str, username: str, token: str)
             json.dumps(metadata, ensure_ascii=False), encoding="utf-8"
         )
 
-        # tenta criar versão nova; se falhar, cria dataset novo
+        # tenta nova versão primeiro; se não existir, cria
         try:
             _run(
                 ["datasets", "version", "-p", str(tmp), "-m", "update"],
@@ -80,45 +85,41 @@ def upload_dataset(zip_path: Path, project_name: str, username: str, token: str)
 
 
 # ------------------------------------------------------------------
-# Kernel (montador)
+# Kernel — runner.py leve, montador vem do dataset
 # ------------------------------------------------------------------
-def _kernel_source(ds_slug: str) -> str:
-    montador_path = ROOT / "montador.py"
-    montador_b64 = base64.b64encode(montador_path.read_bytes()).decode()
-
-    return f"""\
-import base64, subprocess, sys
+_RUNNER = """\
+import subprocess, sys
 from pathlib import Path
 
-montador_src = base64.b64decode("{montador_b64}").decode("utf-8")
-Path("/kaggle/working/montador.py").write_text(montador_src, encoding="utf-8")
-
-zips = list(Path("/kaggle/input/{ds_slug}").rglob("*.zip"))
+ds = next(Path("/kaggle/input").iterdir())
+montador = ds / "montador.py"
+zips = list(ds.rglob("*.zip"))
 if not zips:
-    raise RuntimeError("ZIP nao encontrado no dataset")
-zip_path = zips[0]
-print(f"ZIP: {{zip_path}} ({{zip_path.stat().st_size/1024/1024:.1f}} MB)")
+    raise RuntimeError("ZIP nao encontrado em " + str(ds))
 
+zip_path = zips[0]
 out = Path("/kaggle/working/video_broll_base.mp4")
-result = subprocess.run(
-    [sys.executable, "/kaggle/working/montador.py", str(zip_path),
-     "--out", str(out), "--preset", "fast"],
-    capture_output=True, text=True
+print(f"ZIP: {zip_path} ({zip_path.stat().st_size/1024/1024:.1f} MB)")
+
+r = subprocess.run(
+    [sys.executable, str(montador), str(zip_path), "--out", str(out), "--preset", "fast"],
+    capture_output=True, text=True,
 )
-print(result.stdout)
-if result.returncode != 0:
-    print("STDERR:", result.stderr[-2000:])
-    raise RuntimeError("Montador falhou")
-print(f"Video: {{out}} ({{out.stat().st_size/1024/1024:.1f}} MB)")
+print(r.stdout[-3000:])
+if r.returncode != 0:
+    print("STDERR:", r.stderr[-2000:])
+    raise RuntimeError("Montador falhou (exit " + str(r.returncode) + ")")
+print(f"Video: {out} ({out.stat().st_size/1024/1024:.1f} MB)")
 """
 
 
-def push_kernel(ds_slug: str, project_name: str, username: str, token: str) -> str:
+def push_kernel(ds_slug: str, project_name: str, username: str, token: str) -> tuple[str, str]:
+    """Retorna (k_slug, push_output) para debug."""
     slug = kernel_slug(project_name)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
-        (tmp / "runner.py").write_text(_kernel_source(ds_slug), encoding="utf-8")
+        (tmp / "runner.py").write_text(_RUNNER, encoding="utf-8")
 
         metadata = {
             "id": f"{username}/{slug}",
@@ -137,9 +138,10 @@ def push_kernel(ds_slug: str, project_name: str, username: str, token: str) -> s
             json.dumps(metadata, ensure_ascii=False), encoding="utf-8"
         )
 
-        _run(["kernels", "push", "-p", str(tmp)], username, token, timeout=60)
+        r = _run(["kernels", "push", "-p", str(tmp)], username, token, timeout=60)
+        push_out = (r.stdout or "") + (r.stderr or "")
 
-    return slug
+    return slug, push_out.strip()
 
 
 # ------------------------------------------------------------------
@@ -152,7 +154,6 @@ def get_status(k_slug: str, username: str, token: str) -> dict:
             ["kernels", "status", f"{username}/{k_slug}"],
             username, token, timeout=30,
         )
-        # output: "username/slug has status "running""
         out = result.stdout.lower()
         if "complete" in out:
             status = "complete"
@@ -160,16 +161,11 @@ def get_status(k_slug: str, username: str, token: str) -> dict:
             status = "running"
         elif "error" in out or "fail" in out:
             status = "error"
-        elif "queued" in out or "queue" in out:
-            status = "queued"
         else:
             status = "queued"
     except Exception as exc:
         err = str(exc)
-        # se o kernel não existe, mostra erro em vez de ficar em "queued"
-        if "404" in err or "not found" in err.lower() or "no such" in err.lower():
-            return {"status": "error", "url": page_url, "video_url": "", "error": f"Kernel não encontrado — verifique telefone no kaggle.com/settings ({err[:200]})"}
-        return {"status": "error", "url": page_url, "video_url": "", "error": err[:300]}
+        return {"status": "error", "url": page_url, "video_url": "", "error": err[:400]}
 
     video_url = ""
     if status == "complete":
