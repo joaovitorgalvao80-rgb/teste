@@ -145,27 +145,35 @@ def push_kernel(ds_slug: str, project_name: str, username: str, token: str) -> t
 
 
 # ------------------------------------------------------------------
-# Status
+# Status (usa HTTP direta — o CLI 1.6.x tem bug no GetKernelSessionStatus)
 # ------------------------------------------------------------------
 def get_status(k_slug: str, username: str, token: str) -> dict:
+    import requests as req
+    from requests.auth import HTTPBasicAuth
+
     page_url = f"https://www.kaggle.com/code/{username}/{k_slug}"
     try:
-        result = _run(
-            ["kernels", "status", f"{username}/{k_slug}"],
-            username, token, timeout=30,
+        resp = req.get(
+            f"https://www.kaggle.com/api/v1/kernels/{username}/{k_slug}",
+            auth=HTTPBasicAuth(username, token),
+            timeout=30,
         )
-        out = result.stdout.lower()
-        if "complete" in out:
+        if resp.status_code == 404:
+            return {"status": "error", "url": page_url, "video_url": "",
+                    "error": "Kernel não encontrado no Kaggle (404)"}
+        resp.raise_for_status()
+        data = resp.json()
+        raw = (data.get("status") or data.get("currentRunningStatus") or "queued").lower()
+        if raw in ("complete", "completewithwarning"):
             status = "complete"
-        elif "running" in out:
+        elif raw in ("running",):
             status = "running"
-        elif "error" in out or "fail" in out:
+        elif raw in ("error", "failed", "cancelacknowledged", "cancelled"):
             status = "error"
         else:
             status = "queued"
     except Exception as exc:
-        err = str(exc)
-        return {"status": "error", "url": page_url, "video_url": "", "error": err[:400]}
+        return {"status": "error", "url": page_url, "video_url": "", "error": str(exc)[:400]}
 
     video_url = ""
     if status == "complete":
