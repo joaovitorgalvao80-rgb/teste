@@ -47,10 +47,10 @@ def _blob_upload(zip_path: Path, username: str, token: str) -> str:
         f"{KAGGLE_API}/blobs/upload",
         auth=_auth(username, token),
         json={
-            "fileName": zip_path.name,
-            "contentLength": stat.st_size,
-            "lastModifiedEpochSeconds": int(stat.st_mtime),
-            "resourceType": "Dataset",
+            "file_name": zip_path.name,
+            "content_length": stat.st_size,
+            "last_modified_epoch_seconds": int(stat.st_mtime),
+            "resource_type": "Dataset",
         },
         timeout=30,
     )
