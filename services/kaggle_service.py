@@ -160,10 +160,16 @@ def get_status(k_slug: str, username: str, token: str) -> dict:
             status = "running"
         elif "error" in out or "fail" in out:
             status = "error"
+        elif "queued" in out or "queue" in out:
+            status = "queued"
         else:
             status = "queued"
     except Exception as exc:
-        return {"status": "queued", "url": page_url, "video_url": "", "error": str(exc)}
+        err = str(exc)
+        # se o kernel não existe, mostra erro em vez de ficar em "queued"
+        if "404" in err or "not found" in err.lower() or "no such" in err.lower():
+            return {"status": "error", "url": page_url, "video_url": "", "error": f"Kernel não encontrado — verifique telefone no kaggle.com/settings ({err[:200]})"}
+        return {"status": "error", "url": page_url, "video_url": "", "error": err[:300]}
 
     video_url = ""
     if status == "complete":
