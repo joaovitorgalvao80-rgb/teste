@@ -13,7 +13,7 @@ import app as webapp  # noqa: E402
 import database as db  # noqa: E402
 import montador  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
-from services import kaggle_service, packager  # noqa: E402
+from services import asset_search, kaggle_service, packager  # noqa: E402
 from services.script_parser import parse_script  # noqa: E402
 
 
@@ -146,6 +146,13 @@ class DeployContractsTest(unittest.TestCase):
             self.assertEqual(len(scenes), 1)
             self.assertEqual(scenes[0]["duration"], 1.5)
 
+    def test_pexels_video_endpoint_uses_current_v1_path(self) -> None:
+        self.assertEqual(asset_search.PEXELS_VIDEO_URL, "https://api.pexels.com/v1/videos/search")
+
+    def test_pixabay_video_download_url_gets_download_flag(self) -> None:
+        url = asset_search._with_query_param("https://example.com/video.mp4?token=abc", "download", "1")
+        self.assertEqual(url, "https://example.com/video.mp4?token=abc&download=1")
+
     def test_kaggle_status_complete_when_video_output_exists(self) -> None:
         original_video = kaggle_service.get_video_url
         try:
@@ -187,6 +194,41 @@ class DeployContractsTest(unittest.TestCase):
         self.assertTrue(exists)
         self.assertEqual(calls[0], ["kernels", "files", "user/kernel", "-v", "--page-size", "200"])
 
+    def test_kaggle_status_route_downloads_local_video_fallback(self) -> None:
+        original_status = webapp.kaggle_service.get_status
+        original_pull = webapp.kaggle_service.pull_output_video
+        try:
+            with TestClient(webapp.app) as client:
+                user_id = db.create_user("video-user", "password123")
+                project_id = db.create_project(user_id, "video project", "script", {})
+                db.update_kaggle_job(project_id, "dataset", "kernel", "queued")
+                client.post(
+                    "/login",
+                    data={"username": "video-user", "password": "password123"},
+                    follow_redirects=False,
+                )
+
+                def fake_pull(_slug, _username, _token, out_dir):
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    path = out_dir / "video_broll_base.mp4"
+                    path.write_bytes(b"fake-mp4")
+                    return path
+
+                webapp.kaggle_service.get_status = lambda *_args, **_kwargs: {
+                    "status": "complete",
+                    "url": "https://www.kaggle.com/code/video-user/kernel",
+                    "video_url": "",
+                    "error": "",
+                }
+                webapp.kaggle_service.pull_output_video = fake_pull
+                resp = client.get(f"/projects/{project_id}/kaggle-status")
+        finally:
+            webapp.kaggle_service.get_status = original_status
+            webapp.kaggle_service.pull_output_video = original_pull
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["video_url"], f"/projects/{project_id}/download-kaggle-video")
+
     def test_push_kernel_uses_actual_slug_from_push_output(self) -> None:
         original_run = kaggle_service._run
         try:
@@ -203,6 +245,10 @@ class DeployContractsTest(unittest.TestCase):
             kaggle_service._run = original_run
 
         self.assertEqual(slug, "actual-kaggle-slug")
+
+    def test_kaggle_runner_accepts_unpacked_asset_pack(self) -> None:
+        self.assertIn('rglob("guia_visual.json")', kaggle_service._RUNNER)
+        self.assertIn('source = guides[0].parent', kaggle_service._RUNNER)
 
     def test_production_requires_strong_session_secret(self) -> None:
         old_env = webapp.APP_ENV

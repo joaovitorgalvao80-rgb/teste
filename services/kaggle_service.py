@@ -15,6 +15,8 @@ import subprocess
 import sys
 import tempfile
 import unicodedata
+import csv
+import io
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -60,11 +62,42 @@ def _looks_like_auth_error(error: str) -> bool:
     return "401" in low or "403" in low or "unauthorized" in low or "forbidden" in low
 
 
+def _is_video_output(filename: str) -> bool:
+    name = (filename or "").lower().replace("\\", "/").rsplit("/", 1)[-1]
+    return name == "video_broll_base.mp4" or name.endswith(".mp4")
+
+
+def _parse_kernel_files_csv(output: str) -> list[str]:
+    files: list[str] = []
+    try:
+        rows = csv.DictReader(io.StringIO(output or ""))
+        for row in rows:
+            filename = row.get("fileName") or row.get("name") or row.get("FileName") or row.get("ref")
+            if filename:
+                files.append(filename.strip())
+    except csv.Error:
+        pass
+    if files:
+        return files
+    for line in (output or "").splitlines():
+        line = line.strip()
+        header = line.split(",", 1)[0].strip().lower()
+        if line and header not in {"filename", "name", "ref", "totalbytes"}:
+            files.append(line.split(",", 1)[0].strip())
+    return [f for f in files if f]
+
+
+def list_kernel_files(k_slug: str, username: str, token: str) -> tuple[list[str], str]:
+    kernel = _kernel_ref(username, k_slug)
+    result = _run(["kernels", "files", kernel, "-v", "--page-size", "200"], username, token, timeout=60)
+    output = (result.stdout or "") + (result.stderr or "")
+    return _parse_kernel_files_csv(output), output
+
+
 def kernel_exists(k_slug: str, username: str, token: str) -> tuple[bool, str]:
     """Confirma existencia sem chamar kernels status/GetKernelSessionStatus."""
-    kernel = _kernel_ref(username, k_slug)
     try:
-        _run(["kernels", "files", kernel, "-v", "--page-size", "200"], username, token, timeout=60)
+        list_kernel_files(k_slug, username, token)
         return True, ""
     except RuntimeError as exc:
         err = str(exc)
@@ -144,18 +177,26 @@ _RUNNER = """\
 import subprocess, sys
 from pathlib import Path
 
-ds = next(Path("/kaggle/input").iterdir())
-montador = ds / "montador.py"
-zips = list(ds.rglob("*.zip"))
-if not zips:
-    raise RuntimeError("ZIP nao encontrado em " + str(ds))
+input_root = Path("/kaggle/input")
+montadores = list(input_root.rglob("montador.py"))
+if not montadores:
+    raise RuntimeError("montador.py nao encontrado em " + str(input_root))
+montador = montadores[0]
 
-zip_path = zips[0]
+zips = list(input_root.rglob("*.zip"))
+if zips:
+    source = zips[0]
+else:
+    guides = list(input_root.rglob("guia_visual.json"))
+    if not guides:
+        raise RuntimeError("Nem ZIP nem guia_visual.json encontrados em " + str(input_root))
+    source = guides[0].parent
+
 out = Path("/kaggle/working/video_broll_base.mp4")
-print(f"ZIP: {zip_path} ({zip_path.stat().st_size/1024/1024:.1f} MB)")
+print(f"Fonte: {source}")
 
 r = subprocess.run(
-    [sys.executable, str(montador), str(zip_path), "--out", str(out), "--preset", "fast"],
+    [sys.executable, str(montador), str(source), "--out", str(out), "--preset", "fast"],
     capture_output=True, text=True,
 )
 print(r.stdout[-3000:])
@@ -211,10 +252,20 @@ def get_status(k_slug: str, username: str, token: str) -> dict:
     if video_url:
         return {"status": "complete", "url": page_url, "video_url": video_url, "error": ""}
 
-    exists, detail = kernel_exists(k_slug, username, token)
-    if not exists:
-        err = detail or "Kernel nao encontrado no Kaggle. Reenvie o render ou confira o link do notebook."
-        return {"status": "error", "url": page_url, "video_url": "", "error": err[:400]}
+    try:
+        files, _detail = list_kernel_files(k_slug, username, token)
+        if any(_is_video_output(name) for name in files):
+            return {
+                "status": "complete",
+                "url": page_url,
+                "video_url": "",
+                "error": "Video pronto no Kaggle; preparando download local.",
+            }
+    except RuntimeError as exc:
+        detail = str(exc)
+        if _looks_like_missing_kernel_error(detail) or _looks_like_auth_error(detail):
+            return {"status": "error", "url": page_url, "video_url": "", "error": detail[:400]}
+        # Erro transitorio do Kaggle: nao transforme em falha final.
 
     return {
         "status": "queued",
@@ -242,3 +293,17 @@ def get_video_url(k_slug: str, username: str, token: str) -> str:
         if f.get("fileName", "").endswith(".mp4") and f.get("url"):
             return f["url"]
     return ""
+
+
+def pull_output_video(k_slug: str, username: str, token: str, out_dir: Path) -> Path | None:
+    """Baixa o MP4 do output do Kaggle para o servidor quando nao ha URL direta."""
+    kernel = _kernel_ref(username, k_slug)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    _run(
+        ["kernels", "output", kernel, "-p", str(out_dir), "-o", "--file-pattern", r".*\.mp4$"],
+        username,
+        token,
+        timeout=600,
+    )
+    matches = sorted(out_dir.rglob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return matches[0] if matches else None

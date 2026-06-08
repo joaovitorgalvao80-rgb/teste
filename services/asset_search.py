@@ -7,13 +7,30 @@ usuario vai rejeitar.
 from __future__ import annotations
 
 from typing import Optional
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import requests
 
-PEXELS_VIDEO_URL = "https://api.pexels.com/videos/search"
+PEXELS_VIDEO_URL = "https://api.pexels.com/v1/videos/search"
 PEXELS_IMAGE_URL = "https://api.pexels.com/v1/search"
 PIXABAY_VIDEO_URL = "https://pixabay.com/api/videos/"
 PIXABAY_IMAGE_URL = "https://pixabay.com/api/"
+REQUEST_TIMEOUT = 25
+
+
+def _bounded_per_page(value: int, default: int = 8) -> int:
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        value = default
+    return max(1, min(value, 80))
+
+
+def _with_query_param(url: str, key: str, value: str) -> str:
+    parts = urlparse(url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query[key] = value
+    return urlunparse(parts._replace(query=urlencode(query)))
 
 
 def _best_pexels_video_file(video: dict, max_w: int) -> Optional[dict]:
@@ -29,12 +46,13 @@ def _best_pexels_video_file(video: dict, max_w: int) -> Optional[dict]:
 def search_pexels_videos(keyword: str, key: str, max_w: int, per_page: int = 8) -> list[dict]:
     if not key:
         return []
+    per_page = _bounded_per_page(per_page)
     try:
         resp = requests.get(
             PEXELS_VIDEO_URL,
             headers={"Authorization": key},
             params={"query": keyword, "orientation": "landscape", "per_page": per_page},
-            timeout=25,
+            timeout=REQUEST_TIMEOUT,
         )
     except Exception as exc:  # noqa: BLE001
         print(f"[Pexels video] erro: {exc}")
@@ -70,11 +88,12 @@ def search_pexels_videos(keyword: str, key: str, max_w: int, per_page: int = 8) 
 def search_pixabay_videos(keyword: str, key: str, max_w: int, per_page: int = 8) -> list[dict]:
     if not key:
         return []
+    per_page = _bounded_per_page(per_page, default=8)
     try:
         resp = requests.get(
             PIXABAY_VIDEO_URL,
             params={"key": key, "q": keyword, "video_type": "film", "per_page": per_page, "safesearch": "true"},
-            timeout=25,
+            timeout=REQUEST_TIMEOUT,
         )
     except Exception as exc:  # noqa: BLE001
         print(f"[Pixabay video] erro: {exc}")
@@ -99,7 +118,7 @@ def search_pixabay_videos(keyword: str, key: str, max_w: int, per_page: int = 8)
                 "source_id": hit.get("id", ""),
                 "asset_type": "video",
                 "preview_url": thumb,
-                "download_url": chosen["url"],
+                "download_url": _with_query_param(chosen["url"], "download", "1"),
                 "page_url": hit.get("pageURL", ""),
                 "width": chosen.get("width", 0),
                 "height": chosen.get("height", 0),
@@ -115,12 +134,13 @@ def search_pixabay_videos(keyword: str, key: str, max_w: int, per_page: int = 8)
 def search_pexels_images(keyword: str, key: str, per_page: int = 6) -> list[dict]:
     if not key:
         return []
+    per_page = _bounded_per_page(per_page, default=6)
     try:
         resp = requests.get(
             PEXELS_IMAGE_URL,
             headers={"Authorization": key},
             params={"query": keyword, "orientation": "landscape", "per_page": per_page},
-            timeout=25,
+            timeout=REQUEST_TIMEOUT,
         )
     except Exception as exc:  # noqa: BLE001
         print(f"[Pexels image] erro: {exc}")
@@ -152,12 +172,13 @@ def search_pexels_images(keyword: str, key: str, per_page: int = 6) -> list[dict
 def search_pixabay_images(keyword: str, key: str, per_page: int = 6) -> list[dict]:
     if not key:
         return []
+    per_page = _bounded_per_page(per_page, default=6)
     try:
         resp = requests.get(
             PIXABAY_IMAGE_URL,
             params={"key": key, "q": keyword, "image_type": "photo", "orientation": "horizontal",
                     "per_page": per_page, "safesearch": "true"},
-            timeout=25,
+            timeout=REQUEST_TIMEOUT,
         )
     except Exception as exc:  # noqa: BLE001
         print(f"[Pixabay image] erro: {exc}")

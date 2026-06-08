@@ -161,6 +161,11 @@ def latest_zip(project_work: Path) -> Optional[Path]:
     return max(project_work.glob("*.zip"), key=lambda p: p.stat().st_mtime, default=None)
 
 
+def latest_kaggle_video(project_work: Path) -> Optional[Path]:
+    output_dir = project_work / "kaggle_output"
+    return max(output_dir.rglob("*.mp4"), key=lambda p: p.stat().st_mtime, default=None) if output_dir.exists() else None
+
+
 # ------------------------------------------------------------------
 # Auth
 # ------------------------------------------------------------------
@@ -580,10 +585,34 @@ def kaggle_status(request: Request, project_id: int):
         return JSONResponse({"status": "none"})
     try:
         info = kaggle_service.get_status(k_slug, user["kaggle_username"], user["kaggle_token"])
+        if info.get("status") == "complete" and not info.get("video_url"):
+            project_work = WORK_DIR / f"project_{project_id}"
+            local_video = latest_kaggle_video(project_work)
+            if not local_video:
+                local_video = kaggle_service.pull_output_video(
+                    k_slug,
+                    user["kaggle_username"],
+                    user["kaggle_token"],
+                    project_work / "kaggle_output",
+                )
+            if local_video:
+                info["video_url"] = f"/projects/{project_id}/download-kaggle-video"
         db.update_kaggle_status(project_id, info["status"])
         return JSONResponse(info)
     except Exception as exc:
         return JSONResponse({"status": "error", "error": str(exc)})
+
+
+@app.get("/projects/{project_id}/download-kaggle-video")
+def download_kaggle_video(request: Request, project_id: int):
+    user = require_user(request)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    video = latest_kaggle_video(WORK_DIR / f"project_{project_id}")
+    if not video:
+        raise HTTPException(404, "Video do Kaggle ainda nao baixado.")
+    return FileResponse(video, filename=video.name, media_type="video/mp4")
 
 
 @app.get("/projects/{project_id}/kaggle-debug")
@@ -603,7 +632,7 @@ def kaggle_debug(request: Request, project_id: int):
     import subprocess, sys
     env = {**__import__("os").environ, "KAGGLE_USERNAME": u, "KAGGLE_KEY": t}
     for label, args in [
-        ("kernels_status", ["kernels", "status", f"{u}/{k_slug}"]),
+        ("kernels_files", ["kernels", "files", f"{u}/{k_slug}", "-v", "--page-size", "200"]),
         ("kernels_list", ["kernels", "list", "--mine"]),
         ("datasets_list", ["datasets", "list", "--mine"]),
     ]:
