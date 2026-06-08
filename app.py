@@ -196,14 +196,14 @@ def test_kaggle(request: Request):
     from requests.auth import HTTPBasicAuth
     try:
         r = req.get(
-            "https://www.kaggle.com/api/v1/kernels",
+            "https://www.kaggle.com/api/v1/competitions/list",
             auth=HTTPBasicAuth(username, token),
-            params={"pageSize": 1},
+            params={"page": 1, "pageSize": 1},
             timeout=15,
         )
         if r.status_code == 200:
             return JSONResponse({"ok": True, "detail": "Credenciais válidas ✓"})
-        return JSONResponse({"ok": False, "detail": f"HTTP {r.status_code}: {r.text[:300]}"})
+        return JSONResponse({"ok": False, "detail": f"HTTP {r.status_code}: {r.text[:400]}"})
     except Exception as exc:
         return JSONResponse({"ok": False, "detail": str(exc)})
 
