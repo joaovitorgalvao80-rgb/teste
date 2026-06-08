@@ -1,16 +1,17 @@
-"""Integração com Kaggle usando a biblioteca oficial (kaggle>=1.6.17).
+"""Integração com Kaggle via CLI (kaggle>=1.5).
 
-Fluxo:
-  1. Sobe o asset_pack.zip como dataset privado
-  2. Dispara um kernel (script Python) que roda o montador.py
-  3. Retorna slug do kernel para polling de status
+Usa subprocess + kaggle CLI em vez da API Python para evitar
+incompatibilidades entre versões do pacote.
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
 import shutil
+import subprocess
+import sys
 import tempfile
 import unicodedata
 from pathlib import Path
@@ -32,21 +33,22 @@ def kernel_slug(project_name: str) -> str:
     return ("brolls-render-" + _slug(project_name))[:50]
 
 
-def _make_api(username: str, token: str):
-    """Cria instância autenticada da API Kaggle via env vars."""
-    os.environ["KAGGLE_USERNAME"] = username
-    os.environ["KAGGLE_KEY"] = token
-    from kaggle.api.kaggle_api_extended import KaggleApiExtended  # noqa: PLC0415
-    api = KaggleApiExtended()
-    api.authenticate()
-    return api
+def _run(args: list[str], username: str, token: str, **kwargs) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    env["KAGGLE_USERNAME"] = username
+    env["KAGGLE_KEY"] = token
+    # usa "python -m kaggle" para garantir que pega o pacote instalado no venv
+    cmd = [sys.executable, "-m", "kaggle"] + args
+    result = subprocess.run(cmd, env=env, capture_output=True, text=True, **kwargs)
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "erro desconhecido")[-600:])
+    return result
 
 
 # ------------------------------------------------------------------
 # Upload do ZIP como dataset
 # ------------------------------------------------------------------
 def upload_dataset(zip_path: Path, project_name: str, username: str, token: str) -> str:
-    api = _make_api(username, token)
     slug = dataset_slug(project_name)
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -62,12 +64,17 @@ def upload_dataset(zip_path: Path, project_name: str, username: str, token: str)
             json.dumps(metadata, ensure_ascii=False), encoding="utf-8"
         )
 
-        # Tenta atualizar se já existir, senão cria
+        # tenta criar versão nova; se falhar, cria dataset novo
         try:
-            api.dataset_metadata(username, slug)
-            api.dataset_create_version(str(tmp), "update", quiet=True)
-        except Exception:
-            api.dataset_create_new(str(tmp), public=False, quiet=True)
+            _run(
+                ["datasets", "version", "-p", str(tmp), "-m", "update", "--dir-mode", "zip"],
+                username, token, timeout=300,
+            )
+        except RuntimeError:
+            _run(
+                ["datasets", "create", "-p", str(tmp), "--no-compress"],
+                username, token, timeout=300,
+            )
 
     return slug
 
@@ -76,7 +83,6 @@ def upload_dataset(zip_path: Path, project_name: str, username: str, token: str)
 # Kernel (montador)
 # ------------------------------------------------------------------
 def _kernel_source(ds_slug: str) -> str:
-    import base64
     montador_path = ROOT / "montador.py"
     montador_b64 = base64.b64encode(montador_path.read_bytes()).decode()
 
@@ -108,7 +114,6 @@ print(f"Video: {{out}} ({{out.stat().st_size/1024/1024:.1f}} MB)")
 
 
 def push_kernel(ds_slug: str, project_name: str, username: str, token: str) -> str:
-    api = _make_api(username, token)
     slug = kernel_slug(project_name)
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -131,7 +136,8 @@ def push_kernel(ds_slug: str, project_name: str, username: str, token: str) -> s
         (tmp / "kernel-metadata.json").write_text(
             json.dumps(metadata, ensure_ascii=False), encoding="utf-8"
         )
-        api.kernels_push(str(tmp))
+
+        _run(["kernels", "push", "-p", str(tmp)], username, token, timeout=60)
 
     return slug
 
@@ -140,14 +146,24 @@ def push_kernel(ds_slug: str, project_name: str, username: str, token: str) -> s
 # Status
 # ------------------------------------------------------------------
 def get_status(k_slug: str, username: str, token: str) -> dict:
-    api = _make_api(username, token)
     page_url = f"https://www.kaggle.com/code/{username}/{k_slug}"
     try:
-        status_obj = api.kernels_status(username, k_slug)
-        status = (status_obj.get("status") or "queued").lower()
-        error_msg = status_obj.get("failureMessage") or ""
-    except Exception:
-        return {"status": "queued", "url": page_url, "video_url": "", "error": ""}
+        result = _run(
+            ["kernels", "status", f"{username}/{k_slug}"],
+            username, token, timeout=30,
+        )
+        # output: "username/slug has status "running""
+        out = result.stdout.lower()
+        if "complete" in out:
+            status = "complete"
+        elif "running" in out:
+            status = "running"
+        elif "error" in out or "fail" in out:
+            status = "error"
+        else:
+            status = "queued"
+    except Exception as exc:
+        return {"status": "queued", "url": page_url, "video_url": "", "error": str(exc)}
 
     video_url = ""
     if status == "complete":
@@ -156,7 +172,7 @@ def get_status(k_slug: str, username: str, token: str) -> dict:
         except Exception:
             video_url = ""
 
-    return {"status": status, "url": page_url, "video_url": video_url, "error": error_msg}
+    return {"status": status, "url": page_url, "video_url": video_url, "error": ""}
 
 
 def get_video_url(k_slug: str, username: str, token: str) -> str:
@@ -168,7 +184,8 @@ def get_video_url(k_slug: str, username: str, token: str) -> str:
         params={"userName": username, "kernelSlug": k_slug},
         timeout=30,
     )
-    resp.raise_for_status()
+    if not resp.ok:
+        return ""
     for f in resp.json().get("files", []):
         if f.get("fileName", "").endswith("video_broll_base.mp4") and f.get("url"):
             return f["url"]
