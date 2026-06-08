@@ -501,20 +501,20 @@ def download_zip(request: Request, project_id: int):
 # ------------------------------------------------------------------
 @app.post("/projects/{project_id}/send-to-kaggle")
 def send_to_kaggle(request: Request, project_id: int):
+    user = require_user(request)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        return JSONResponse({"error": "Projeto não encontrado."}, status_code=404)
+    if not user.get("kaggle_username") or not user.get("kaggle_token"):
+        return JSONResponse({"error": "Configure Kaggle username e token em /configurações."}, status_code=400)
+
+    project_work = WORK_DIR / f"project_{project_id}"
+    zips = list(project_work.glob("*.zip"))
+    if not zips:
+        return JSONResponse({"error": "ZIP não encontrado. Clique em '3 · Preparar pacote' novamente."}, status_code=400)
+    zip_path = zips[0]
+
     try:
-        user = require_user(request)
-        project = db.get_project(project_id, user["id"])
-        if not project:
-            return JSONResponse({"error": "Projeto não encontrado."}, status_code=404)
-        if not user.get("kaggle_username") or not user.get("kaggle_token"):
-            return JSONResponse({"error": "Configure Kaggle username e token em /configurações."}, status_code=400)
-
-        project_work = WORK_DIR / f"project_{project_id}"
-        zips = list(project_work.glob("*.zip"))
-        if not zips:
-            return JSONResponse({"error": "ZIP não encontrado no servidor. Clique em '3 · Preparar pacote' novamente."}, status_code=400)
-        zip_path = zips[0]
-
         ds_slug = kaggle_service.upload_dataset(
             zip_path, project["name"], user["kaggle_username"], user["kaggle_token"]
         )
