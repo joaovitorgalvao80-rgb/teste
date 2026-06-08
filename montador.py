@@ -115,7 +115,7 @@ def drawtext_escape(text: str) -> str:
         .replace("\\", "\\\\")
         .replace("%", "\\%")
         .replace(":", "\\:")
-        .replace("'", "’")
+        .replace("'", r"\'")
         .replace("\n", " ")
         .replace(",", "\\,")
     )
@@ -166,6 +166,17 @@ def drawtext_filter(scene: dict, duration: float, font_file: Optional[str]) -> O
 # ----------------------------------------------------------------------------
 # Entrada: aceita ZIP ou pasta ja descompactada
 # ----------------------------------------------------------------------------
+def safe_extract_zip(zf: zipfile.ZipFile, dest: Path) -> None:
+    dest_root = dest.resolve()
+    for member in zf.infolist():
+        target = (dest / member.filename).resolve()
+        try:
+            target.relative_to(dest_root)
+        except ValueError as exc:
+            raise RuntimeError(f"ZIP contem caminho inseguro: {member.filename}") from exc
+    zf.extractall(dest)
+
+
 def prepare_input(source: Path, workdir: Path, log: Logger) -> Path:
     """Devolve a pasta que contem guia_visual.json + assets/."""
     if source.is_dir():
@@ -176,7 +187,7 @@ def prepare_input(source: Path, workdir: Path, log: Logger) -> Path:
         extract_dir.mkdir(parents=True, exist_ok=True)
         log(f"Descompactando {source.name} -> {extract_dir}")
         with zipfile.ZipFile(source, "r") as zf:
-            zf.extractall(extract_dir)
+            safe_extract_zip(zf, extract_dir)
         # alguns zips tem uma subpasta unica; normaliza
         if not (extract_dir / "guia_visual.json").exists():
             for sub in extract_dir.iterdir():

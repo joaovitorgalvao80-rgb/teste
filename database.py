@@ -424,6 +424,22 @@ def list_assets_by_state(project_id: int, states: list[str]) -> list[dict]:
         conn.close()
 
 
+def asset_belongs_to_user(asset_id: int, user_id: int) -> bool:
+    conn = _connect()
+    try:
+        row = conn.execute(
+            """SELECT 1
+               FROM assets a
+               JOIN scenes s ON a.scene_id = s.id
+               JOIN projects p ON s.project_id = p.id
+               WHERE a.id = ? AND p.user_id = ?""",
+            (asset_id, user_id),
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
 def set_asset_state(asset_id: int, state: str) -> Optional[dict]:
     conn = _connect()
     try:

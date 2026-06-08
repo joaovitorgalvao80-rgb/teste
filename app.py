@@ -7,6 +7,7 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, File, Form, Request, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, FileResponse
@@ -24,18 +25,39 @@ ROOT = Path(__file__).resolve().parent
 # ------------------------------------------------------------------
 # Configuracao via variaveis de ambiente
 # ------------------------------------------------------------------
+def _load_env_file(path: Path = ROOT / ".env") -> None:
+    """Carrega .env local simples sem sobrescrever variaveis ja exportadas."""
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        os.environ[key] = value.strip().strip('"').strip("'")
+
+
+_load_env_file()
+APP_ENV = os.getenv("APP_ENV", "dev").strip().lower()
+
+
 def _require_secret() -> str:
-    key = os.getenv("APP_SECRET_KEY", "")
+    key = os.getenv("APP_SECRET_KEY", "").strip()
+    unsafe = not key or len(key) < 32 or "change" in key.lower() or "troque" in key.lower()
+    if APP_ENV == "production" and unsafe:
+        raise RuntimeError(
+            "APP_SECRET_KEY obrigatoria em producao. "
+            "Use uma chave aleatoria com 32+ caracteres/bytes."
+        )
     if not key:
-        # em dev, avisa e usa chave fixa previsivel para nao perder sessao entre restarts
         key = "dev-insecure-key-change-in-production-please"
-        if not os.getenv("APP_ENV") == "dev":
-            print(
-                "[AVISO] APP_SECRET_KEY nao definida. "
-                "Sessoes nao persistem entre restarts. "
-                "Defina APP_SECRET_KEY no ambiente antes de fazer deploy.",
-                file=sys.stderr,
-            )
+        print(
+            "[AVISO] APP_SECRET_KEY nao definida; usando chave fixa apenas para dev.",
+            file=sys.stderr,
+        )
     return key
 
 DATA_DIR = Path(os.getenv("DATA_DIR", str(ROOT / "data")))
@@ -76,7 +98,7 @@ app.add_middleware(
     SessionMiddleware,
     secret_key=_require_secret(),
     max_age=60 * 60 * 24 * 7,
-    https_only=os.getenv("APP_ENV") == "production",
+    https_only=APP_ENV == "production",
 )
 
 # static/ e criada antes do mount para evitar crash na inicializacao
@@ -125,6 +147,20 @@ def project_config(project: dict) -> dict:
     return cfg
 
 
+def safe_next_url(raw_next: str) -> str:
+    """Aceita apenas redirects internos, evitando open redirect no login."""
+    if not raw_next:
+        return "/projects"
+    parsed = urlparse(raw_next)
+    if parsed.scheme or parsed.netloc or not raw_next.startswith("/") or raw_next.startswith("//"):
+        return "/projects"
+    return raw_next
+
+
+def latest_zip(project_work: Path) -> Optional[Path]:
+    return max(project_work.glob("*.zip"), key=lambda p: p.stat().st_mtime, default=None)
+
+
 # ------------------------------------------------------------------
 # Auth
 # ------------------------------------------------------------------
@@ -151,7 +187,7 @@ def login(
     if not user or not db.verify_password(password, user["password_hash"]):
         return RedirectResponse("/login?error=Credenciais+invalidas", status_code=303)
     request.session["user_id"] = user["id"]
-    return RedirectResponse(next or "/projects", status_code=303)
+    return RedirectResponse(safe_next_url(next), status_code=303)
 
 
 @app.post("/register")
@@ -438,9 +474,11 @@ def regen_keywords(request: Request, scene_db_id: int):
 # ------------------------------------------------------------------
 @app.post("/assets/{asset_id}/state")
 def asset_state(request: Request, asset_id: int, state: str = Form(...)):
-    require_user(request)
+    user = require_user(request)
     if state not in {"pending", "selected", "rejected", "favorite"}:
         raise HTTPException(400, "Estado invalido.")
+    if not db.asset_belongs_to_user(asset_id, user["id"]):
+        raise HTTPException(404)
     updated = db.set_asset_state(asset_id, state)
     if not updated:
         raise HTTPException(404)
@@ -467,18 +505,22 @@ def package(request: Request, project_id: int):
         raise HTTPException(400, "Selecione ao menos um asset antes de gerar o pacote.")
 
     project_work = WORK_DIR / f"project_{project_id}"
-    packager.build_zip(
-        project=project,
-        config=config,
-        scenes=scenes,
-        selected_by_scene=selected_by_scene,
-        rejected_assets=[
-            {"scene_id": r["scene_code"], "source": r["source"], "url": r["download_url"], "keyword": r["keyword"]}
-            for r in rejected
-        ],
-        work_dir=project_work,
-        max_download_mb=config["max_download_mb"],
-    )
+    try:
+        packager.build_zip(
+            project=project,
+            config=config,
+            scenes=scenes,
+            selected_by_scene=selected_by_scene,
+            rejected_assets=[
+                {"scene_id": r["scene_code"], "source": r["source"], "url": r["download_url"], "keyword": r["keyword"]}
+                for r in rejected
+            ],
+            work_dir=project_work,
+            max_download_mb=config["max_download_mb"],
+        )
+    except RuntimeError as exc:
+        db.set_project_status(project_id, "package_failed")
+        raise HTTPException(502, f"Falha ao gerar pacote: {exc}") from exc
     db.set_project_status(project_id, "packaged")
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
@@ -490,10 +532,10 @@ def download_zip(request: Request, project_id: int):
     if not project:
         raise HTTPException(404)
     project_work = WORK_DIR / f"project_{project_id}"
-    zips = list(project_work.glob("*.zip"))
-    if not zips:
+    zip_path = latest_zip(project_work)
+    if not zip_path:
         raise HTTPException(404, "ZIP não encontrado. Gere o pacote primeiro.")
-    return FileResponse(zips[0], filename=zips[0].name, media_type="application/zip")
+    return FileResponse(zip_path, filename=zip_path.name, media_type="application/zip")
 
 
 # ------------------------------------------------------------------
@@ -509,10 +551,9 @@ def send_to_kaggle(request: Request, project_id: int):
         return JSONResponse({"error": "Configure Kaggle username e token em /configurações."}, status_code=400)
 
     project_work = WORK_DIR / f"project_{project_id}"
-    zips = list(project_work.glob("*.zip"))
-    if not zips:
+    zip_path = latest_zip(project_work)
+    if not zip_path:
         return JSONResponse({"error": "ZIP não encontrado. Clique em '3 · Preparar pacote' novamente."}, status_code=400)
-    zip_path = zips[0]
 
     try:
         ds_slug = kaggle_service.upload_dataset(
@@ -548,6 +589,8 @@ def kaggle_status(request: Request, project_id: int):
 @app.get("/projects/{project_id}/kaggle-debug")
 def kaggle_debug(request: Request, project_id: int):
     """Retorna output bruto do CLI para diagnóstico."""
+    if APP_ENV == "production" and os.getenv("ENABLE_KAGGLE_DEBUG") != "1":
+        raise HTTPException(404)
     user = require_user(request)
     project = db.get_project(project_id, user["id"])
     if not project:
@@ -577,4 +620,4 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", "8000"))
     host = os.getenv("HOST", "127.0.0.1")
-    uvicorn.run("app:app", host=host, port=port, reload=os.getenv("APP_ENV") == "dev")
+    uvicorn.run("app:app", host=host, port=port, reload=APP_ENV == "dev")

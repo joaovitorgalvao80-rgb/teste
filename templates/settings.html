@@ -11,10 +11,10 @@
       <h2 class="settings-heading">Assets</h2>
       <p class="muted small">Necessário para buscar vídeos e imagens.</p>
       <label>Pexels API Key
-        <input name="pexels" value="{{ user.pexels_key }}" placeholder="cole sua chave Pexels">
+        <input type="password" autocomplete="off" name="pexels" value="{{ user.pexels_key }}" placeholder="cole sua chave Pexels">
       </label>
       <label>Pixabay API Key
-        <input name="pixabay" value="{{ user.pixabay_key }}" placeholder="cole sua chave Pixabay">
+        <input type="password" autocomplete="off" name="pixabay" value="{{ user.pixabay_key }}" placeholder="cole sua chave Pixabay">
       </label>
     </section>
 
@@ -22,7 +22,7 @@
       <h2 class="settings-heading">Groq <span class="muted small">(IA + transcrição de áudio)</span></h2>
       <p class="muted small">Usado para gerar o mapa visual e transcrever narração.</p>
       <label>Groq API Key
-        <input name="groq" value="{{ user.groq_key }}" placeholder="gsk_...">
+        <input type="password" autocomplete="off" name="groq" value="{{ user.groq_key }}" placeholder="gsk_...">
       </label>
       <label>Modelo de geração
         <select name="groq_model">
@@ -40,7 +40,7 @@
         <input name="kaggle_username" value="{{ user.kaggle_username }}" placeholder="seu username no Kaggle">
       </label>
       <label>Kaggle API Token
-        <input name="kaggle_token" value="{{ user.kaggle_token }}" placeholder="KGAT_...">
+        <input type="password" autocomplete="off" name="kaggle_token" value="{{ user.kaggle_token }}" placeholder="KGAT_...">
       </label>
       <button type="button" class="ghost" onclick="testKaggle(this)" style="margin-top:4px">Verificar credenciais</button>
       <span id="kaggle-test-result" style="font-size:13px;margin-left:10px"></span>

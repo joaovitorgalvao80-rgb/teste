@@ -51,7 +51,8 @@ PT_TO_EN = {
 
 
 def _overlay_from(text: str) -> str:
-    words = re.sub(r"[^A-Za-zA-Yorg0-9\s]", " ", text).split()
+    clean = remove_accents(text)
+    words = re.sub(r"[^A-Za-z0-9\s]", " ", clean).split()
     words = [w for w in words if len(w) > 2][:5]
     return " ".join(words).upper()
 

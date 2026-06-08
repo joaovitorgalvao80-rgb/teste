@@ -208,6 +208,12 @@ def build_zip(
             gscene["selected_asset"] = None
             gscene["source_metadata"] = None
 
+    if not file_by_scene:
+        raise RuntimeError(
+            "nenhum asset selecionado conseguiu ser baixado; "
+            "verifique URLs expiradas, limite de MB ou conexao com Pexels/Pixabay"
+        )
+
     safe_name = _slug(project["name"]) or "asset_pack"
     zip_path = work_dir / f"asset_pack_{safe_name}.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:

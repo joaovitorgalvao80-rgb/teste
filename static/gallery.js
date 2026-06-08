@@ -47,7 +47,7 @@ function updateSelectedCount() {
   document.querySelectorAll("section.scene").forEach((sec) => {
     if (sec.querySelector(".acard.state-selected")) selected++;
   });
-  btn.textContent = `3 · Gerar pacote ZIP (${selected}/${total})`;
+  btn.textContent = `3 · Preparar pacote (${selected}/${total})`;
   btn.disabled = selected === 0;
 }
 
