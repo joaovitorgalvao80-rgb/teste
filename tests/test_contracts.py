@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 os.environ["APP_ENV"] = "dev"
 
@@ -12,7 +13,7 @@ import app as webapp  # noqa: E402
 import database as db  # noqa: E402
 import montador  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
-from services import packager  # noqa: E402
+from services import kaggle_service, packager  # noqa: E402
 from services.script_parser import parse_script  # noqa: E402
 
 
@@ -144,6 +145,57 @@ class DeployContractsTest(unittest.TestCase):
             scenes = parse_script(f"[00:00.0 {separator} 00:01.5] Ola mundo")
             self.assertEqual(len(scenes), 1)
             self.assertEqual(scenes[0]["duration"], 1.5)
+
+    def test_kaggle_status_uses_cli_status_command(self) -> None:
+        calls = []
+        original_run = kaggle_service._run
+        try:
+            def fake_run(args, username, token, **kwargs):
+                calls.append((args, username, token, kwargs))
+                return SimpleNamespace(stdout='user/kernel has status "running"\n', stderr="")
+
+            kaggle_service._run = fake_run
+            result = kaggle_service.get_status("kernel", "user", "token")
+        finally:
+            kaggle_service._run = original_run
+
+        self.assertEqual(result["status"], "running")
+        self.assertEqual(result["url"], "https://www.kaggle.com/code/user/kernel")
+        self.assertEqual(calls[0][0], ["kernels", "status", "user/kernel"])
+
+    def test_kaggle_status_complete_fetches_video_url(self) -> None:
+        original_run = kaggle_service._run
+        original_video = kaggle_service.get_video_url
+        try:
+            kaggle_service._run = lambda *_args, **_kwargs: SimpleNamespace(
+                stdout='user/kernel has status "complete"\n',
+                stderr="",
+            )
+            kaggle_service.get_video_url = lambda *_args, **_kwargs: "https://video.example/out.mp4"
+            result = kaggle_service.get_status("kernel", "user", "token")
+        finally:
+            kaggle_service._run = original_run
+            kaggle_service.get_video_url = original_video
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["video_url"], "https://video.example/out.mp4")
+
+    def test_push_kernel_uses_actual_slug_from_push_output(self) -> None:
+        original_run = kaggle_service._run
+        try:
+            def fake_run(args, username, token, **kwargs):
+                self.assertEqual(args[:2], ["kernels", "push"])
+                return SimpleNamespace(
+                    stdout="Kernel pushed: https://www.kaggle.com/code/user/actual-kaggle-slug\n",
+                    stderr="",
+                )
+
+            kaggle_service._run = fake_run
+            slug, _output = kaggle_service.push_kernel("dataset-slug", "Meu Projeto", "user", "token")
+        finally:
+            kaggle_service._run = original_run
+
+        self.assertEqual(slug, "actual-kaggle-slug")
 
     def test_production_requires_strong_session_secret(self) -> None:
         old_env = webapp.APP_ENV

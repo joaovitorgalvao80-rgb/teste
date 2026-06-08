@@ -34,6 +34,43 @@ def kernel_slug(project_name: str) -> str:
     return ("b-rolls-render-" + _slug(project_name))[:50]
 
 
+def _kernel_ref(username: str, k_slug: str) -> str:
+    return f"{username}/{k_slug}"
+
+
+def _normalize_status(raw_status: str) -> str:
+    raw = re.sub(r"[^a-z]", "", (raw_status or "").lower())
+    if raw in {"complete", "completewithwarning"}:
+        return "complete"
+    if raw == "running":
+        return "running"
+    if raw in {"error", "failed", "cancelacknowledged", "cancelled", "canceled"}:
+        return "error"
+    return "queued"
+
+
+def _parse_cli_status(output: str) -> str:
+    match = re.search(r'\bstatus\s+"([^"]+)"', output or "", flags=re.IGNORECASE)
+    return match.group(1) if match else "queued"
+
+
+def _parse_failure_message(output: str) -> str:
+    match = re.search(r'Failure message:\s*"([^"]+)"', output or "", flags=re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
+def _extract_kernel_slug(push_output: str, username: str, fallback_slug: str) -> str:
+    patterns = [
+        rf"kaggle\.com/code/{re.escape(username)}/([a-z0-9][a-z0-9-]*)",
+        rf"kaggle\.com/{re.escape(username)}/([a-z0-9][a-z0-9-]*)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, push_output or "", flags=re.IGNORECASE)
+        if match:
+            return match.group(1).lower()
+    return fallback_slug
+
+
 def _run(args: list[str], username: str, token: str, **kwargs) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["KAGGLE_USERNAME"] = username
@@ -141,39 +178,26 @@ def push_kernel(ds_slug: str, project_name: str, username: str, token: str) -> t
         r = _run(["kernels", "push", "-p", str(tmp)], username, token, timeout=60)
         push_out = (r.stdout or "") + (r.stderr or "")
 
-    return slug, push_out.strip()
+    return _extract_kernel_slug(push_out, username, slug), push_out.strip()
 
 
 # ------------------------------------------------------------------
-# Status (usa HTTP direta — o CLI 1.6.x tem bug no GetKernelSessionStatus)
+# Status
 # ------------------------------------------------------------------
 def get_status(k_slug: str, username: str, token: str) -> dict:
-    import requests as req
-    from requests.auth import HTTPBasicAuth
-
-    page_url = f"https://www.kaggle.com/code/{username}/{k_slug}"
+    kernel = _kernel_ref(username, k_slug)
+    page_url = f"https://www.kaggle.com/code/{kernel}"
     try:
-        resp = req.get(
-            f"https://www.kaggle.com/api/v1/kernels/{username}/{k_slug}",
-            auth=HTTPBasicAuth(username, token),
-            timeout=30,
-        )
-        if resp.status_code == 404:
-            return {"status": "error", "url": page_url, "video_url": "",
-                    "error": "Kernel não encontrado no Kaggle (404)"}
-        resp.raise_for_status()
-        data = resp.json()
-        raw = (data.get("status") or data.get("currentRunningStatus") or "queued").lower()
-        if raw in ("complete", "completewithwarning"):
-            status = "complete"
-        elif raw in ("running",):
-            status = "running"
-        elif raw in ("error", "failed", "cancelacknowledged", "cancelled"):
-            status = "error"
-        else:
-            status = "queued"
-    except Exception as exc:
-        return {"status": "error", "url": page_url, "video_url": "", "error": str(exc)[:400]}
+        result = _run(["kernels", "status", kernel], username, token, timeout=60)
+        output = (result.stdout or "") + (result.stderr or "")
+        status = _normalize_status(_parse_cli_status(output))
+        error = _parse_failure_message(output) if status == "error" else ""
+    except RuntimeError as exc:
+        err = str(exc)
+        low = err.lower()
+        if "404" in low or "not found" in low:
+            err = "Kernel nao encontrado no Kaggle. Reenvie o render ou confira o link do notebook."
+        return {"status": "error", "url": page_url, "video_url": "", "error": err[:400]}
 
     video_url = ""
     if status == "complete":
@@ -182,7 +206,7 @@ def get_status(k_slug: str, username: str, token: str) -> dict:
         except Exception:
             video_url = ""
 
-    return {"status": status, "url": page_url, "video_url": video_url, "error": ""}
+    return {"status": status, "url": page_url, "video_url": video_url, "error": error}
 
 
 def get_video_url(k_slug: str, username: str, token: str) -> str:

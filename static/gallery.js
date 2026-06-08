@@ -153,7 +153,7 @@ document.addEventListener("DOMContentLoaded", () => {
   if (bar && txt && bar.style.display !== "none") {
     const pid = window.location.pathname.split("/").pop();
     const status = txt.textContent.trim().toLowerCase();
-    if (status && !["complete", "error", "none", "—"].includes(status)) {
+    if (status && !["complete", "pronto ✓", "none", "—"].includes(status)) {
       startKagglePolling(pid);
     }
   }
