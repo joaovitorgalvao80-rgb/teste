@@ -1,4 +1,4 @@
-"""Sistema 1 — Plataforma Web de Coleta e Curadoria de B-rolls."""
+"""NWRCH Studio - plataforma web de coleta e curadoria de B-rolls."""
 from __future__ import annotations
 
 import json
@@ -92,7 +92,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="B-rolls — Plataforma de Curadoria", lifespan=lifespan)
+app = FastAPI(title="NWRCH Studio", lifespan=lifespan)
 
 app.add_middleware(
     SessionMiddleware,
@@ -544,7 +544,7 @@ def download_zip(request: Request, project_id: int):
 
 
 # ------------------------------------------------------------------
-# Kaggle — enviar para render
+# Kaggle - enviar para render
 # ------------------------------------------------------------------
 @app.post("/projects/{project_id}/send-to-kaggle")
 def send_to_kaggle(request: Request, project_id: int):
@@ -558,7 +558,7 @@ def send_to_kaggle(request: Request, project_id: int):
     project_work = WORK_DIR / f"project_{project_id}"
     zip_path = latest_zip(project_work)
     if not zip_path:
-        return JSONResponse({"error": "ZIP não encontrado. Clique em '3 · Preparar pacote' novamente."}, status_code=400)
+        return JSONResponse({"error": "ZIP não encontrado. Clique em '03 Preparar pacote' novamente."}, status_code=400)
 
     try:
         ds_slug = kaggle_service.upload_dataset(

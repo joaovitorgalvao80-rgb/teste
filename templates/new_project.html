@@ -1,7 +1,13 @@
 {% extends "base.html" %}
-{% block title %}Novo projeto — B-rolls{% endblock %}
+{% block title %}Novo projeto | NWRCH Studio{% endblock %}
 {% block content %}
-<h1>Novo projeto</h1>
+<div class="page-head">
+  <div>
+    <span class="eyebrow">Novo workspace</span>
+    <h1>Novo projeto</h1>
+    <p class="muted">Cole o roteiro, defina o enquadramento e deixe o NWRCH montar o mapa visual.</p>
+  </div>
+</div>
 
 <div class="card">
   <form method="post" action="/projects/new" id="new-project-form">
@@ -14,7 +20,7 @@
       <div class="transcribe-header">
         <span class="small muted">Tem a narração gravada?</span>
         <label class="audio-pick-btn" for="audio-upload">
-          🎙 Transcrever áudio automaticamente
+          Transcrever áudio automaticamente
           <input type="file" id="audio-upload" accept="audio/*,video/*" style="display:none">
         </label>
       </div>
@@ -26,7 +32,7 @@
 
     <label>Roteiro ou transcrição com timestamps
       <textarea name="script" id="script-area" rows="12" required
-        placeholder="[00:00.0 - 00:04.2] Você sabia que existe uma forma barata de controlar mosquito?&#10;[00:04.2 - 00:08.0] O problema é que quase ninguém fala disso.&#10;&#10;Ou cole um roteiro em texto corrido — o sistema fatia em cenas automaticamente."></textarea>
+        placeholder="[00:00.0 - 00:04.2] Você sabia que existe uma forma barata de controlar mosquito?&#10;[00:04.2 - 00:08.0] O problema é que quase ninguém fala disso.&#10;&#10;Ou cole um roteiro em texto corrido; o sistema fatia em cenas automaticamente."></textarea>
     </label>
     <p class="muted small">Formato ideal: <code>[mm:ss.s - mm:ss.s] fala</code>. Sem timestamps o sistema corta em blocos de duração média.</p>
 
@@ -46,7 +52,7 @@
     </div>
 
     <div class="grid-2">
-      <label>Duração média por cena (s) — usada sem timestamps
+      <label>Duração média por cena (s) - usada sem timestamps
         <input name="scene_duration" type="number" step="0.5" min="2" max="8" value="4">
       </label>
       <label class="check">

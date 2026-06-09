@@ -1,4 +1,4 @@
-// Curadoria interativa da galeria estilo Pinterest.
+// Galeria interativa do NWRCH Studio.
 
 async function postForm(url, data) {
   const body = new URLSearchParams(data || {});
@@ -19,6 +19,8 @@ async function setState(assetId, state) {
     // limpa classes de estado e aplica a nova
     card.classList.remove("state-pending", "state-selected", "state-rejected", "state-favorite");
     card.classList.add("state-" + res.state);
+    const selectButton = card.querySelector(".sel");
+    if (selectButton) selectButton.textContent = res.state === "selected" ? "Selecionado" : "Selecionar";
 
     if (res.state === "selected") {
       // uma cena tem 1 selecionado: rebaixa visualmente os irmaos
@@ -27,6 +29,8 @@ async function setState(assetId, state) {
         if (el !== card) {
           el.classList.remove("state-selected");
           el.classList.add("state-pending");
+          const siblingButton = el.querySelector(".sel");
+          if (siblingButton) siblingButton.textContent = "Selecionar";
         }
       });
       updateSelectedCount();
@@ -47,7 +51,7 @@ function updateSelectedCount() {
   document.querySelectorAll("section.scene").forEach((sec) => {
     if (sec.querySelector(".acard.state-selected")) selected++;
   });
-  btn.textContent = `3 · Preparar pacote (${selected}/${total})`;
+  btn.textContent = `03 Preparar pacote (${selected}/${total})`;
   btn.disabled = selected === 0;
 }
 
@@ -73,12 +77,12 @@ async function searchMore(sceneId, btn, media) {
 let _kagglePolling = null;
 
 const KAGGLE_LABELS = {
-  queued: "na fila…",
-  running: "renderizando…",
-  complete: "pronto ✓",
-  error: "erro ✗",
+  queued: "na fila...",
+  running: "renderizando...",
+  complete: "pronto",
+  error: "erro",
   cancelacknowledged: "cancelado",
-  none: "—",
+  none: "-",
 };
 
 function renderKaggleState(data) {
@@ -87,7 +91,7 @@ function renderKaggleState(data) {
   const link = document.getElementById("kaggle-link");
   const dl = document.getElementById("kaggle-video");
   const status = (data.status || "").toLowerCase();
-  let label = KAGGLE_LABELS[status] || status || "verificando…";
+  let label = KAGGLE_LABELS[status] || status || "verificando...";
   if (status === "error" && data.error) label = "erro: " + data.error.slice(0, 200);
   if (txt) txt.textContent = label;
   if (dot) {
@@ -112,20 +116,20 @@ async function sendToKaggle(projectId) {
   const btn = document.getElementById("btn-kaggle");
   const bar = document.getElementById("kaggle-status-bar");
   btn.disabled = true;
-  btn.textContent = "Enviando…";
+  btn.textContent = "Enviando...";
   bar.style.display = "";
   renderKaggleState({ status: "queued" });
-  document.getElementById("kaggle-status-text").textContent = "enviando ZIP…";
+  document.getElementById("kaggle-status-text").textContent = "enviando ZIP...";
   try {
     const res = await postForm(`/projects/${projectId}/send-to-kaggle`, {});
     renderKaggleState({ status: res.status, url: res.kernel_url });
-    btn.textContent = "4 · Renderizar no Kaggle";
+    btn.textContent = "04 Renderizar no Kaggle";
     startKagglePolling(projectId);
   } catch (e) {
     renderKaggleState({ status: "error", error: e.message });
     document.getElementById("kaggle-status-text").textContent = "erro: " + e.message;
     btn.disabled = false;
-    btn.textContent = "4 · Renderizar no Kaggle";
+    btn.textContent = "04 Renderizar no Kaggle";
   }
 }
 
@@ -146,14 +150,14 @@ function startKagglePolling(projectId) {
   _kagglePolling = setInterval(tick, 20000);
 }
 
-// inicia polling se já tinha kernel rodando
+// Inicia polling se ja tinha kernel rodando.
 document.addEventListener("DOMContentLoaded", () => {
   const bar = document.getElementById("kaggle-status-bar");
   const txt = document.getElementById("kaggle-status-text");
   if (bar && txt && bar.style.display !== "none") {
     const pid = window.location.pathname.split("/").pop();
     const status = txt.textContent.trim().toLowerCase();
-    if (status && !["complete", "pronto ✓", "none", "—"].includes(status)) {
+    if (status && !["complete", "pronto", "none", "-"].includes(status)) {
       startKagglePolling(pid);
     }
   }

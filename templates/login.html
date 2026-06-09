@@ -1,25 +1,40 @@
 {% extends "base.html" %}
-{% block title %}Entrar — B-rolls{% endblock %}
+{% block title %}Entrar | NWRCH Studio{% endblock %}
 {% block content %}
 <div class="auth-wrap">
-  <div class="card auth-card">
-    <h1>Entrar</h1>
+  <section class="auth-intro">
+    <span class="eyebrow">NWRCH Studio</span>
+    <h1>Console de produção visual com IA.</h1>
+    <p>Transforme roteiro em mapa visual, assets aprovados, pacote e render final no Kaggle sem sair do fluxo.</p>
+    <div class="auth-stats">
+      <span><strong>01</strong>Mapa visual</span>
+      <span><strong>02</strong>Asset curation</span>
+      <span><strong>03</strong>Kaggle render</span>
+    </div>
+  </section>
+
+  <div class="auth-stack">
+  <div class="card auth-card auth-primary">
+    <span class="eyebrow">Acessar workspace</span>
+    <h2>Entrar</h2>
     {% if error %}<p class="alert">{{ error }}</p>{% endif %}
     <form method="post" action="/login">
-      <label>Usuario<input name="username" required autofocus></label>
+      <label>Usuário<input name="username" required autofocus></label>
       <label>Senha<input name="password" type="password" required></label>
       <button class="primary" type="submit">Entrar</button>
     </form>
   </div>
 
   <div class="card auth-card">
+    <span class="eyebrow">Primeiro acesso</span>
     <h2>Criar conta</h2>
-    <p class="muted">Primeira vez? Crie um usuario e cadastre suas APIs.</p>
+    <p class="muted">Crie um usuário local e cadastre suas APIs para começar.</p>
     <form method="post" action="/register">
-      <label>Usuario<input name="username" required></label>
+      <label>Usuário<input name="username" required></label>
       <label>Senha (min 4)<input name="password" type="password" required minlength="4"></label>
       <button class="secondary" type="submit">Criar e continuar</button>
     </form>
+  </div>
   </div>
 </div>
 {% endblock %}

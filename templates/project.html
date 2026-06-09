@@ -1,33 +1,44 @@
 {% extends "base.html" %}
-{% block title %}{{ project.name }} — B-rolls{% endblock %}
+{% block title %}{{ project.name }} | NWRCH Studio{% endblock %}
 {% block content %}
-<div class="row-between">
+<div class="page-head project-head">
   <div>
-    <a class="muted small" href="/projects">&larr; Projetos</a>
-    <h1>{{ project.name }} <span class="badge status-{{ project.status }}">{{ project.status }}</span></h1>
+    <a class="muted small back-link" href="/projects">&larr; Projetos</a>
+    <span class="eyebrow">Production console</span>
+    <h1>{{ project.name }}</h1>
+    <p class="muted">Mapa visual, curadoria de assets, pacote e render final.</p>
+  </div>
+  <div class="head-status">
+    <span class="badge status-{{ project.status }}">{{ project.status }}</span>
+    <span class="mini-stat"><strong>{{ scenes|length }}</strong> cenas</span>
+    <span class="mini-stat"><strong>{{ selected_count }}</strong> selecionadas</span>
   </div>
 </div>
 
 <div class="card toolbar">
+  <div class="toolbar-title">
+    <span class="eyebrow">Pipeline</span>
+    <h2>Fluxo de produção</h2>
+  </div>
   <div class="steps">
     <form method="post" action="/projects/{{ project.id }}/generate-map">
-      <button class="primary" type="submit">1 · Gerar mapa visual</button>
+      <button class="primary" type="submit"><span>01</span> Gerar mapa visual</button>
     </form>
     <form method="post" action="/projects/{{ project.id }}/search">
-      <button class="secondary" type="submit" {% if not scenes %}disabled{% endif %}>2 · Buscar assets</button>
+      <button class="secondary" type="submit" {% if not scenes %}disabled{% endif %}><span>02</span> Buscar assets</button>
     </form>
     <form method="post" action="/projects/{{ project.id }}/package">
       <button class="accent" type="submit" {% if selected_count == 0 %}disabled{% endif %}>
-        3 · Preparar pacote ({{ selected_count }}/{{ scenes|length }})
+        <span>03</span> Preparar pacote ({{ selected_count }}/{{ scenes|length }})
       </button>
     </form>
     {% if project.status == 'packaged' %}
-    <a class="btn ghost small" href="/projects/{{ project.id }}/download-zip" style="padding:8px 12px;font-size:13px;border:1px solid var(--border-2);color:var(--muted);border-radius:8px;">⬇ ZIP</a>
+    <a class="btn ghost small" href="/projects/{{ project.id }}/download-zip">Baixar ZIP</a>
     {% endif %}
     <button class="kaggle-btn" id="btn-kaggle"
             onclick="sendToKaggle({{ project.id }})"
             {% if project.status not in ['packaged'] %}disabled{% endif %}>
-      4 · Renderizar no Kaggle
+      <span>04</span> Renderizar no Kaggle
     </button>
   </div>
   <div id="kaggle-status-bar" class="kaggle-panel"
@@ -39,7 +50,7 @@
         <span id="kaggle-status-text" class="kaggle-state">{{ project.kaggle_status or 'verificando...' }}</span>
       </div>
       <div class="kaggle-links">
-        <a id="kaggle-video" class="btn kaggle-dl" href="#" download style="display:none">⬇ Baixar vídeo</a>
+        <a id="kaggle-video" class="btn kaggle-dl" href="#" download style="display:none">Baixar vídeo</a>
         <a id="kaggle-link" href="https://www.kaggle.com/code/{{ user.kaggle_username }}/{{ project.kaggle_kernel_slug }}" target="_blank" class="small muted">abrir no Kaggle ↗</a>
       </div>
     </div>
@@ -51,7 +62,9 @@
 
 {% if not scenes %}
   <div class="card empty">
-    <p>Sem mapa visual ainda. Clique em <b>Gerar mapa visual</b> para dividir o roteiro em cenas e gerar keywords.</p>
+    <span class="eyebrow">Mapa visual</span>
+    <h2>Sem cenas ainda.</h2>
+    <p>Clique em <b>Gerar mapa visual</b> para dividir o roteiro em cenas e gerar keywords.</p>
   </div>
 {% endif %}
 
@@ -81,7 +94,7 @@
           <button class="ghost" onclick="searchMore({{ scene.id }}, this, 'video')">+ vídeos</button>
           <button class="ghost" onclick="searchMore({{ scene.id }}, this, 'image')">+ imagens</button>
         </div>
-        <button class="ghost" onclick="regenKeywords({{ scene.id }})">↻ novas keywords</button>
+        <button class="ghost" onclick="regenKeywords({{ scene.id }})">Novas keywords</button>
       </div>
     </div>
 
@@ -105,8 +118,8 @@
             {% if a.author %}<a class="muted small" href="{{ a.author_url }}" target="_blank" rel="noopener">{{ a.author }}</a>{% endif %}
           </div>
           <div class="actions">
-            <button class="sel" onclick="setState({{ a.id }}, 'selected')">Selecionar</button>
-            <button class="fav" onclick="setState({{ a.id }}, 'favorite')">★</button>
+            <button class="sel" onclick="setState({{ a.id }}, 'selected')">{% if a.state == 'selected' %}Selecionado{% else %}Selecionar{% endif %}</button>
+            <button class="fav" onclick="setState({{ a.id }}, 'favorite')" aria-label="Favoritar">★</button>
             <button class="rej" onclick="setState({{ a.id }}, 'rejected')">Rejeitar</button>
           </div>
         </article>

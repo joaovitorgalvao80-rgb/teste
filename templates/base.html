@@ -3,18 +3,24 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}B-rolls — Curadoria{% endblock %}</title>
+  <title>{% block title %}NWRCH Studio{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="/projects">▶ B-rolls <span>Curadoria</span></a>
+    <a class="brand" href="/projects" aria-label="NWRCH Studio">
+      <span class="brand-mark">N</span>
+      <span class="brand-copy">
+        <strong>NWRCH Studio</strong>
+        <em>AI B-roll Production</em>
+      </span>
+    </a>
     <nav>
       {% if user %}
         <a href="/projects">Projetos</a>
         <a href="/settings">Configurações</a>
         <span class="who">{{ user.username }}</span>
-        <a href="/logout" style="color:var(--muted-2);font-size:13px;padding:6px 10px;">Sair</a>
+        <a class="logout-link" href="/logout">Sair</a>
       {% endif %}
     </nav>
   </header>
