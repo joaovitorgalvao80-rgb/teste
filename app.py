@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -152,6 +153,9 @@ async def lifespan(_app: FastAPI):
     db.DATA_DIR = DATA_DIR
     db.DB_PATH = DATA_DIR / "plataforma.db"
     db.init_db()
+    stale = db.fail_stale_jobs()
+    if stale:
+        print(f"[startup] {stale} job(s) pendentes de processo anterior marcados como erro")
     yield
 
 
@@ -174,8 +178,19 @@ templates = Jinja2Templates(directory=str(ROOT / "templates"))
 # ------------------------------------------------------------------
 # Error handlers (mostra pagina HTML em vez de JSON cru)
 # ------------------------------------------------------------------
+def _wants_json(request: Request) -> bool:
+    """Detecta chamadas fetch/XHR para responder JSON em vez de pagina HTML."""
+    fetch_mode = request.headers.get("sec-fetch-mode", "")
+    if fetch_mode and fetch_mode != "navigate":
+        return True
+    return "application/json" in request.headers.get("accept", "")
+
+
 @app.exception_handler(StarletteHTTPException)
 async def html_error_handler(request: Request, exc: StarletteHTTPException):
+    if _wants_json(request):
+        detail = exc.detail if exc.status_code != 401 else "Sessao expirada. Faca login novamente."
+        return JSONResponse({"detail": detail}, status_code=exc.status_code)
     if exc.status_code == 401:
         return RedirectResponse(f"/login?next={request.url.path}", status_code=303)
     user = current_user(request)
@@ -244,6 +259,9 @@ def safe_next_url(raw_next: str) -> str:
     """Aceita apenas redirects internos, evitando open redirect no login."""
     if not raw_next:
         return "/projects"
+    # navegadores tratam '\' como '/': "/\evil.com" viraria "//evil.com"
+    if "\\" in raw_next or any(ord(ch) < 0x20 for ch in raw_next):
+        return "/projects"
     parsed = urlparse(raw_next)
     if parsed.scheme or parsed.netloc or not raw_next.startswith("/") or raw_next.startswith("//"):
         return "/projects"
@@ -263,6 +281,7 @@ NARRATION_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
 AVATAR_EXTS = {".webm", ".mov", ".mp4"}
 MEDIA_KINDS = {"narration": NARRATION_EXTS, "avatar": AVATAR_EXTS}
 MAX_MEDIA_UPLOAD_MB = 200
+MAX_TRANSCRIBE_UPLOAD_MB = 500  # videos sao convertidos em MP3 antes de salvar/transcrever
 
 
 def project_inputs_dir(project_id: int) -> Path:
@@ -303,17 +322,20 @@ def prepare_narration_media(raw: bytes, filename: str) -> tuple[bytes, str]:
 
     A tela de novo projeto aceita audio ou video para transcricao; para o
     render final guardamos audio. Quando vier video, extraimos MP3.
+    Video usa o mesmo teto da transcricao (500 MB), ja que so o MP3 e salvo.
     """
-    if len(raw) > MAX_MEDIA_UPLOAD_MB * 1024 * 1024:
-        raise HTTPException(400, f"Arquivo muito grande (maximo {MAX_MEDIA_UPLOAD_MB} MB).")
     suffix = Path(filename or "").suffix.lower()
     if suffix in NARRATION_EXTS:
+        if len(raw) > MAX_MEDIA_UPLOAD_MB * 1024 * 1024:
+            raise HTTPException(400, f"Arquivo muito grande (maximo {MAX_MEDIA_UPLOAD_MB} MB).")
         return raw, suffix
     if suffix in _VIDEO_EXTS:
+        if len(raw) > MAX_TRANSCRIBE_UPLOAD_MB * 1024 * 1024:
+            raise HTTPException(400, f"Video muito grande (maximo {MAX_TRANSCRIBE_UPLOAD_MB} MB).")
         audio_bytes, out_name = _extract_audio_bytes(raw, filename or "narration.mp4")
         return audio_bytes, Path(out_name).suffix.lower() or ".mp3"
     if raw:
-        raise HTTPException(400, f"Extensao nao suportada para narracao: use audio ou video comum.")
+        raise HTTPException(400, "Extensao nao suportada para narracao: use audio ou video comum.")
     return b"", ""
 
 
@@ -356,14 +378,14 @@ def run_kaggle_send_job(
     zip_path = Path(zip_path_str)
     try:
         db.update_job(job_id, status="running", message="Enviando dataset para o Kaggle")
-        ds_slug = kaggle_service.upload_dataset(zip_path, project_name, username, token)
+        ds_slug = kaggle_service.upload_dataset(zip_path, project_name, username, token, project_id=project_id)
         db.update_job(
             job_id,
             status="running",
             message="Criando kernel de render no Kaggle",
             result={"dataset_slug": ds_slug},
         )
-        k_slug, push_out = kaggle_service.push_kernel(ds_slug, project_name, username, token)
+        k_slug, push_out = kaggle_service.push_kernel(ds_slug, project_name, username, token, project_id=project_id)
         db.update_kaggle_job(project_id, ds_slug, k_slug, "queued")
         kernel_url = f"https://www.kaggle.com/code/{username}/{k_slug}"
         db.finish_job(
@@ -406,6 +428,7 @@ def login(
     user = db.get_user_by_name(username.strip())
     if not user or not db.verify_password(password, user["password_hash"]):
         return RedirectResponse("/login?error=Credenciais+invalidas", status_code=303)
+    request.session.clear()  # evita session fixation
     request.session["user_id"] = user["id"]
     return RedirectResponse(safe_next_url(next), status_code=303)
 
@@ -418,6 +441,7 @@ def register(request: Request, username: str = Form(...), password: str = Form(.
     if db.get_user_by_name(username):
         return RedirectResponse("/login?error=Usuario+ja+existe", status_code=303)
     uid = db.create_user(username, password)
+    request.session.clear()
     request.session["user_id"] = uid
     return RedirectResponse("/settings", status_code=303)
 
@@ -497,6 +521,12 @@ def _extract_audio_bytes(raw: bytes, filename: str) -> tuple[bytes, str]:
     is_video = ext in _VIDEO_EXTS
     if not is_video and len(raw) <= _GROQ_MAX_BYTES:
         return raw, filename
+    if not shutil.which("ffmpeg"):
+        raise HTTPException(
+            500,
+            "FFmpeg não encontrado no servidor; necessário para extrair áudio de vídeo. "
+            "Instale o FFmpeg ou envie um arquivo de áudio (mp3/wav) direto.",
+        )
     with tempfile.TemporaryDirectory() as tmp:
         src = Path(tmp) / ("input" + (ext or ".mp4"))
         src.write_bytes(raw)
@@ -525,8 +555,8 @@ async def transcribe_audio(request: Request, audio: UploadFile = File(...)):
     if not user.get("groq_key"):
         raise HTTPException(400, "Configure a chave Groq em /settings para usar transcrição.")
     raw = await audio.read()
-    if len(raw) > 500 * 1024 * 1024:
-        raise HTTPException(400, "Arquivo muito grande (máximo 500 MB para upload).")
+    if len(raw) > MAX_TRANSCRIBE_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(400, f"Arquivo muito grande (máximo {MAX_TRANSCRIBE_UPLOAD_MB} MB para upload).")
     try:
         data, fname = _extract_audio_bytes(raw, audio.filename or "audio.mp4")
         transcript = groq_service.transcribe_audio(data, fname, user["groq_key"])
@@ -599,8 +629,9 @@ def project_page(request: Request, project_id: int):
         raise HTTPException(404)
     config = project_config(project)
     scenes = db.list_scenes(project_id)
+    assets_by_scene = db.list_assets_for_project(project_id)
     for s in scenes:
-        s["assets"] = db.list_assets(s["id"])
+        s["assets"] = assets_by_scene.get(s["id"], [])
         s["selected"] = next((a for a in s["assets"] if a["state"] == "selected"), None)
     selected_count = sum(1 for s in scenes if s.get("selected"))
     project_work = project_work_dir(project_id)
@@ -741,7 +772,11 @@ def regen_keywords(request: Request, scene_db_id: int):
         raise HTTPException(404)
     config = project_config(project)
     kws = groq_service.regenerate_keywords(
-        scene.get("narration", ""), scene.get("visual_goal", ""), user["groq_key"], config["visual_style"]
+        scene.get("narration", ""),
+        scene.get("visual_goal", ""),
+        user["groq_key"],
+        config["visual_style"],
+        model=user.get("groq_model") or groq_service.DEFAULT_MODEL,
     )
     db.update_scene_keywords(scene_db_id, kws)
     return JSONResponse({"keywords": kws})
@@ -834,15 +869,15 @@ def package(request: Request, project_id: int):
     avatar_file = find_input_media(project_id, "avatar")
     job_id = db.create_job(user["id"], "package", project_id, "Preparando pacote ZIP")
     db.update_job(job_id, status="running", message="Gerando edit_plan e baixando assets")
-    plan = edit_plan.build_edit_plan_with_llm(
-        project,
-        config,
-        scenes,
-        openrouter_key=user.get("openrouter_key", ""),
-        narration_file=narration_file.name if narration_file else "",
-        avatar_file=avatar_file.name if avatar_file else "",
-    )
     try:
+        plan = edit_plan.build_edit_plan_with_llm(
+            project,
+            config,
+            scenes,
+            openrouter_key=user.get("openrouter_key", ""),
+            narration_file=narration_file.name if narration_file else "",
+            avatar_file=avatar_file.name if avatar_file else "",
+        )
         zip_path = packager.build_zip(
             project=project,
             config=config,
@@ -857,7 +892,7 @@ def package(request: Request, project_id: int):
             edit_plan=plan,
             extra_files=[f for f in (narration_file, avatar_file) if f],
         )
-    except RuntimeError as exc:
+    except Exception as exc:  # noqa: BLE001 - job nunca pode ficar "running" orfao
         db.set_project_status(project_id, "package_failed")
         db.fail_job(job_id, "Falha ao gerar pacote", str(exc))
         raise HTTPException(502, f"Falha ao gerar pacote: {exc}") from exc
@@ -893,7 +928,7 @@ def send_to_kaggle(request: Request, project_id: int, background_tasks: Backgrou
     if not project:
         return JSONResponse({"error": "Projeto não encontrado."}, status_code=404)
     if not user.get("kaggle_username") or not user.get("kaggle_token"):
-        return JSONResponse({"error": "Configure Kaggle username e token em /configurações."}, status_code=400)
+        return JSONResponse({"error": "Configure Kaggle username e token em /settings."}, status_code=400)
 
     if project.get("status") != "packaged":
         return JSONResponse(
@@ -1040,6 +1075,8 @@ def kaggle_status(request: Request, project_id: int):
     k_slug = project.get("kaggle_kernel_slug", "")
     if not k_slug:
         return JSONResponse({"status": "none"})
+    if not user.get("kaggle_username") or not user.get("kaggle_token"):
+        return JSONResponse({"status": "error", "error": "Credenciais Kaggle nao configuradas em /settings."})
     try:
         info = kaggle_service.get_status(k_slug, user["kaggle_username"], user["kaggle_token"])
         if info.get("status") == "complete":
@@ -1123,8 +1160,7 @@ def kaggle_debug(request: Request, project_id: int):
     k_slug = project.get("kaggle_kernel_slug", "")
     ds_slug = project.get("kaggle_dataset_slug", "")
     out = {}
-    import subprocess, sys
-    env = {**__import__("os").environ, "KAGGLE_USERNAME": u, "KAGGLE_KEY": t}
+    env = {**os.environ, "KAGGLE_USERNAME": u, "KAGGLE_KEY": t}
     for label, args in [
         ("kernels_files", ["kernels", "files", f"{u}/{k_slug}", "-v", "--page-size", "200"]),
         ("kernels_list", ["kernels", "list", "--mine"]),

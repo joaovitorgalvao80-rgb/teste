@@ -14,11 +14,12 @@ from __future__ import annotations
 import re
 import unicodedata
 
-# [00:00.0 - 00:04.2] texto   /  [00:00 - 00:04] texto  / [1:02.5 - 1:08] texto
+# [00:00.0 - 00:04.2] texto / [00:00 - 00:04] texto / [1:02.5 - 1:08] texto
+# minutos com ate 3 digitos: transcricoes de videos longos passam de 99 min
 TIMESTAMP_RE = re.compile(
-    r"\[\s*(?P<start>\d{1,2}:\d{2}(?:[.,]\d+)?)\s*"
+    r"\[\s*(?P<start>\d{1,3}:\d{2}(?:[.,]\d+)?)\s*"
     "[-\u2013\u2014]"
-    r"\s*(?P<end>\d{1,2}:\d{2}(?:[.,]\d+)?)\s*\]\s*(?P<text>.*)"
+    r"\s*(?P<end>\d{1,3}:\d{2}(?:[.,]\d+)?)\s*\]\s*(?P<text>.*)"
 )
 
 

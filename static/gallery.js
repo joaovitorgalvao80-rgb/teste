@@ -51,7 +51,7 @@ function updateSelectedCount() {
   document.querySelectorAll("section.scene").forEach((sec) => {
     if (sec.querySelector(".acard.state-selected")) selected++;
   });
-  btn.textContent = `03 Preparar pacote (${selected}/${total})`;
+  btn.innerHTML = `<span>03</span> Preparar pacote (${selected}/${total})`;
   btn.disabled = total === 0 || selected !== total;
 }
 
@@ -117,11 +117,13 @@ function renderKaggleState(data) {
   }
   if (hfState && data.hyperframes) {
     const hf = data.hyperframes;
+    const extras = [];
+    if (hf.audio) extras.push("com narração");
+    if (hf.avatar) extras.push("com avatar");
     if (hf.status === "complete") {
-      let extras = [];
-      if (hf.audio) extras.push("com narração");
-      if (hf.avatar) extras.push("com avatar");
       hfState.textContent = "master pronto (" + (hf.render_mode || "mp4") + (extras.length ? ", " + extras.join(", ") : "") + ")";
+    } else if (hf.status === "fallback_complete") {
+      hfState.textContent = "master via fallback FFmpeg" + (extras.length ? " (" + extras.join(", ") + ")" : "") + " — HyperFrames falhou";
     } else if (hf.status === "error") {
       hfState.textContent = "erro no refino — base preservada: " + String(hf.error || "").slice(0, 160);
     }
@@ -162,10 +164,12 @@ function renderJob(job) {
 }
 
 function startJobPolling(jobId, projectId, btn) {
+  let failures = 0;
   const tick = async () => {
     try {
       const res = await fetch(`/jobs/${jobId}`);
       const job = await res.json();
+      failures = 0;
       renderJob(job);
       if (job.status === "complete") {
         const kernelUrl = job.result && job.result.kernel_url;
@@ -180,6 +184,12 @@ function startJobPolling(jobId, projectId, btn) {
       }
       setTimeout(tick, 2500);
     } catch (e) {
+      // falha transitoria de rede nao deve matar o polling de um job em andamento
+      failures += 1;
+      if (failures < 4) {
+        setTimeout(tick, 4000);
+        return;
+      }
       renderKaggleState({ status: "error", error: e.message });
       if (btn) btn.disabled = false;
     }

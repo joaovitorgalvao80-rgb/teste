@@ -22,9 +22,18 @@ DEFAULT_MODEL = "llama-3.3-70b-versatile"
 GROQ_MODELS = [
     ("llama-3.3-70b-versatile", "Llama 3.3 70B — melhor qualidade (padrão)"),
     ("llama-3.1-8b-instant",    "Llama 3.1 8B Instant — mais rápido"),
-    ("gemma2-9b-it",            "Gemma 2 9B — Google"),
-    ("mixtral-8x7b-32768",      "Mixtral 8x7B — contexto longo"),
+    ("openai/gpt-oss-120b",     "GPT-OSS 120B — raciocínio forte"),
+    ("openai/gpt-oss-20b",      "GPT-OSS 20B — rápido e barato"),
 ]
+# Modelos removidos da API da Groq; redireciona para o padrao em vez de falhar.
+DECOMMISSIONED_MODELS = {"mixtral-8x7b-32768", "gemma2-9b-it", "llama3-70b-8192", "llama3-8b-8192"}
+
+
+def resolve_model(model: str) -> str:
+    model = (model or "").strip()
+    if not model or model in DECOMMISSIONED_MODELS:
+        return DEFAULT_MODEL
+    return model
 
 PT_TO_EN = {
     "dengue": "dengue fever Brazil mosquito",
@@ -143,7 +152,7 @@ def generate_briefs(
                 GROQ_URL,
                 headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
                 json={
-                    "model": model,
+                    "model": resolve_model(model),
                     "messages": [
                         {"role": "user", "content": _build_prompt(scenes, style, avatar_safe_area, safe_ratio)}
                     ],
@@ -234,7 +243,13 @@ def transcribe_audio(audio_bytes: bytes, filename: str, groq_key: str) -> str:
     return "\n".join(lines)
 
 
-def regenerate_keywords(narration: str, visual_goal: str, groq_key: str, style: str) -> list[str]:
+def regenerate_keywords(
+    narration: str,
+    visual_goal: str,
+    groq_key: str,
+    style: str,
+    model: str = DEFAULT_MODEL,
+) -> list[str]:
     """Gera um novo conjunto de keywords para uma unica cena (botao 'gerar novas keywords')."""
     if groq_key:
         try:
@@ -249,7 +264,7 @@ def regenerate_keywords(narration: str, visual_goal: str, groq_key: str, style: 
                 GROQ_URL,
                 headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
                 json={
-                    "model": DEFAULT_MODEL,
+                    "model": resolve_model(model),
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.6,
                     "response_format": {"type": "json_object"},

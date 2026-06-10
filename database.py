@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import secrets
 import sqlite3
 import time
@@ -24,6 +23,8 @@ def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # background jobs escrevem enquanto requests leem; espera em vez de "database is locked"
+    conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 
@@ -153,9 +154,10 @@ def hash_password(password: str, salt: Optional[str] = None) -> str:
 def verify_password(password: str, stored: str) -> bool:
     try:
         salt, _ = stored.split("$", 1)
+        return secrets.compare_digest(hash_password(password, salt), stored)
     except ValueError:
+        # hash sem separador ou salt nao-hex: credencial invalida, nao 500
         return False
-    return secrets.compare_digest(hash_password(password, salt), stored)
 
 
 # ----------------------------------------------------------------------------
@@ -327,6 +329,30 @@ def finish_job(job_id: int, message: str = "", result: Optional[dict] = None) ->
 
 def fail_job(job_id: int, message: str, error: str = "") -> None:
     update_job(job_id, status="error", message=message, error=error or message, finished=True)
+
+
+def fail_stale_jobs() -> int:
+    """Marca como erro jobs 'queued'/'running' herdados de um processo anterior.
+
+    Jobs rodam em BackgroundTasks do proprio processo; depois de um restart
+    nenhum deles continua, entao nao podem ficar pendurados na UI.
+    """
+    now = time.time()
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            """UPDATE jobs
+               SET status = 'error',
+                   message = 'Interrompido por reinicio do servidor',
+                   error = 'Interrompido por reinicio do servidor',
+                   updated_at = ?, finished_at = ?
+               WHERE status IN ('queued', 'running')""",
+            (now, now),
+        )
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
 
 
 def get_job(job_id: int, user_id: int) -> Optional[dict]:
@@ -543,6 +569,28 @@ def list_assets(scene_db_id: int) -> list[dict]:
             "SELECT * FROM assets WHERE scene_id = ? ORDER BY id", (scene_db_id,)
         ).fetchall()
         return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def list_assets_for_project(project_id: int) -> dict[int, list[dict]]:
+    """Todos os assets do projeto agrupados por scene_id, em uma unica query.
+
+    Evita o N+1 (uma conexao/query por cena) na pagina do projeto.
+    """
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            """SELECT a.* FROM assets a
+               JOIN scenes s ON a.scene_id = s.id
+               WHERE s.project_id = ?
+               ORDER BY a.scene_id, a.id""",
+            (project_id,),
+        ).fetchall()
+        grouped: dict[int, list[dict]] = {}
+        for r in rows:
+            grouped.setdefault(r["scene_id"], []).append(dict(r))
+        return grouped
     finally:
         conn.close()
 

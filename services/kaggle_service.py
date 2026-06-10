@@ -36,12 +36,16 @@ def _slug(text: str, max_len: int = 36) -> str:
     return (text[:max_len] or "brolls").strip("-")
 
 
-def dataset_slug(project_name: str) -> str:
-    return ("brolls-" + _slug(project_name))[:50]
+def dataset_slug(project_name: str, project_id: int | None = None) -> str:
+    # project_id no slug evita que dois projetos com o mesmo nome
+    # sobrescrevam o dataset/kernel um do outro no Kaggle.
+    prefix = f"brolls-p{project_id}-" if project_id else "brolls-"
+    return (prefix + _slug(project_name))[:50]
 
 
-def kernel_slug(project_name: str) -> str:
-    return ("b-rolls-render-" + _slug(project_name))[:50]
+def kernel_slug(project_name: str, project_id: int | None = None) -> str:
+    prefix = f"b-rolls-render-p{project_id}-" if project_id else "b-rolls-render-"
+    return (prefix + _slug(project_name))[:50]
 
 
 def _kernel_ref(username: str, k_slug: str) -> str:
@@ -182,8 +186,14 @@ def _run(args: list[str], username: str, token: str, **kwargs) -> subprocess.Com
 # ------------------------------------------------------------------
 # Upload do ZIP como dataset (inclui montador.py junto)
 # ------------------------------------------------------------------
-def upload_dataset(zip_path: Path, project_name: str, username: str, token: str) -> str:
-    slug = dataset_slug(project_name)
+def upload_dataset(
+    zip_path: Path,
+    project_name: str,
+    username: str,
+    token: str,
+    project_id: int | None = None,
+) -> str:
+    slug = dataset_slug(project_name, project_id)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
@@ -1010,9 +1020,15 @@ except Exception as exc:
 """
 
 
-def push_kernel(ds_slug: str, project_name: str, username: str, token: str) -> tuple[str, str]:
+def push_kernel(
+    ds_slug: str,
+    project_name: str,
+    username: str,
+    token: str,
+    project_id: int | None = None,
+) -> tuple[str, str]:
     """Retorna (k_slug, push_output) para debug."""
-    slug = kernel_slug(project_name)
+    slug = kernel_slug(project_name, project_id)
 
     montador_src = ROOT / "montador.py"
     montador_b64 = base64.b64encode(montador_src.read_bytes()).decode("ascii")

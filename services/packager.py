@@ -21,11 +21,14 @@ import json
 import re
 import unicodedata
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
 import requests
+
+DOWNLOAD_WORKERS = 4
 
 
 def _slug(text: str, max_len: int = 28) -> str:
@@ -190,6 +193,8 @@ def build_zip(
     file_by_scene: dict[str, Path] = {}
     pexels_sources, pixabay_sources = [], []
 
+    # baixa em paralelo (I/O bound); resultados processados na ordem das cenas
+    jobs = []
     for scene, gscene in zip(scenes, guide["scenes"]):
         asset = selected_by_scene.get(scene["id"])
         if not asset or not gscene.get("selected_asset"):
@@ -197,7 +202,18 @@ def build_zip(
         filename = Path(gscene["selected_asset"]).name
         dest = tmp / filename
         print(f"[zip] baixando {scene['scene_id']} <- {asset['source']} {asset.get('width')}x{asset.get('height')}")
-        if _download(asset["download_url"], dest, max_bytes):
+        jobs.append((scene, gscene, asset, filename, dest))
+
+    if jobs:
+        with ThreadPoolExecutor(max_workers=min(DOWNLOAD_WORKERS, len(jobs))) as pool:
+            ok_flags = list(
+                pool.map(lambda j: _download(j[2]["download_url"], j[4], max_bytes), jobs)
+            )
+    else:
+        ok_flags = []
+
+    for (scene, gscene, asset, filename, dest), ok in zip(jobs, ok_flags):
+        if ok:
             file_by_scene[scene["scene_id"]] = dest
             record = {
                 "scene_id": scene["scene_id"],

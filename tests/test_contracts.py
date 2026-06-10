@@ -435,6 +435,7 @@ class DeployContractsTest(unittest.TestCase):
         try:
             with TestClient(webapp.app) as client:
                 user_id = db.create_user("video-user", "password123")
+                db.update_kaggle_keys(user_id, "video-user", "token")
                 project_id = db.create_project(user_id, "video project", "script", {})
                 db.update_kaggle_job(project_id, "dataset", "kernel", "queued")
                 client.post(
@@ -533,12 +534,12 @@ class DeployContractsTest(unittest.TestCase):
                 (project_work / "asset_pack_video.zip").write_bytes(b"zip")
                 calls = []
 
-                def fake_upload(zip_path, project_name, username, token):
-                    calls.append(("upload", Path(zip_path).name, project_name, username, token))
+                def fake_upload(zip_path, project_name, username, token, project_id=None):
+                    calls.append(("upload", Path(zip_path).name, project_name, username, token, project_id))
                     return "dataset-slug"
 
-                def fake_push(ds_slug, project_name, username, token):
-                    calls.append(("push", ds_slug, project_name, username, token))
+                def fake_push(ds_slug, project_name, username, token, project_id=None):
+                    calls.append(("push", ds_slug, project_name, username, token, project_id))
                     return "kernel-slug", "pushed"
 
                 webapp.kaggle_service.upload_dataset = fake_upload
@@ -983,6 +984,267 @@ class DeployContractsTest(unittest.TestCase):
                 os.environ.pop("APP_SECRET_KEY", None)
             else:
                 os.environ["APP_SECRET_KEY"] = old_secret
+
+
+class HardeningAndOptimizationTest(unittest.TestCase):
+    """Cobre as correcoes de seguranca, consistencia e otimizacao."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        webapp.DATA_DIR = self.root / "data"
+        webapp.WORK_DIR = webapp.DATA_DIR / "work"
+        db.DATA_DIR = webapp.DATA_DIR
+        db.DB_PATH = webapp.DATA_DIR / "plataforma.db"
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_safe_next_url_rejects_backslash_and_control_chars(self) -> None:
+        # navegadores tratam '\' como '/', virando redirect externo //evil.com
+        self.assertEqual(webapp.safe_next_url("/\\evil.com"), "/projects")
+        self.assertEqual(webapp.safe_next_url("\\\\evil.com"), "/projects")
+        self.assertEqual(webapp.safe_next_url("/ok\r\nLocation: x"), "/projects")
+        self.assertEqual(webapp.safe_next_url("/projects/7"), "/projects/7")
+
+    def test_fetch_requests_get_json_errors_not_login_html(self) -> None:
+        with TestClient(webapp.app) as client:
+            resp = client.post(
+                "/assets/1/state",
+                data={"state": "selected"},
+                headers={"sec-fetch-mode": "cors"},
+                follow_redirects=False,
+            )
+        self.assertEqual(resp.status_code, 401)
+        self.assertIn("detail", resp.json())
+
+    def test_browser_navigation_still_redirects_to_login(self) -> None:
+        with TestClient(webapp.app) as client:
+            resp = client.get(
+                "/projects",
+                headers={"sec-fetch-mode": "navigate"},
+                follow_redirects=False,
+            )
+        self.assertEqual(resp.status_code, 303)
+        self.assertTrue(resp.headers["location"].startswith("/login"))
+
+    def test_verify_password_handles_corrupted_hash(self) -> None:
+        self.assertFalse(db.verify_password("x", "sem-separador"))
+        self.assertFalse(db.verify_password("x", "nao-hex$abc"))
+
+    def test_stale_jobs_fail_on_startup(self) -> None:
+        db.init_db()
+        uid = db.create_user("stale", "password123")
+        running = db.create_job(uid, "kaggle_send", None, "enviando")
+        db.update_job(running, status="running")
+        done = db.create_job(uid, "package", None, "ok")
+        db.finish_job(done, "Pacote pronto")
+
+        changed = db.fail_stale_jobs()
+
+        self.assertEqual(changed, 1)
+        self.assertEqual(db.get_job(running, uid)["status"], "error")
+        self.assertEqual(db.get_job(done, uid)["status"], "complete")
+
+    def test_resolve_model_replaces_decommissioned_groq_models(self) -> None:
+        from services import groq_service
+
+        self.assertEqual(groq_service.resolve_model("mixtral-8x7b-32768"), groq_service.DEFAULT_MODEL)
+        self.assertEqual(groq_service.resolve_model("gemma2-9b-it"), groq_service.DEFAULT_MODEL)
+        self.assertEqual(groq_service.resolve_model(""), groq_service.DEFAULT_MODEL)
+        self.assertEqual(groq_service.resolve_model("llama-3.1-8b-instant"), "llama-3.1-8b-instant")
+        for value, _label in groq_service.GROQ_MODELS:
+            self.assertEqual(groq_service.resolve_model(value), value)
+
+    def test_timestamp_parser_accepts_long_videos_over_99_minutes(self) -> None:
+        scenes = parse_script("[105:00.0 - 105:04.5] cena tardia")
+        self.assertEqual(len(scenes), 1)
+        self.assertEqual(scenes[0]["start_time"], 6300.0)
+        self.assertEqual(scenes[0]["duration"], 4.5)
+
+    def test_list_assets_for_project_matches_per_scene_listing(self) -> None:
+        db.init_db()
+        uid = db.create_user("bulk", "password123")
+        project_id = db.create_project(uid, "bulk", "script", {})
+        db.replace_scenes(
+            project_id,
+            [
+                {"scene_id": "scene_001", "idx": 1, "start_time": 0, "end_time": 4, "duration": 4},
+                {"scene_id": "scene_002", "idx": 2, "start_time": 4, "end_time": 8, "duration": 4},
+            ],
+        )
+        scenes = db.list_scenes(project_id)
+        db.add_assets(scenes[0]["id"], [
+            {"source": "pexels", "download_url": "https://example.com/a.mp4"},
+            {"source": "pixabay", "download_url": "https://example.com/b.mp4"},
+        ])
+        db.add_assets(scenes[1]["id"], [
+            {"source": "pexels", "download_url": "https://example.com/c.mp4"},
+        ])
+
+        grouped = db.list_assets_for_project(project_id)
+
+        for scene in scenes:
+            self.assertEqual(grouped.get(scene["id"], []), db.list_assets(scene["id"]))
+
+    def test_search_scene_parallel_keeps_order_and_dedupes(self) -> None:
+        def fake(source, kw, n):
+            return [
+                {"source": source, "download_url": f"https://{source}.example/{kw}/{i}", "keyword": kw}
+                for i in range(n)
+            ]
+
+        with patch.object(asset_search, "search_pexels_videos", lambda kw, *_a, **_k: fake("pexels", kw, 2)), \
+             patch.object(asset_search, "search_pixabay_videos", lambda kw, *_a, **_k: fake("pixabay", kw, 2)):
+            results = asset_search.search_scene(
+                ["kw1", "kw2"], "pk", "bk", max_w=1920, per_keyword=2, media="video"
+            )
+
+        urls = [r["download_url"] for r in results]
+        self.assertEqual(urls, [
+            "https://pexels.example/kw1/0", "https://pexels.example/kw1/1",
+            "https://pixabay.example/kw1/0", "https://pixabay.example/kw1/1",
+            "https://pexels.example/kw2/0", "https://pexels.example/kw2/1",
+            "https://pixabay.example/kw2/0", "https://pixabay.example/kw2/1",
+        ])
+
+        # dedupe contra URLs ja vistas
+        seen = {"https://pexels.example/kw1/0"}
+        with patch.object(asset_search, "search_pexels_videos", lambda kw, *_a, **_k: fake("pexels", kw, 1)), \
+             patch.object(asset_search, "search_pixabay_videos", lambda *_a, **_k: []):
+            results = asset_search.search_scene(
+                ["kw1"], "pk", "bk", max_w=1920, per_keyword=1, media="video", seen_urls=seen
+            )
+        self.assertEqual(results, [])
+
+    def test_package_route_fails_job_on_unexpected_error(self) -> None:
+        original_build = webapp.packager.build_zip
+        try:
+            with TestClient(webapp.app) as client:
+                uid = db.create_user("pkg-err", "password123")
+                project_id = db.create_project(uid, "pkg", "script", {})
+                db.replace_scenes(
+                    project_id,
+                    [{"scene_id": "scene_001", "idx": 1, "start_time": 0, "end_time": 4, "duration": 4}],
+                )
+                scene = db.list_scenes(project_id)[0]
+                db.add_assets(scene["id"], [
+                    {"source": "pexels", "download_url": "https://example.com/a.mp4"},
+                ])
+                asset = db.list_assets(scene["id"])[0]
+                db.set_asset_state(asset["id"], "selected")
+                client.post(
+                    "/login",
+                    data={"username": "pkg-err", "password": "password123"},
+                    follow_redirects=False,
+                )
+
+                def boom(*_args, **_kwargs):
+                    raise ValueError("falha inesperada de disco")
+
+                webapp.packager.build_zip = boom
+                resp = client.post(f"/projects/{project_id}/package", follow_redirects=False)
+                jobs = db.list_project_jobs(project_id, uid)
+                project = db.get_project(project_id, uid)
+        finally:
+            webapp.packager.build_zip = original_build
+
+        self.assertEqual(resp.status_code, 502)
+        self.assertEqual(project["status"], "package_failed")
+        self.assertEqual(jobs[0]["status"], "error")
+        self.assertIn("falha inesperada", jobs[0]["error"])
+
+    def test_kaggle_status_requires_credentials(self) -> None:
+        with TestClient(webapp.app) as client:
+            uid = db.create_user("no-keys", "password123")
+            project_id = db.create_project(uid, "proj", "script", {})
+            db.update_kaggle_job(project_id, "dataset", "kernel", "queued")
+            client.post(
+                "/login",
+                data={"username": "no-keys", "password": "password123"},
+                follow_redirects=False,
+            )
+            resp = client.get(f"/projects/{project_id}/kaggle-status")
+
+        payload = resp.json()
+        self.assertEqual(payload["status"], "error")
+        self.assertIn("/settings", payload["error"])
+
+    def test_project_page_shows_hyperframes_fallback_status(self) -> None:
+        with TestClient(webapp.app) as client:
+            uid = db.create_user("hf-fb", "password123")
+            project_id = db.create_project(uid, "proj", "script", {})
+            out_dir = webapp.WORK_DIR / f"project_{project_id}" / "kaggle_output"
+            out_dir.mkdir(parents=True)
+            (out_dir / "hyperframes_status.json").write_text(
+                json.dumps({"status": "fallback_complete", "audio": True, "avatar": False}),
+                encoding="utf-8",
+            )
+            client.post(
+                "/login",
+                data={"username": "hf-fb", "password": "password123"},
+                follow_redirects=False,
+            )
+            resp = client.get(f"/projects/{project_id}")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("fallback FFmpeg", resp.text)
+
+    def test_kaggle_slugs_are_unique_per_project(self) -> None:
+        # dois projetos com o mesmo nome nao podem compartilhar dataset/kernel
+        self.assertNotEqual(
+            kaggle_service.dataset_slug("Meu Video", 1),
+            kaggle_service.dataset_slug("Meu Video", 2),
+        )
+        self.assertNotEqual(
+            kaggle_service.kernel_slug("Meu Video", 1),
+            kaggle_service.kernel_slug("Meu Video", 2),
+        )
+        # sem project_id mantem o formato antigo (compatibilidade)
+        self.assertEqual(kaggle_service.dataset_slug("Meu Video"), "brolls-meu-video")
+        self.assertEqual(kaggle_service.kernel_slug("Meu Video"), "b-rolls-render-meu-video")
+        # slugs continuam validos para o Kaggle (lowercase, <= 50 chars)
+        long_name = "Projeto com um nome extremamente longo para testar truncamento"
+        for slug in [kaggle_service.dataset_slug(long_name, 123), kaggle_service.kernel_slug(long_name, 123)]:
+            self.assertLessEqual(len(slug), 50)
+            self.assertRegex(slug, r"^[a-z0-9][a-z0-9-]*$")
+
+    def test_packager_parallel_download_keeps_scene_order(self) -> None:
+        project = {"name": "Ordem"}
+        config = {"avatar_safe_area": "right", "resolution": "1920x1080", "format": "16:9"}
+        scenes = []
+        selected = {}
+        for i in range(1, 4):
+            scenes.append({
+                "id": i, "scene_id": f"scene_{i:03d}", "idx": i, "zone": "DESENVOLVIMENTO",
+                "start_time": float(i - 1) * 4, "end_time": float(i) * 4, "duration": 4.0,
+                "narration": f"cena {i}", "visual_goal": "", "keywords": [],
+                "must_show": [], "must_not_show": [], "asset_type": "video",
+                "overlay_text": "", "avatar_safe_area": "right",
+            })
+            selected[i] = {
+                "source": "pexels",
+                "download_url": f"https://example.com/{i}.mp4",
+                "asset_type": "video",
+                "keyword": f"kw{i}",
+            }
+
+        def fake_download(_url, dest, _max_bytes):
+            dest.write_bytes(b"fake-video")
+            return True
+
+        original_download = packager._download
+        packager._download = fake_download
+        try:
+            zip_path = packager.build_zip(project, config, scenes, selected, [], self.root / "work")
+        finally:
+            packager._download = original_download
+
+        with zipfile.ZipFile(zip_path) as zf:
+            sources = json.loads(zf.read("metadata/pexels_sources.json"))
+            guide = json.loads(zf.read("guia_visual.json"))
+        self.assertEqual([s["scene_id"] for s in sources], ["scene_001", "scene_002", "scene_003"])
+        self.assertTrue(all(s["selected_asset"] for s in guide["scenes"]))
 
 
 if __name__ == "__main__":

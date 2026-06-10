@@ -62,6 +62,8 @@
       <span id="hyperframes-state" class="kaggle-state">
         {%- if hyperframes_status.get('status') == 'complete' -%}
           master pronto ({{ hyperframes_status.get('render_mode', 'mp4') }}{% if hyperframes_status.get('audio') %}, com narração{% endif %}{% if hyperframes_status.get('avatar') %}, com avatar{% endif %})
+        {%- elif hyperframes_status.get('status') == 'fallback_complete' -%}
+          master via fallback FFmpeg{% if hyperframes_status.get('audio') %}, com narração{% endif %}{% if hyperframes_status.get('avatar') %}, com avatar{% endif %} (HyperFrames falhou)
         {%- elif hyperframes_status.get('status') == 'error' -%}
           erro no refino — base preservada
         {%- else -%}

@@ -6,7 +6,8 @@ usuario vai rejeitar.
 """
 from __future__ import annotations
 
-from typing import Optional
+from concurrent.futures import ThreadPoolExecutor
+from typing import Callable, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import requests
@@ -225,15 +226,26 @@ def search_scene(
     results: list[dict] = []
     want_video = media in {"all", "video"}
     want_image = media == "image" or (media == "all" and allow_images)
+
+    # Monta as buscas em ordem deterministica e executa em paralelo;
+    # cada provedor ja devolve [] em caso de erro/chave ausente.
+    tasks: list[Callable[[], list[dict]]] = []
     for kw in keywords[:3]:
-        batch: list[dict] = []
         if want_video:
-            batch += search_pexels_videos(kw, pexels_key, max_w, per_keyword)
-            batch += search_pixabay_videos(kw, pixabay_key, max_w, per_keyword)
+            tasks.append(lambda kw=kw: search_pexels_videos(kw, pexels_key, max_w, per_keyword))
+            tasks.append(lambda kw=kw: search_pixabay_videos(kw, pixabay_key, max_w, per_keyword))
         if want_image:
             n = per_keyword if media == "image" else (per_keyword // 2 or 1)
-            batch += search_pexels_images(kw, pexels_key, n)
-            batch += search_pixabay_images(kw, pixabay_key, n)
+            tasks.append(lambda kw=kw, n=n: search_pexels_images(kw, pexels_key, n))
+            tasks.append(lambda kw=kw, n=n: search_pixabay_images(kw, pixabay_key, n))
+    if not tasks:
+        return results
+
+    with ThreadPoolExecutor(max_workers=min(8, len(tasks))) as pool:
+        batches = list(pool.map(lambda task: task(), tasks))
+
+    # Dedupe sequencial preserva a mesma ordem do fluxo antigo.
+    for batch in batches:
         for item in batch:
             url = item["download_url"]
             if url in seen:

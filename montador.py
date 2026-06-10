@@ -261,11 +261,11 @@ def build_clip(
     ]
 
     if is_video:
-        # asset longo: comeca em offset controlado (10% do excedente) para evitar abertura morta
+        # asset longo: usa o trecho central (offset = metade do excedente)
         src_dur = ffprobe_duration(src)
         seek = []
         if src_dur > duration + 0.3:
-            offset = min((src_dur - duration) * 0.5, max(0.0, src_dur - duration))
+            offset = (src_dur - duration) * 0.5
             seek = ["-ss", f"{offset:.3f}"]
         # asset curto: loop infinito + corte por -t preenche a cena
         cmd = ["ffmpeg", "-y", "-stream_loop", "-1", *seek, "-i", str(src), *common_out]
