@@ -18,12 +18,12 @@ PIXABAY_IMAGE_URL = "https://pixabay.com/api/"
 REQUEST_TIMEOUT = 25
 
 
-def _bounded_per_page(value: int, default: int = 8) -> int:
+def _bounded_per_page(value: int, default: int = 8, minimum: int = 1) -> int:
     try:
         value = int(value)
     except (TypeError, ValueError):
         value = default
-    return max(1, min(value, 80))
+    return max(minimum, min(value, 80))
 
 
 def _with_query_param(url: str, key: str, value: str) -> str:
@@ -88,7 +88,7 @@ def search_pexels_videos(keyword: str, key: str, max_w: int, per_page: int = 8) 
 def search_pixabay_videos(keyword: str, key: str, max_w: int, per_page: int = 8) -> list[dict]:
     if not key:
         return []
-    per_page = _bounded_per_page(per_page, default=8)
+    per_page = _bounded_per_page(per_page, default=8, minimum=3)
     try:
         resp = requests.get(
             PIXABAY_VIDEO_URL,
@@ -172,7 +172,7 @@ def search_pexels_images(keyword: str, key: str, per_page: int = 6) -> list[dict
 def search_pixabay_images(keyword: str, key: str, per_page: int = 6) -> list[dict]:
     if not key:
         return []
-    per_page = _bounded_per_page(per_page, default=6)
+    per_page = _bounded_per_page(per_page, default=6, minimum=3)
     try:
         resp = requests.get(
             PIXABAY_IMAGE_URL,

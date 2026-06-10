@@ -163,7 +163,7 @@ def latest_zip(project_work: Path) -> Optional[Path]:
 
 def latest_kaggle_video(project_work: Path) -> Optional[Path]:
     output_dir = project_work / "kaggle_output"
-    return max(output_dir.rglob("*.mp4"), key=lambda p: p.stat().st_mtime, default=None) if output_dir.exists() else None
+    return kaggle_service.choose_preferred_video_path(output_dir.rglob("*.mp4")) if output_dir.exists() else None
 
 
 # ------------------------------------------------------------------

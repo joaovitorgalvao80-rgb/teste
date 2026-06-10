@@ -4,4 +4,5 @@ __pycache__/
 data/
 workdir/
 kaggle_work/
+.smoke_runtime/
 *.log

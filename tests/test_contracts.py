@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 os.environ["APP_ENV"] = "dev"
 
@@ -153,6 +155,10 @@ class DeployContractsTest(unittest.TestCase):
         url = asset_search._with_query_param("https://example.com/video.mp4?token=abc", "download", "1")
         self.assertEqual(url, "https://example.com/video.mp4?token=abc&download=1")
 
+    def test_pixabay_per_page_respects_api_minimum(self) -> None:
+        self.assertEqual(asset_search._bounded_per_page(1, minimum=3), 3)
+        self.assertEqual(asset_search._bounded_per_page(2, minimum=3), 3)
+
     def test_kaggle_status_complete_when_video_output_exists(self) -> None:
         original_video = kaggle_service.get_video_url
         try:
@@ -163,6 +169,45 @@ class DeployContractsTest(unittest.TestCase):
 
         self.assertEqual(result["status"], "complete")
         self.assertEqual(result["video_url"], "https://video.example/out.mp4")
+
+    def test_get_video_url_prefers_hyperframes_master(self) -> None:
+        class FakeResponse:
+            ok = True
+
+            @staticmethod
+            def json():
+                return {
+                    "files": [
+                        {"fileName": "video_broll_base.mp4", "url": "https://video.example/base.mp4"},
+                        {"fileName": "final_master.mp4", "url": "https://video.example/master.mp4"},
+                    ]
+                }
+
+        with patch("requests.get", return_value=FakeResponse()):
+            url = kaggle_service.get_video_url("kernel", "user", "token")
+
+        self.assertEqual(url, "https://video.example/master.mp4")
+
+    def test_get_video_url_ignores_hyperframes_asset_copy(self) -> None:
+        class FakeResponse:
+            ok = True
+
+            @staticmethod
+            def json():
+                return {
+                    "files": [
+                        {
+                            "fileName": "hyperframes_master/assets/video_broll_base.mp4",
+                            "url": "https://video.example/internal-asset.mp4",
+                        },
+                        {"fileName": "video_broll_base.mp4", "url": "https://video.example/base.mp4"},
+                    ]
+                }
+
+        with patch("requests.get", return_value=FakeResponse()):
+            url = kaggle_service.get_video_url("kernel", "user", "token")
+
+        self.assertEqual(url, "https://video.example/base.mp4")
 
     def test_kaggle_status_waits_without_status_endpoint_when_output_missing(self) -> None:
         original_video = kaggle_service.get_video_url
@@ -177,6 +222,23 @@ class DeployContractsTest(unittest.TestCase):
 
         self.assertEqual(result["status"], "queued")
         self.assertEqual(result["url"], "https://www.kaggle.com/code/user/kernel")
+
+    def test_kaggle_status_does_not_complete_from_stale_files_while_running(self) -> None:
+        original_video = kaggle_service.get_video_url
+        original_files = kaggle_service.list_kernel_files
+        original_hint = kaggle_service.kernel_status_hint
+        try:
+            kaggle_service.get_video_url = lambda *_args, **_kwargs: ""
+            kaggle_service.list_kernel_files = lambda *_args, **_kwargs: (["video_broll_base.mp4"], "")
+            kaggle_service.kernel_status_hint = lambda *_args, **_kwargs: 'has status "KernelWorkerStatus.RUNNING"'
+            result = kaggle_service.get_status("kernel", "user", "token")
+        finally:
+            kaggle_service.get_video_url = original_video
+            kaggle_service.list_kernel_files = original_files
+            kaggle_service.kernel_status_hint = original_hint
+
+        self.assertEqual(result["status"], "queued")
+        self.assertIn("execucao", result["error"])
 
     def test_kernel_exists_uses_files_command_not_status_endpoint(self) -> None:
         calls = []
@@ -229,6 +291,24 @@ class DeployContractsTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["video_url"], f"/projects/{project_id}/download-kaggle-video")
 
+    def test_pull_output_video_prefers_hyperframes_master(self) -> None:
+        original_run = kaggle_service._run
+        try:
+            def fake_run(args, _username, _token, **_kwargs):
+                out_dir = Path(args[args.index("-p") + 1])
+                out_dir.mkdir(parents=True, exist_ok=True)
+                (out_dir / "video_broll_base.mp4").write_bytes(b"base")
+                (out_dir / "final_master.mp4").write_bytes(b"master")
+                return SimpleNamespace(stdout="", stderr="")
+
+            kaggle_service._run = fake_run
+            path = kaggle_service.pull_output_video("kernel", "user", "token", self.root / "out")
+        finally:
+            kaggle_service._run = original_run
+
+        self.assertIsNotNone(path)
+        self.assertEqual(path.name, "final_master.mp4")
+
     def test_push_kernel_uses_actual_slug_from_push_output(self) -> None:
         original_run = kaggle_service._run
         try:
@@ -246,9 +326,55 @@ class DeployContractsTest(unittest.TestCase):
 
         self.assertEqual(slug, "actual-kaggle-slug")
 
+    def test_push_kernel_enables_internet_for_hyperframes(self) -> None:
+        original_run = kaggle_service._run
+        try:
+            def fake_run(args, username, _token, **_kwargs):
+                self.assertEqual(username, "user")
+                self.assertEqual(args[:2], ["kernels", "push"])
+                metadata = json.loads((Path(args[-1]) / "kernel-metadata.json").read_text(encoding="utf-8"))
+                self.assertTrue(metadata["enable_internet"])
+                self.assertEqual(metadata["dataset_sources"], ["user/dataset-slug"])
+                return SimpleNamespace(
+                    stdout="Kernel pushed: https://www.kaggle.com/code/user/hyperframes-kernel\n",
+                    stderr="",
+                )
+
+            kaggle_service._run = fake_run
+            slug, _output = kaggle_service.push_kernel("dataset-slug", "Meu Projeto", "user", "token")
+        finally:
+            kaggle_service._run = original_run
+
+        self.assertEqual(slug, "hyperframes-kernel")
+
     def test_kaggle_runner_accepts_unpacked_asset_pack(self) -> None:
+        compile(kaggle_service._RUNNER, "<kaggle-runner>", "exec")
         self.assertIn('rglob("guia_visual.json")', kaggle_service._RUNNER)
         self.assertIn('source = guides[0].parent', kaggle_service._RUNNER)
+        self.assertIn("final_master.mp4", kaggle_service._RUNNER)
+        self.assertIn("hyperframes_status.json", kaggle_service._RUNNER)
+        self.assertIn('"node@22"', kaggle_service._RUNNER)
+        self.assertIn('"hyperframes"', kaggle_service._RUNNER)
+        self.assertIn('window.__timelines["nwrch-master"]', kaggle_service._RUNNER)
+        self.assertIn('"apt-get", "install"', kaggle_service._RUNNER)
+        self.assertIn('"libatk1.0-0"', kaggle_service._RUNNER)
+        self.assertNotIn('"chromium-browser"', kaggle_service._RUNNER)
+        self.assertIn('"HYPERFRAMES_BROWSER_PATH"', kaggle_service._RUNNER)
+        self.assertIn('"PUPPETEER_EXECUTABLE_PATH"', kaggle_service._RUNNER)
+        self.assertIn('"--workers"', kaggle_service._RUNNER)
+        self.assertIn('"PRODUCER_LOW_MEMORY_MODE"', kaggle_service._RUNNER)
+        self.assertIn('"PRODUCER_PLAYER_READY_TIMEOUT_MS"', kaggle_service._RUNNER)
+        self.assertIn('"--low-memory-mode"', kaggle_service._RUNNER)
+        self.assertIn('"--protocol-timeout"', kaggle_service._RUNNER)
+        self.assertIn('"900000"', kaggle_service._RUNNER)
+        self.assertIn('"--browser-timeout"', kaggle_service._RUNNER)
+        self.assertIn('"180"', kaggle_service._RUNNER)
+        self.assertIn('"--player-ready-timeout"', kaggle_service._RUNNER)
+        self.assertIn('"png-sequence"', kaggle_service._RUNNER)
+        self.assertIn("hyperframes_frames", kaggle_service._RUNNER)
+        self.assertIn('"format=yuv420p"', kaggle_service._RUNNER)
+        self.assertIn('"png-sequence+ffmpeg"', kaggle_service._RUNNER)
+        self.assertIn('data-duration="{duration:.3f}"', kaggle_service._RUNNER)
 
     def test_production_requires_strong_session_secret(self) -> None:
         old_env = webapp.APP_ENV
