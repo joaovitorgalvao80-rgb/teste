@@ -3,10 +3,13 @@
 Usa subprocess + kaggle CLI em vez da API Python para evitar
 incompatibilidades entre versões do pacote.
 
-O montador.py é enviado junto no dataset — sem embutir base64 no kernel.
+montador.py e embutido no runner via base64 para evitar falhas de
+timing: datasets Kaggle sao processados assincronamente e o kernel
+pode rodar antes de /kaggle/input/ estar populado.
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -794,9 +797,13 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
 
 input_root = Path("/kaggle/input")
 montadores = list(input_root.rglob("montador.py"))
-if not montadores:
-    raise RuntimeError("montador.py nao encontrado em " + str(input_root))
-montador = montadores[0]
+if montadores:
+    montador = montadores[0]
+else:
+    import base64 as _b64
+    montador = Path("/kaggle/working/_montador.py")
+    montador.write_bytes(_b64.b64decode(_MONTADOR_B64))
+    print("montador.py embutido no runner (dataset nao disponivel ainda)")
 
 zips = list(input_root.rglob("*.zip"))
 if zips:
@@ -826,9 +833,13 @@ def push_kernel(ds_slug: str, project_name: str, username: str, token: str) -> t
     """Retorna (k_slug, push_output) para debug."""
     slug = kernel_slug(project_name)
 
+    montador_src = ROOT / "montador.py"
+    montador_b64 = base64.b64encode(montador_src.read_bytes()).decode("ascii")
+    runner_src = f'_MONTADOR_B64 = "{montador_b64}"\n' + _RUNNER
+
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
-        (tmp / "runner.py").write_text(_RUNNER, encoding="utf-8")
+        (tmp / "runner.py").write_text(runner_src, encoding="utf-8")
 
         metadata = {
             "id": f"{username}/{slug}",
