@@ -427,6 +427,88 @@ class DeployContractsTest(unittest.TestCase):
         self.assertEqual(with_media["avatar"]["position"], "right")
         self.assertAlmostEqual(with_media["avatar"]["scale"], 0.25)
 
+    def test_llm_edit_plan_merges_valid_directives_only(self) -> None:
+        from services import edit_plan as ep
+        from services import llm_service
+
+        project = {"name": "Meu Video"}
+        config = {"avatar_safe_area": "right", "resolution": "1280x720"}
+        scenes = [
+            {"scene_id": "scene_001", "start_time": 0.0, "duration": 4.0, "overlay_text": "Abertura", "narration": "n1"},
+            {"scene_id": "scene_002", "start_time": 4.0, "duration": 5.5, "overlay_text": "", "narration": "n2"},
+            {"scene_id": "scene_003", "start_time": 9.5, "duration": 2.5, "overlay_text": "Fim", "narration": "n3"},
+        ]
+        llm_payload = {
+            "scenes": [
+                # motion invalido (descartado), caption valido (aplicado)
+                {"scene_id": "scene_001", "motion": "spin_360", "transition_out": "none", "caption": "Comece agora"},
+                # tudo valido, incluindo "none" para descansar a camera
+                {"scene_id": "scene_002", "motion": "none", "transition_out": "fade", "caption": ""},
+                # ultima cena: LLM pede fade, mas a regra forca "none"
+                {"scene_id": "scene_003", "motion": "slow_pull_out", "transition_out": "fade", "caption": '"Ate amanha"'},
+            ]
+        }
+        fake_resp = SimpleNamespace(
+            status_code=200,
+            json=lambda: {"choices": [{"message": {"content": json.dumps(llm_payload)}}]},
+        )
+        with patch.object(llm_service.requests, "post", return_value=fake_resp) as mocked:
+            plan = ep.build_edit_plan_with_llm(project, config, scenes, openrouter_key="sk-or-test")
+        self.assertTrue(mocked.called)
+        self.assertEqual(plan["editorial"], "llm")
+        s1, s2, s3 = plan["scenes"]
+        # timing nunca muda
+        self.assertEqual([s1["start"], s2["start"], s3["start"]], [0.0, 4.0, 9.5])
+        # motion invalido mantem o deterministico; caption do LLM entra
+        self.assertEqual(s1["motion"], "slow_push_in")
+        self.assertEqual(s1["transition_out"], "none")
+        self.assertEqual(s1["caption"], "Comece agora")
+        self.assertEqual(s2["motion"], "none")
+        self.assertEqual(s2["transition_out"], "fade")
+        self.assertEqual(s2["caption"], "")
+        self.assertEqual(s3["motion"], "slow_pull_out")
+        self.assertEqual(s3["transition_out"], "none")
+        self.assertEqual(s3["caption"], "Ate amanha")
+
+    def test_llm_edit_plan_falls_back_when_llm_fails(self) -> None:
+        from services import edit_plan as ep
+        from services import llm_service
+
+        project = {"name": "Meu Video"}
+        config = {"avatar_safe_area": "right", "resolution": "1280x720"}
+        scenes = [
+            {"scene_id": "scene_001", "start_time": 0.0, "duration": 4.0, "overlay_text": "Abertura"},
+            {"scene_id": "scene_002", "start_time": 4.0, "duration": 5.5, "overlay_text": ""},
+        ]
+        baseline = ep.build_edit_plan(project, config, scenes)
+
+        with patch.object(llm_service.requests, "post", side_effect=OSError("rede caiu")):
+            plan = ep.build_edit_plan_with_llm(project, config, scenes, openrouter_key="sk-or-test")
+        self.assertNotIn("editorial", plan)
+        self.assertEqual(plan, baseline)
+
+        # sem chave nem tenta chamar a rede
+        with patch.object(llm_service.requests, "post", side_effect=AssertionError("nao deveria chamar")):
+            plan = ep.build_edit_plan_with_llm(project, config, scenes, openrouter_key="")
+        self.assertEqual(plan, baseline)
+
+    def test_settings_saves_openrouter_key(self) -> None:
+        with TestClient(webapp.app) as client:
+            uid = db.create_user("editor", "password123")
+            client.post(
+                "/login",
+                data={"username": "editor", "password": "password123"},
+                follow_redirects=False,
+            )
+            resp = client.post(
+                "/settings",
+                data={"openrouter": "sk-or-test-123", "groq_model": ""},
+                follow_redirects=False,
+            )
+            self.assertEqual(resp.status_code, 303)
+        user = db.get_user(uid)
+        self.assertEqual(user["openrouter_key"], "sk-or-test-123")
+
     def test_packager_includes_edit_plan_and_extra_files(self) -> None:
         project = {"name": "Plano"}
         config = {"avatar_safe_area": "right", "resolution": "1920x1080", "format": "16:9"}

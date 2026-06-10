@@ -305,11 +305,15 @@ def settings_save(
     pixabay: str = Form(""),
     groq: str = Form(""),
     groq_model: str = Form(""),
+    openrouter: str = Form(""),
     kaggle_username: str = Form(""),
     kaggle_token: str = Form(""),
 ):
     user = require_user(request)
-    db.update_api_keys(user["id"], pexels.strip(), pixabay.strip(), groq.strip(), groq_model.strip())
+    db.update_api_keys(
+        user["id"], pexels.strip(), pixabay.strip(), groq.strip(), groq_model.strip(),
+        openrouter=openrouter.strip(),
+    )
     db.update_kaggle_keys(user["id"], kaggle_username.strip(), kaggle_token.strip())
     return RedirectResponse("/settings?saved=1", status_code=303)
 
@@ -617,10 +621,11 @@ def package(request: Request, project_id: int):
     project_work = WORK_DIR / f"project_{project_id}"
     narration_file = find_input_media(project_id, "narration")
     avatar_file = find_input_media(project_id, "avatar")
-    plan = edit_plan.build_edit_plan(
+    plan = edit_plan.build_edit_plan_with_llm(
         project,
         config,
         scenes,
+        openrouter_key=user.get("openrouter_key", ""),
         narration_file=narration_file.name if narration_file else "",
         avatar_file=avatar_file.name if avatar_file else "",
     )

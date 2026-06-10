@@ -42,6 +42,15 @@
     </section>
 
     <section class="settings-section">
+      <span class="eyebrow">OpenRouter</span>
+      <h2 class="settings-heading">Cérebro editorial</h2>
+      <p class="muted small">Decide motion, transições e captions do master final. Opcional: sem chave, o plano de edição usa o modo determinístico.</p>
+      <label>OpenRouter API Key
+        <input type="password" autocomplete="off" name="openrouter" value="{{ user.openrouter_key }}" placeholder="sk-or-...">
+      </label>
+    </section>
+
+    <section class="settings-section">
       <span class="eyebrow">Kaggle</span>
       <h2 class="settings-heading">Render automático</h2>
       <p class="muted small">Para renderizar o vídeo final via kernel Kaggle.</p>
@@ -66,6 +75,7 @@
         <li><strong>Pexels</strong><br><code>pexels.com/api</code></li>
         <li><strong>Pixabay</strong><br><code>pixabay.com/api/docs</code></li>
         <li><strong>Groq</strong><br><code>console.groq.com</code></li>
+        <li><strong>OpenRouter</strong><br><code>openrouter.ai/keys</code></li>
         <li><strong>Kaggle</strong><br><code>kaggle.com/settings</code> → API → Create New Token</li>
       </ul>
     </div>

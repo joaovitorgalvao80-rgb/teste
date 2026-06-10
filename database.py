@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS users (
     pixabay_key     TEXT DEFAULT '',
     groq_key        TEXT DEFAULT '',
     groq_model      TEXT DEFAULT 'llama-3.3-70b-versatile',
+    openrouter_key  TEXT DEFAULT '',
     kaggle_username TEXT DEFAULT '',
     kaggle_token    TEXT DEFAULT '',
     created_at      REAL NOT NULL
@@ -103,6 +104,7 @@ _MIGRATIONS = [
     "ALTER TABLE projects ADD COLUMN kaggle_kernel_slug TEXT DEFAULT ''",
     "ALTER TABLE projects ADD COLUMN kaggle_status TEXT DEFAULT ''",
     "ALTER TABLE users ADD COLUMN groq_model TEXT DEFAULT 'llama-3.3-70b-versatile'",
+    "ALTER TABLE users ADD COLUMN openrouter_key TEXT DEFAULT ''",
 ]
 
 
@@ -172,12 +174,20 @@ def get_user(user_id: int) -> Optional[dict]:
         conn.close()
 
 
-def update_api_keys(user_id: int, pexels: str, pixabay: str, groq: str, groq_model: str = "") -> None:
+def update_api_keys(
+    user_id: int,
+    pexels: str,
+    pixabay: str,
+    groq: str,
+    groq_model: str = "",
+    openrouter: str = "",
+) -> None:
     conn = _connect()
     try:
         conn.execute(
-            "UPDATE users SET pexels_key = ?, pixabay_key = ?, groq_key = ?, groq_model = ? WHERE id = ?",
-            (pexels, pixabay, groq, groq_model or "llama-3.3-70b-versatile", user_id),
+            "UPDATE users SET pexels_key = ?, pixabay_key = ?, groq_key = ?, groq_model = ?, "
+            "openrouter_key = ? WHERE id = ?",
+            (pexels, pixabay, groq, groq_model or "llama-3.3-70b-versatile", openrouter, user_id),
         )
         conn.commit()
     finally:
