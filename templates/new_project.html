@@ -84,8 +84,10 @@ document.getElementById("audio-upload").addEventListener("change", async functio
     fd.append("audio", file);
     const res = await fetch("/transcribe-audio", { method: "POST", body: fd });
     if (!res.ok) {
-      const t = await res.text();
-      throw new Error(t);
+      let msg = `HTTP ${res.status}`;
+      try { const j = await res.json(); msg = j.detail || j.error || msg; }
+      catch (_) { try { msg = (await res.text()).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300); } catch (_) {} }
+      throw new Error(msg);
     }
     const data = await res.json();
     area.value = data.transcript;

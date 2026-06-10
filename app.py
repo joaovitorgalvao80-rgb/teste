@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
+import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -321,17 +323,52 @@ def settings_save(
 # ------------------------------------------------------------------
 # Transcrição de áudio (Groq Whisper → timestamps)
 # ------------------------------------------------------------------
+_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".flv", ".wmv"}
+_GROQ_MAX_BYTES = 24 * 1024 * 1024  # 25 MB hard limit da API; 24 MB de margem
+
+
+def _extract_audio_bytes(raw: bytes, filename: str) -> tuple[bytes, str]:
+    """Se for vídeo ou arquivo grande, extrai/comprime para MP3 mono 64k via FFmpeg."""
+    ext = Path(filename).suffix.lower()
+    is_video = ext in _VIDEO_EXTS
+    if not is_video and len(raw) <= _GROQ_MAX_BYTES:
+        return raw, filename
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / ("input" + (ext or ".mp4"))
+        src.write_bytes(raw)
+        out = Path(tmp) / "audio.mp3"
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-i", str(src), "-vn", "-ar", "16000", "-ac", "1",
+             "-ab", "64k", str(out)],
+            capture_output=True, timeout=300,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"FFmpeg falhou: {result.stderr.decode()[:400]}")
+        extracted = out.read_bytes()
+    if len(extracted) > _GROQ_MAX_BYTES:
+        raise HTTPException(
+            400,
+            f"Áudio muito longo para transcrever de uma vez "
+            f"({len(extracted)//1024//1024} MB após compressão; limite Groq: 24 MB). "
+            "Divida em partes menores."
+        )
+    return extracted, "audio.mp3"
+
+
 @app.post("/transcribe-audio")
 async def transcribe_audio(request: Request, audio: UploadFile = File(...)):
     user = require_user(request)
     if not user.get("groq_key"):
         raise HTTPException(400, "Configure a chave Groq em /settings para usar transcrição.")
-    data = await audio.read()
-    if len(data) > 100 * 1024 * 1024:
-        raise HTTPException(400, "Arquivo muito grande (máximo 100 MB).")
+    raw = await audio.read()
+    if len(raw) > 500 * 1024 * 1024:
+        raise HTTPException(400, "Arquivo muito grande (máximo 500 MB para upload).")
     try:
-        transcript = groq_service.transcribe_audio(data, audio.filename or "audio.mp3", user["groq_key"])
+        data, fname = _extract_audio_bytes(raw, audio.filename or "audio.mp4")
+        transcript = groq_service.transcribe_audio(data, fname, user["groq_key"])
         return JSONResponse({"transcript": transcript})
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(500, f"Transcrição falhou: {exc}") from exc
 
