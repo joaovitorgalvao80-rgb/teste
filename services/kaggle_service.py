@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unicodedata
 import csv
 import io
@@ -213,7 +214,40 @@ def upload_dataset(zip_path: Path, project_name: str, username: str, token: str)
                 username, token, timeout=300,
             )
 
+    _wait_dataset_ready(slug, zip_path.name, username, token)
     return slug
+
+
+def _wait_dataset_ready(
+    slug: str,
+    expected_file: str,
+    username: str,
+    token: str,
+    timeout: int = 180,
+    poll: int = 10,
+) -> None:
+    """Aguarda o Kaggle terminar de processar o dataset antes de empurrar o kernel.
+
+    Kaggle indexa datasets de forma assincrona; se o kernel comecar antes do
+    processamento terminar, /kaggle/input/ aparece vazio.
+    """
+    deadline = time.time() + timeout
+    print(f"[Kaggle] aguardando dataset {slug} ficar pronto (max {timeout}s)...")
+    while time.time() < deadline:
+        try:
+            r = _run(
+                ["datasets", "files", f"{username}/{slug}"],
+                username, token, timeout=30,
+            )
+            output = (r.stdout or "") + (r.stderr or "")
+            if expected_file in output:
+                print(f"[Kaggle] dataset pronto ({expected_file} visivel)")
+                return
+        except Exception:
+            pass
+        time.sleep(poll)
+    # Se timeout, tenta assim mesmo — pode funcionar dependendo do tamanho
+    print(f"[Kaggle] timeout aguardando dataset; tentando kernel assim mesmo")
 
 
 # ------------------------------------------------------------------
