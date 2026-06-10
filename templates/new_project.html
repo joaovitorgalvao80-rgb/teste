@@ -10,7 +10,7 @@
 </div>
 
 <div class="card">
-  <form method="post" action="/projects/new" id="new-project-form">
+  <form method="post" action="/projects/new" id="new-project-form" enctype="multipart/form-data">
 
     <label>Nome do projeto
       <input name="name" required placeholder="video_dengue_bti">
@@ -21,7 +21,7 @@
         <span class="small muted">Tem a narração gravada?</span>
         <label class="audio-pick-btn" for="audio-upload">
           Transcrever áudio automaticamente
-          <input type="file" id="audio-upload" accept="audio/*,video/*" style="display:none">
+          <input type="file" id="audio-upload" name="narration_media" accept="audio/*,video/*" style="display:none">
         </label>
       </div>
       <div id="transcribe-progress" style="display:none" class="transcribe-progress">
@@ -93,6 +93,7 @@ document.getElementById("audio-upload").addEventListener("change", async functio
     area.value = data.transcript;
     area.style.borderColor = "var(--accent)";
     progress.style.display = "none";
+    this.disabled = false;
   } catch (e) {
     progress.style.display = "none";
     errDiv.style.display = "";

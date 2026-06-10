@@ -10,6 +10,7 @@ Uso:
     python montador.py caminho/asset_pack.zip --out saida.mp4
     python montador.py pasta_ja_descompactada/        (aceita ZIP ou pasta)
     python montador.py pack.zip --audio narracao.mp3  (audio guia opcional)
+    python montador.py pack.zip --no-overlay          (base limpa para HyperFrames)
 
 Saidas (na pasta de saida):
     video_broll_base.mp4
@@ -338,6 +339,7 @@ def montar(
     crf: int,
     preset: str,
     keep_workdir: bool,
+    overlay_enabled: bool = True,
 ) -> None:
     out_dir = out_video.parent
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -366,6 +368,7 @@ def montar(
         log(f"Projeto: {guide.get('project_name','(sem nome)')}")
         log(f"Resolucao: {width}x{height} | fps: {fps} | cenas: {len(scenes)}")
         log(f"Avatar safe area: {guide.get('avatar_safe_area','right')}")
+        log(f"Overlay de texto no video base: {'sim' if overlay_enabled else 'nao'}")
 
         clips_dir = workdir / "clips"
         clips_dir.mkdir(parents=True, exist_ok=True)
@@ -384,7 +387,7 @@ def montar(
         for scene in scenes:
             clip = build_clip(
                 scene, pack_dir, clips_dir, width, height, fps,
-                overlay_enabled=True, log=log, crf=crf, preset=preset,
+                overlay_enabled=overlay_enabled, log=log, crf=crf, preset=preset,
                 font_file=font_file, render_cwd=workdir,
             )
             if clip is None:
@@ -435,6 +438,7 @@ def main() -> None:
     parser.add_argument("--crf", type=int, default=20)
     parser.add_argument("--preset", default="medium")
     parser.add_argument("--keep-workdir", action="store_true", help="nao apagar pasta temporaria")
+    parser.add_argument("--no-overlay", action="store_true", help="nao desenhar textos no video base")
     args = parser.parse_args()
 
     source = Path(args.source).expanduser().resolve()
@@ -445,7 +449,16 @@ def main() -> None:
     audio = Path(args.audio).expanduser().resolve() if args.audio else None
 
     try:
-        montar(source, out_video, audio, args.fps, args.crf, args.preset, args.keep_workdir)
+        montar(
+            source,
+            out_video,
+            audio,
+            args.fps,
+            args.crf,
+            args.preset,
+            args.keep_workdir,
+            overlay_enabled=not args.no_overlay,
+        )
     except Exception as exc:  # noqa: BLE001
         print(f"\n[ERRO] {exc}", file=sys.stderr)
         sys.exit(1)

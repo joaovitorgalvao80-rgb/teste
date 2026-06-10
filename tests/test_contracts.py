@@ -483,6 +483,22 @@ class DeployContractsTest(unittest.TestCase):
         cached = diagnostics.read_validation(project_work)
         self.assertEqual(cached["status"], "warn")
 
+    def test_output_validation_flags_requested_audio_missing(self) -> None:
+        project_work = self.root / "project"
+        out = project_work / "kaggle_output"
+        out.mkdir(parents=True)
+        (out / "final_master.mp4").write_bytes(b"not-a-real-mp4")
+        (out / "hyperframes_status.json").write_text(
+            json.dumps({"requested_audio": True, "audio": False}),
+            encoding="utf-8",
+        )
+
+        payload = diagnostics.validate_outputs(project_work, expected_duration=0)
+
+        self.assertEqual(payload["status"], "error")
+        messages = [issue["message"] for issue in payload["issues"]]
+        self.assertTrue(any("narracao" in msg for msg in messages))
+
     def test_send_to_kaggle_requires_valid_package_status(self) -> None:
         original_upload = webapp.kaggle_service.upload_dataset
         try:
@@ -550,8 +566,10 @@ class DeployContractsTest(unittest.TestCase):
 
     def test_pull_output_video_prefers_hyperframes_master(self) -> None:
         original_run = kaggle_service._run
+        calls = []
         try:
             def fake_run(args, _username, _token, **_kwargs):
+                calls.append(args)
                 out_dir = Path(args[args.index("-p") + 1])
                 out_dir.mkdir(parents=True, exist_ok=True)
                 (out_dir / "video_broll_base.mp4").write_bytes(b"base")
@@ -565,6 +583,9 @@ class DeployContractsTest(unittest.TestCase):
 
         self.assertIsNotNone(path)
         self.assertEqual(path.name, "final_master.mp4")
+        pattern = calls[0][calls[0].index("--file-pattern") + 1]
+        self.assertIn("hyperframes_status", pattern)
+        self.assertIn("log_render", pattern)
 
     def test_push_kernel_uses_actual_slug_from_push_output(self) -> None:
         original_run = kaggle_service._run
@@ -639,13 +660,19 @@ class DeployContractsTest(unittest.TestCase):
         self.assertIn("find_pack_extras(input_root)", runner)
         self.assertIn('"edit_plan.json"', runner)
         self.assertIn("render_hyperframes_master(out, edit_plan, narration_file, avatar_file)", runner)
+        self.assertIn("apply_master_postprocess(master_out, narration, avatar, edit_plan)", runner)
+        self.assertIn('"--no-overlay"', runner)
         # camadas da composicao master
         self.assertIn("slow_push_in", runner)
         self.assertIn("slow_pull_out", runner)
+        self.assertIn("drift_left", runner)
+        self.assertIn("drift_right", runner)
         self.assertIn('class="clip caption pos-', runner)
         self.assertIn('class="clip fadeov"', runner)
         self.assertIn('data-has-audio="true"', runner)
         self.assertIn('class="clip avatar-clip pos-', runner)
+        self.assertIn("ffmpeg_audio_mix", runner)
+        self.assertIn("ffmpeg_overlay", runner)
         # zip-slip: extras extraidos apenas pelo nome do arquivo
         self.assertIn("PACK_EXTRAS_DIR / Path(member).name", runner)
 
@@ -665,12 +692,17 @@ class DeployContractsTest(unittest.TestCase):
         self.assertEqual(plan["caption_position"], "left")
         self.assertIsNone(plan["audio"])
         self.assertIsNone(plan["avatar"])
+        self.assertEqual(plan["editorial_mode"], "deterministic_v2")
+        self.assertEqual(plan["caption_policy"]["selected"], 2)
         motions = [s["motion"] for s in plan["scenes"]]
-        self.assertEqual(motions, ["slow_push_in", "slow_pull_out", "slow_push_in"])
+        self.assertEqual(motions, ["slow_push_in", "drift_left", "slow_push_in"])
         transitions = [s["transition_out"] for s in plan["scenes"]]
-        self.assertEqual(transitions, ["fade", "fade", "none"])
+        self.assertEqual(transitions, ["none", "none", "none"])
         self.assertEqual(plan["scenes"][0]["caption"], "Abertura")
         self.assertEqual(plan["scenes"][1]["caption"], "")
+        self.assertEqual(plan["scenes"][2]["caption"], "Fim")
+        self.assertEqual(plan["scenes"][0]["caption_start"], 0.55)
+        self.assertGreater(plan["scenes"][0]["caption_duration"], 0)
 
         with_media = ep.build_edit_plan(
             project, config, scenes, narration_file="narration.mp3", avatar_file="avatar.webm"
@@ -744,6 +776,31 @@ class DeployContractsTest(unittest.TestCase):
         with patch.object(llm_service.requests, "post", side_effect=AssertionError("nao deveria chamar")):
             plan = ep.build_edit_plan_with_llm(project, config, scenes, openrouter_key="")
         self.assertEqual(plan, baseline)
+
+    def test_llm_edit_plan_can_clear_deterministic_caption(self) -> None:
+        from services import edit_plan as ep
+        from services import llm_service
+
+        project = {"name": "Meu Video"}
+        config = {"avatar_safe_area": "right", "resolution": "1280x720"}
+        scenes = [
+            {"scene_id": "scene_001", "start_time": 0.0, "duration": 4.0, "overlay_text": "Abertura", "narration": "n1"},
+            {"scene_id": "scene_002", "start_time": 4.0, "duration": 4.0, "overlay_text": "Final", "narration": "n2"},
+        ]
+        llm_payload = {
+            "scenes": [
+                {"scene_id": "scene_001", "motion": "hold", "transition_out": "none", "caption": ""},
+                {"scene_id": "scene_002", "motion": "hold", "transition_out": "none", "caption": ""},
+            ]
+        }
+        fake_resp = SimpleNamespace(
+            status_code=200,
+            json=lambda: {"choices": [{"message": {"content": json.dumps(llm_payload)}}]},
+        )
+        with patch.object(llm_service.requests, "post", return_value=fake_resp):
+            plan = ep.build_edit_plan_with_llm(project, config, scenes, openrouter_key="sk-or-test")
+
+        self.assertEqual([scene["caption"] for scene in plan["scenes"]], ["", ""])
 
     def test_settings_saves_openrouter_key(self) -> None:
         with TestClient(webapp.app) as client:
@@ -867,6 +924,34 @@ class DeployContractsTest(unittest.TestCase):
                 follow_redirects=False,
             )
             self.assertIsNone(webapp.find_input_media(project_id, "narration"))
+
+    def test_new_project_audio_upload_becomes_narration_media(self) -> None:
+        with TestClient(webapp.app) as client:
+            uid = db.create_user("newmedia", "password123")
+            client.post(
+                "/login",
+                data={"username": "newmedia", "password": "password123"},
+                follow_redirects=False,
+            )
+            resp = client.post(
+                "/projects/new",
+                data={
+                    "name": "proj com voz",
+                    "script": "[00:00.0 - 00:03.0] teste",
+                    "avatar_safe_area": "right",
+                    "resolution": "1280x720",
+                    "scene_duration": "4",
+                },
+                files={"narration_media": ("voz.mp3", b"audio-bytes", "audio/mpeg")},
+                follow_redirects=False,
+            )
+            self.assertEqual(resp.status_code, 303)
+
+        projects = db.list_projects(uid)
+        self.assertEqual(len(projects), 1)
+        saved = webapp.find_input_media(projects[0]["id"], "narration")
+        self.assertIsNotNone(saved)
+        self.assertEqual(saved.name, "narration.mp3")
 
     def test_local_output_videos_separates_base_and_master(self) -> None:
         project_work = self.root / "pw"

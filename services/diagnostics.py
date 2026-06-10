@@ -164,6 +164,15 @@ def validate_outputs(project_work: Path, expected_duration: float = 0.0) -> dict
         else:
             issues.append({"level": "warn", "message": "Base pronta; master final ainda nao esta local."})
 
+    requested_audio = bool(hyperframes.get("requested_audio"))
+    requested_avatar = bool(hyperframes.get("requested_avatar"))
+    if requested_audio and master["exists"] and master.get("probe_ok") and not master.get("has_audio"):
+        issues.append({"level": "error", "message": "Master foi solicitado com narracao, mas saiu sem stream de audio."})
+    if requested_audio and hyperframes and not hyperframes.get("audio"):
+        issues.append({"level": "error", "message": "Pos-processamento nao confirmou a narracao no master."})
+    if requested_avatar and hyperframes and not hyperframes.get("avatar"):
+        issues.append({"level": "warn", "message": "Avatar foi solicitado, mas o status nao confirmou overlay no master."})
+
     levels = {item["level"] for item in issues}
     if "error" in levels:
         status = "error"

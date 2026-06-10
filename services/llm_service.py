@@ -17,7 +17,7 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "openai/gpt-4o-mini"
 
 # O runner HyperFrames so anima esses motions; qualquer outro vira estatico.
-ALLOWED_MOTIONS = {"slow_push_in", "slow_pull_out", "none"}
+ALLOWED_MOTIONS = {"slow_push_in", "slow_pull_out", "drift_left", "drift_right", "hold", "none"}
 ALLOWED_TRANSITIONS = {"fade", "none"}
 MAX_CAPTION_CHARS = 80
 
@@ -26,14 +26,15 @@ The base video is already assembled: one b-roll clip per scene, in order, exact 
 Your job is to decide, per scene, the refinement that will be applied on top:
 
 - "motion": camera feel. One of: "slow_push_in" (slow zoom in, adds tension/focus),
-  "slow_pull_out" (slow zoom out, reveals context/breathes), "none" (static, rest moment).
-  Vary motion with intent; do not alternate mechanically. Use "none" sparingly.
+  "slow_pull_out" (slow zoom out, reveals context/breathes), "drift_left" or
+  "drift_right" (subtle lateral movement), "hold" or "none" (rest moment).
+  Vary motion with intent; do not alternate mechanically.
 - "transition_out": cut into the NEXT scene. One of: "fade" (soft, for topic/mood changes)
   or "none" (hard cut, for rhythm and continuity). Last scene must be "none".
 - "caption": a short on-screen text for the scene, written from the narration.
   Max 8 words, same language as the narration, punchy, no quotes, no hashtags, no emoji.
-  Use "" (empty) when the scene works better without text - aim for captions on the scenes
-  that carry the key message, not all of them.
+  Use "" (empty) when the scene works better without text. Captions are punctual editorial
+  beats, not subtitles; aim for about one caption every 3 scenes, only on key moments.
 
 Respond ONLY with JSON in this exact shape:
 {"scenes": [{"scene_id": "...", "motion": "...", "transition_out": "...", "caption": "..."}]}

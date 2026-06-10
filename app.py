@@ -280,6 +280,43 @@ def find_input_media(project_id: int, kind: str) -> Optional[Path]:
     return None
 
 
+def save_input_media_bytes(project_id: int, kind: str, data: bytes, suffix: str) -> Path:
+    exts = MEDIA_KINDS.get(kind)
+    suffix = (suffix or "").lower()
+    if not exts or suffix not in exts:
+        raise HTTPException(400, f"Extensao nao suportada para {kind}: use {', '.join(sorted(exts or []))}.")
+    if len(data) > MAX_MEDIA_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(400, f"Arquivo muito grande (maximo {MAX_MEDIA_UPLOAD_MB} MB).")
+    if not data:
+        raise HTTPException(400, "Arquivo vazio.")
+    folder = project_inputs_dir(project_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    for old in folder.glob(f"{kind}.*"):
+        old.unlink(missing_ok=True)
+    dest = folder / f"{kind}{suffix}"
+    dest.write_bytes(data)
+    return dest
+
+
+def prepare_narration_media(raw: bytes, filename: str) -> tuple[bytes, str]:
+    """Normaliza upload inicial de narracao.
+
+    A tela de novo projeto aceita audio ou video para transcricao; para o
+    render final guardamos audio. Quando vier video, extraimos MP3.
+    """
+    if len(raw) > MAX_MEDIA_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(400, f"Arquivo muito grande (maximo {MAX_MEDIA_UPLOAD_MB} MB).")
+    suffix = Path(filename or "").suffix.lower()
+    if suffix in NARRATION_EXTS:
+        return raw, suffix
+    if suffix in _VIDEO_EXTS:
+        audio_bytes, out_name = _extract_audio_bytes(raw, filename or "narration.mp4")
+        return audio_bytes, Path(out_name).suffix.lower() or ".mp3"
+    if raw:
+        raise HTTPException(400, f"Extensao nao suportada para narracao: use audio ou video comum.")
+    return b"", ""
+
+
 def local_output_videos(project_work: Path) -> dict:
     """Separa base e master entre os MP4 baixados do Kaggle."""
     outputs: dict = {"base": None, "master": None}
@@ -517,7 +554,7 @@ def new_project_page(request: Request):
 
 
 @app.post("/projects/new")
-def new_project(
+async def new_project(
     request: Request,
     name: str = Form(...),
     script: str = Form(...),
@@ -526,8 +563,14 @@ def new_project(
     resolution: str = Form("1920x1080"),
     scene_duration: float = Form(4.0),
     image_fallback: str = Form(""),
+    narration_media: Optional[UploadFile] = File(None),
 ):
     user = require_user(request)
+    prepared_narration: Optional[tuple[bytes, str]] = None
+    if narration_media and narration_media.filename:
+        raw = await narration_media.read()
+        if raw:
+            prepared_narration = prepare_narration_media(raw, narration_media.filename)
     config = normalize_project_config({
         "avatar_safe_area": avatar_safe_area,
         "visual_style": visual_style.strip() or DEFAULT_CONFIG["visual_style"],
@@ -536,6 +579,8 @@ def new_project(
         "image_fallback": image_fallback,
     })
     pid = db.create_project(user["id"], name.strip() or "projeto", script, config)
+    if prepared_narration:
+        save_input_media_bytes(pid, "narration", prepared_narration[0], prepared_narration[1])
     return RedirectResponse(f"/projects/{pid}", status_code=303)
 
 
@@ -739,15 +784,7 @@ async def upload_media(
     if suffix not in exts:
         raise HTTPException(400, f"Extensao nao suportada para {kind}: use {', '.join(sorted(exts))}.")
     data = await media.read()
-    if len(data) > MAX_MEDIA_UPLOAD_MB * 1024 * 1024:
-        raise HTTPException(400, f"Arquivo muito grande (maximo {MAX_MEDIA_UPLOAD_MB} MB).")
-    if not data:
-        raise HTTPException(400, "Arquivo vazio.")
-    folder = project_inputs_dir(project_id)
-    folder.mkdir(parents=True, exist_ok=True)
-    for old in folder.glob(f"{kind}.*"):
-        old.unlink(missing_ok=True)
-    (folder / f"{kind}{suffix}").write_bytes(data)
+    save_input_media_bytes(project_id, kind, data, suffix)
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 

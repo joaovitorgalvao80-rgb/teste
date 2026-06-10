@@ -501,10 +501,10 @@ COMPOSITION_CSS = (
     " #motion-wrap { position: absolute; inset: 0; will-change: transform; }"
     " .base-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }"
     " .fadeov { position: absolute; inset: 0; background: #000; opacity: 0; pointer-events: none; }"
-    " .caption { position: absolute; bottom: 72px; max-width: 46%; padding: 18px 28px;"
-    " background: rgba(5, 8, 10, 0.78); border-left: 4px solid #34d2b2; color: #f2f7f5;"
-    " font-family: Arial, Helvetica, sans-serif; font-size: 40px; line-height: 1.25;"
-    " font-weight: 600; border-radius: 10px; opacity: 0; }"
+    " .caption { position: absolute; bottom: 92px; max-width: 40%; padding: 14px 22px;"
+    " background: rgba(5, 8, 10, 0.72); border-left: 4px solid #34d2b2; color: #f2f7f5;"
+    " font-family: Arial, Helvetica, sans-serif; font-size: 34px; line-height: 1.22;"
+    " font-weight: 650; border-radius: 8px; opacity: 0; }"
     " .caption.pos-left { left: 72px; } .caption.pos-right { right: 72px; }"
     " .avatar-clip { position: absolute; bottom: 0; object-fit: contain; }"
     " .avatar-clip.pos-right { right: 24px; } .avatar-clip.pos-left { left: 24px; }"
@@ -578,13 +578,28 @@ def plan_scenes_within(edit_plan, duration):
             continue
         if dur <= 0 or start >= duration:
             continue
+        dur = min(dur, duration - start)
+        try:
+            cap_start = float(s.get("caption_start") if s.get("caption_start") is not None else start)
+        except (TypeError, ValueError):
+            cap_start = start
+        try:
+            cap_duration = float(s.get("caption_duration") or 0)
+        except (TypeError, ValueError):
+            cap_duration = 0
+        cap_start = min(max(cap_start, start), start + max(dur - 0.2, 0.0))
+        if cap_duration <= 0:
+            cap_duration = max(min(dur - (cap_start - start) - 0.2, 2.2), 0.0)
+        cap_duration = max(min(cap_duration, duration - cap_start), 0.0)
         cleaned.append(
             {
                 "start": start,
-                "duration": min(dur, duration - start),
-                "motion": str(s.get("motion") or ""),
+                "duration": dur,
+                "motion": str(s.get("motion") or "hold"),
                 "transition_out": str(s.get("transition_out") or "none"),
                 "caption": str(s.get("caption") or "").strip(),
+                "caption_start": cap_start,
+                "caption_duration": cap_duration,
             }
         )
     cleaned.sort(key=lambda s: s["start"])
@@ -639,13 +654,27 @@ def write_hyperframes_project(base_video, project_dir, edit_plan=None, narration
         s_dur = "%.3f" % s["duration"]
         if s["motion"] == "slow_push_in":
             tl.append(
-                'tl.fromTo("#motion-wrap", { scale: 1.0 }, { scale: 1.05, duration: '
+                'tl.fromTo("#motion-wrap", { scale: 1.0, xPercent: 0 }, { scale: 1.05, xPercent: 0, duration: '
                 + s_dur + ', ease: "none" }, ' + s_start + ");"
             )
         elif s["motion"] == "slow_pull_out":
             tl.append(
-                'tl.fromTo("#motion-wrap", { scale: 1.05 }, { scale: 1.0, duration: '
+                'tl.fromTo("#motion-wrap", { scale: 1.05, xPercent: 0 }, { scale: 1.0, xPercent: 0, duration: '
                 + s_dur + ', ease: "none" }, ' + s_start + ");"
+            )
+        elif s["motion"] == "drift_left":
+            tl.append(
+                'tl.fromTo("#motion-wrap", { scale: 1.035, xPercent: 0.8 }, { scale: 1.035, xPercent: -0.8, duration: '
+                + s_dur + ', ease: "none" }, ' + s_start + ");"
+            )
+        elif s["motion"] == "drift_right":
+            tl.append(
+                'tl.fromTo("#motion-wrap", { scale: 1.035, xPercent: -0.8 }, { scale: 1.035, xPercent: 0.8, duration: '
+                + s_dur + ', ease: "none" }, ' + s_start + ");"
+            )
+        elif s["motion"] == "hold":
+            tl.append(
+                'tl.to("#motion-wrap", { scale: 1.0, xPercent: 0, duration: 0.001 }, ' + s_start + ");"
             )
 
     # camada 1: captions
@@ -655,8 +684,8 @@ def write_hyperframes_project(base_video, project_dir, edit_plan=None, narration
             continue
         cap_idx += 1
         cid = "cap-" + str(cap_idx)
-        cap_start = "%.3f" % s["start"]
-        cap_dur = "%.3f" % max(s["duration"] - 0.2, 0.4)
+        cap_start = "%.3f" % s["caption_start"]
+        cap_dur = "%.3f" % max(s["caption_duration"], 0.4)
         body.append(
             '<div id="' + cid + '" class="clip caption pos-' + caption_pos + '" data-start="' + cap_start
             + '" data-duration="' + cap_dur + '" data-track-index="1">'
@@ -775,12 +804,106 @@ def write_hyperframes_project(base_video, project_dir, edit_plan=None, narration
     return duration
 
 
+def apply_master_postprocess(master_out, narration=None, avatar=None, edit_plan=None):
+    # Garante narracao/avatar no MP4 final fora do browser renderer.
+    result = {
+        "audio": False,
+        "avatar": False,
+        "requested_audio": bool(narration),
+        "requested_avatar": bool(avatar),
+        "method": [],
+    }
+    current = Path(master_out)
+    duration = ffprobe_duration(current)
+
+    if avatar:
+        width, _height = plan_resolution(edit_plan)
+        plan_avatar = (edit_plan or {}).get("avatar") or {}
+        pos = "left" if str(plan_avatar.get("position") or "right") == "left" else "right"
+        try:
+            scale = float(plan_avatar.get("scale") or 0.30)
+        except (TypeError, ValueError):
+            scale = 0.30
+        scale = min(max(scale, 0.10), 0.60)
+        avatar_w = max(int(width * scale), 120)
+        x = "24" if pos == "left" else "W-w-24"
+        y = "H-h"
+        tmp_avatar = current.with_name(current.stem + "_avatar.mp4")
+        filtergraph = (
+            "[1:v]scale=" + str(avatar_w) + ":-2,format=rgba[avatar];"
+            "[0:v][avatar]overlay=" + x + ":" + y + ":eof_action=pass:shortest=0[v]"
+        )
+        run_logged(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(current),
+                "-stream_loop",
+                "-1",
+                "-i",
+                str(avatar),
+                "-filter_complex",
+                filtergraph,
+                "-map",
+                "[v]",
+                "-t",
+                "%.3f" % duration,
+                "-an",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "medium",
+                "-crf",
+                "18",
+                "-pix_fmt",
+                "yuv420p",
+                str(tmp_avatar),
+            ],
+            timeout=1200,
+        )
+        shutil.move(str(tmp_avatar), str(current))
+        result["avatar"] = True
+        result["method"].append("ffmpeg_overlay")
+
+    if narration:
+        tmp_audio = current.with_name(current.stem + "_audio.mp4")
+        run_logged(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(current),
+                "-i",
+                str(narration),
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-shortest",
+                "-movflags",
+                "+faststart",
+                str(tmp_audio),
+            ],
+            timeout=1200,
+        )
+        shutil.move(str(tmp_audio), str(current))
+        result["audio"] = True
+        result["method"].append("ffmpeg_audio_mix")
+
+    return result
+
+
 def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar=None):
     project_dir = Path("/kaggle/working/hyperframes_master")
     master_out = Path("/kaggle/working") / MASTER_VIDEO_NAME
     frames_dir = Path("/kaggle/working/hyperframes_frames")
     assert_node_runtime()
-    duration = write_hyperframes_project(base_video, project_dir, edit_plan, narration, avatar)
+    duration = write_hyperframes_project(base_video, project_dir, edit_plan, None, None)
     env = os.environ.copy()
     env["CI"] = "1"
     env["HYPERFRAMES_NO_UPDATE_CHECK"] = "1"
@@ -814,6 +937,7 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
         render_mode = "png-sequence+ffmpeg"
     if not master_out.exists():
         raise RuntimeError("HyperFrames terminou sem gerar " + str(master_out))
+    postprocess = apply_master_postprocess(master_out, narration, avatar, edit_plan)
     write_status(
         {
             "status": "complete",
@@ -822,8 +946,11 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
             "render_mode": render_mode,
             "png_frames": png_count,
             "scenes": len((edit_plan or {}).get("scenes") or []),
-            "audio": bool(narration),
-            "avatar": bool(avatar),
+            "audio": postprocess["audio"],
+            "avatar": postprocess["avatar"],
+            "requested_audio": postprocess["requested_audio"],
+            "requested_avatar": postprocess["requested_avatar"],
+            "postprocess": postprocess,
         }
     )
     print(f"Master: {master_out} ({master_out.stat().st_size/1024/1024:.1f} MB)")
@@ -851,15 +978,35 @@ else:
 out = Path("/kaggle/working") / BASE_VIDEO_NAME
 print(f"Fonte: {source}")
 
-run_logged([sys.executable, str(montador), str(source), "--out", str(out), "--preset", "fast"], timeout=1800)
+run_logged([sys.executable, str(montador), str(source), "--out", str(out), "--preset", "fast", "--no-overlay"], timeout=1800)
 print(f"Video: {out} ({out.stat().st_size/1024/1024:.1f} MB)")
 
 edit_plan, narration_file, avatar_file = find_pack_extras(input_root)
 try:
     render_hyperframes_master(out, edit_plan, narration_file, avatar_file)
 except Exception as exc:
-    write_status({"status": "error", "error": str(exc), "base_output": str(out)})
-    print("HyperFrames falhou, mas o video base foi preservado:", exc)
+    print("HyperFrames falhou; tentando master fallback com FFmpeg:", exc)
+    fallback_master = Path("/kaggle/working") / MASTER_VIDEO_NAME
+    try:
+        shutil.copy2(out, fallback_master)
+        postprocess = apply_master_postprocess(fallback_master, narration_file, avatar_file, edit_plan)
+        write_status(
+            {
+                "status": "fallback_complete",
+                "error": str(exc),
+                "base_output": str(out),
+                "output": str(fallback_master),
+                "audio": postprocess["audio"],
+                "avatar": postprocess["avatar"],
+                "requested_audio": postprocess["requested_audio"],
+                "requested_avatar": postprocess["requested_avatar"],
+                "postprocess": postprocess,
+            }
+        )
+        print("Master fallback pronto:", fallback_master)
+    except Exception as fallback_exc:
+        write_status({"status": "error", "error": str(exc), "fallback_error": str(fallback_exc), "base_output": str(out)})
+        print("HyperFrames falhou, e o fallback tambem falhou:", fallback_exc)
 """
 
 
@@ -974,11 +1121,20 @@ def get_video_url(k_slug: str, username: str, token: str) -> str:
 
 
 def pull_output_video(k_slug: str, username: str, token: str, out_dir: Path) -> Path | None:
-    """Baixa o MP4 do output do Kaggle para o servidor quando nao ha URL direta."""
+    """Baixa videos, status e logs do output do Kaggle."""
     kernel = _kernel_ref(username, k_slug)
     out_dir.mkdir(parents=True, exist_ok=True)
     _run(
-        ["kernels", "output", kernel, "-p", str(out_dir), "-o", "--file-pattern", r".*\.mp4$"],
+        [
+            "kernels",
+            "output",
+            kernel,
+            "-p",
+            str(out_dir),
+            "-o",
+            "--file-pattern",
+            r"(final_master\.mp4|video_broll_base\.mp4|base_broll\.mp4|hyperframes_status\.json|log_render\.txt|guia_execucao_final\.json)$",
+        ],
         username,
         token,
         timeout=600,
