@@ -156,7 +156,12 @@ def main() -> int:  # noqa: PLR0915 - roteiro E2E linear
 
         resp = client.post(f"/projects/{project_id}/send-to-kaggle")
         assert resp.status_code == 200, resp.text
-        print(f"[e2e] kaggle: {resp.json()}")
+        send_payload = resp.json()
+        print(f"[e2e] kaggle: {send_payload}")
+        if send_payload.get("job_id"):
+            job = client.get(f"/jobs/{send_payload['job_id']}").json()
+            print(f"[e2e] kaggle job: {job['status']} - {job.get('message') or job.get('error')}")
+            assert job["status"] == "complete", job
 
         deadline = time.time() + MAX_WAIT_SECONDS
         final_status = ""
@@ -179,6 +184,9 @@ def main() -> int:  # noqa: PLR0915 - roteiro E2E linear
         assert resp.status_code == 200, f"download master: HTTP {resp.status_code}"
         master = E2E_DIR / "final_master.mp4"
         master.write_bytes(resp.content)
+        diag = client.get(f"/projects/{project_id}/diagnostics.json?refresh=1").json()
+        validation = (diag.get("diagnostics") or {}).get("outputs", {}).get("validation") or {}
+        print(f"[e2e] validacao: {validation.get('status')} issues={validation.get('issues')}")
 
     probe = run(["ffprobe", "-v", "error", "-show_entries",
                  "stream=codec_type:format=duration", "-of", "json", str(master)])

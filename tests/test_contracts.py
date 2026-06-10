@@ -15,7 +15,7 @@ import app as webapp  # noqa: E402
 import database as db  # noqa: E402
 import montador  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
-from services import asset_search, kaggle_service, packager  # noqa: E402
+from services import asset_search, diagnostics, kaggle_service, packager  # noqa: E402
 from services.script_parser import parse_script  # noqa: E402
 
 
@@ -138,6 +138,40 @@ class DeployContractsTest(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 400)
         self.assertIn("scene_002", resp.text)
+
+    def test_project_page_shows_operational_diagnostics(self) -> None:
+        with TestClient(webapp.app) as client:
+            user_id = db.create_user("ops", "password123")
+            project_id = db.create_project(user_id, "ops project", "script", {})
+            db.create_job(user_id, "package", project_id, "Preparando pacote ZIP")
+            client.post(
+                "/login",
+                data={"username": "ops", "password": "password123"},
+                follow_redirects=False,
+            )
+            resp = client.get(f"/projects/{project_id}")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Saude do projeto", resp.text)
+        self.assertIn("Jobs recentes", resp.text)
+        self.assertIn("package", resp.text)
+
+    def test_diagnostics_json_route_reports_project_snapshot(self) -> None:
+        with TestClient(webapp.app) as client:
+            user_id = db.create_user("diag", "password123")
+            project_id = db.create_project(user_id, "diag project", "script", {})
+            client.post(
+                "/login",
+                data={"username": "diag", "password": "password123"},
+                follow_redirects=False,
+            )
+            resp = client.get(f"/projects/{project_id}/diagnostics.json")
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.json()
+        self.assertEqual(payload["project"]["name"], "diag project")
+        self.assertIn("diagnostics", payload)
+        self.assertIn("jobs", payload)
 
     def test_packager_fails_when_no_selected_asset_downloads(self) -> None:
         project = {"name": "Teste"}
@@ -433,6 +467,21 @@ class DeployContractsTest(unittest.TestCase):
         self.assertEqual(payload["video_url"], f"/projects/{project_id}/download-master-video")
         self.assertEqual(payload["master_video_url"], f"/projects/{project_id}/download-master-video")
         self.assertEqual(payload["base_video_url"], f"/projects/{project_id}/download-base-video")
+        self.assertIn("validation", payload)
+
+    def test_output_validation_writes_diagnostic_file(self) -> None:
+        project_work = self.root / "project"
+        out = project_work / "kaggle_output"
+        out.mkdir(parents=True)
+        (out / "video_broll_base.mp4").write_bytes(b"not-a-real-mp4")
+
+        payload = diagnostics.validate_outputs(project_work, expected_duration=8.0)
+
+        self.assertEqual(payload["status"], "warn")
+        self.assertTrue(payload["outputs"]["base"]["exists"])
+        self.assertTrue(diagnostics.validation_path(project_work).exists())
+        cached = diagnostics.read_validation(project_work)
+        self.assertEqual(cached["status"], "warn")
 
     def test_send_to_kaggle_requires_valid_package_status(self) -> None:
         original_upload = webapp.kaggle_service.upload_dataset
@@ -453,6 +502,51 @@ class DeployContractsTest(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 400)
         self.assertIn("pacote valido", resp.json()["error"])
+
+    def test_send_to_kaggle_runs_as_background_job(self) -> None:
+        original_upload = webapp.kaggle_service.upload_dataset
+        original_push = webapp.kaggle_service.push_kernel
+        try:
+            with TestClient(webapp.app) as client:
+                user_id = db.create_user("bg-user", "password123")
+                db.update_kaggle_keys(user_id, "bg-user", "token")
+                project_id = db.create_project(user_id, "video project", "script", {})
+                db.set_project_status(project_id, "packaged")
+                project_work = webapp.WORK_DIR / f"project_{project_id}"
+                project_work.mkdir(parents=True)
+                (project_work / "asset_pack_video.zip").write_bytes(b"zip")
+                calls = []
+
+                def fake_upload(zip_path, project_name, username, token):
+                    calls.append(("upload", Path(zip_path).name, project_name, username, token))
+                    return "dataset-slug"
+
+                def fake_push(ds_slug, project_name, username, token):
+                    calls.append(("push", ds_slug, project_name, username, token))
+                    return "kernel-slug", "pushed"
+
+                webapp.kaggle_service.upload_dataset = fake_upload
+                webapp.kaggle_service.push_kernel = fake_push
+                client.post(
+                    "/login",
+                    data={"username": "bg-user", "password": "password123"},
+                    follow_redirects=False,
+                )
+                resp = client.post(f"/projects/{project_id}/send-to-kaggle")
+                payload = resp.json()
+                job = client.get(f"/jobs/{payload['job_id']}").json()
+                project = db.get_project(project_id, user_id)
+        finally:
+            webapp.kaggle_service.upload_dataset = original_upload
+            webapp.kaggle_service.push_kernel = original_push
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(payload["status"], "uploading")
+        self.assertEqual(job["status"], "complete")
+        self.assertEqual(job["result"]["kernel_slug"], "kernel-slug")
+        self.assertEqual(project["kaggle_kernel_slug"], "kernel-slug")
+        self.assertEqual(calls[0][0], "upload")
+        self.assertEqual(calls[1][0], "push")
 
     def test_pull_output_video_prefers_hyperframes_master(self) -> None:
         original_run = kaggle_service._run

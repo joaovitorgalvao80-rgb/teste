@@ -75,6 +75,75 @@
   {% endif %}
 </div>
 
+<div class="card ops-card">
+  <div class="toolbar-title">
+    <span class="eyebrow">Operacao</span>
+    <h2>Saude do projeto</h2>
+  </div>
+  <div class="ops-grid">
+    <div class="ops-item">
+      <span class="ops-label">Selecao</span>
+      <strong class="{% if diagnostics.selection.complete %}ok-text{% else %}warn-text{% endif %}">
+        {{ diagnostics.selection.selected }}/{{ diagnostics.selection.scenes }}
+      </strong>
+      <small>{% if diagnostics.selection.complete %}pronta para pacote{% else %}faltam cenas{% endif %}</small>
+    </div>
+    <div class="ops-item">
+      <span class="ops-label">Pacote</span>
+      <strong class="{% if diagnostics.zip.exists %}ok-text{% else %}muted{% endif %}">
+        {% if diagnostics.zip.exists %}{{ diagnostics.zip.name }}{% else %}sem ZIP{% endif %}
+      </strong>
+      <small>{% if diagnostics.zip.exists %}{{ diagnostics.zip.size_mb }} MB{% else %}gere a etapa 03{% endif %}</small>
+    </div>
+    {% set validation = diagnostics.outputs.validation %}
+    <div class="ops-item">
+      <span class="ops-label">Validacao</span>
+      <strong id="validation-status"
+              class="{% if validation and validation.status == 'ok' %}ok-text{% elif validation and validation.status == 'error' %}bad-text{% else %}warn-text{% endif %}">
+        {% if validation %}{{ validation.status }}{% else %}pendente{% endif %}
+      </strong>
+      <small id="validation-detail">
+        {% if validation and validation.issues %}
+          {{ validation.issues[0].message }}
+        {% elif validation %}
+          outputs coerentes
+        {% else %}
+          valide apos baixar o render
+        {% endif %}
+      </small>
+    </div>
+  </div>
+  <div class="ops-actions">
+    <button class="ghost small" type="button" onclick="validateOutput({{ project.id }}, this)">Validar outputs</button>
+    <a class="btn ghost small" href="/projects/{{ project.id }}/diagnostics.json" target="_blank">Diagnostico JSON</a>
+    {% if diagnostics.logs.render_log %}
+      <a class="btn ghost small" href="/projects/{{ project.id }}/download-render-log">Log render</a>
+    {% endif %}
+    {% if diagnostics.logs.hyperframes_status %}
+      <a class="btn ghost small" href="/projects/{{ project.id }}/download-hyperframes-status">Status HyperFrames</a>
+    {% endif %}
+    {% if diagnostics.logs.validation %}
+      <a class="btn ghost small" href="/projects/{{ project.id }}/download-validation">Validacao JSON</a>
+    {% endif %}
+  </div>
+  <div class="jobs-panel">
+    <span class="eyebrow">Jobs recentes</span>
+    {% if jobs %}
+      <ul class="job-list" id="job-list">
+        {% for job in jobs %}
+          <li class="job-{{ job.status }}">
+            <b>{{ job.kind }}</b>
+            <span>{{ job.status }}</span>
+            <small>{{ job.message or job.error or '-' }}</small>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted small">Nenhum job registrado ainda.</p>
+    {% endif %}
+  </div>
+</div>
+
 <div class="card refine-card">
   <div class="toolbar-title">
     <span class="eyebrow">Refinamento</span>

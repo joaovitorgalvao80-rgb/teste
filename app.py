@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, File, Form, Request, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, Request, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -19,7 +19,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
 import database as db
-from services import asset_search, edit_plan, groq_service, packager, kaggle_service
+from services import asset_search, diagnostics, edit_plan, groq_service, packager, kaggle_service
 from services.script_parser import parse_script
 
 ROOT = Path(__file__).resolve().parent
@@ -217,6 +217,29 @@ def missing_selected_scene_ids(scenes: list[dict], selected_by_scene: dict[int, 
     return [s["scene_id"] for s in scenes if s["id"] not in selected_by_scene]
 
 
+def project_work_dir(project_id: int) -> Path:
+    return WORK_DIR / f"project_{project_id}"
+
+
+def expected_duration_from_scenes(scenes: list[dict]) -> float:
+    return max((float(s.get("end_time") or 0) for s in scenes), default=0.0)
+
+
+def project_diagnostics_snapshot(
+    project_id: int,
+    scenes: list[dict],
+    selected_count: int,
+) -> dict:
+    project_work = project_work_dir(project_id)
+    return diagnostics.build_snapshot(
+        project_work=project_work,
+        zip_path=latest_zip(project_work),
+        selected_count=selected_count,
+        scene_count=len(scenes),
+        expected_duration=expected_duration_from_scenes(scenes),
+    )
+
+
 def safe_next_url(raw_next: str) -> str:
     """Aceita apenas redirects internos, evitando open redirect no login."""
     if not raw_next:
@@ -283,6 +306,42 @@ def local_hyperframes_status(project_work: Path) -> Optional[dict]:
         return json.loads(status_file.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
+
+
+def run_kaggle_send_job(
+    job_id: int,
+    project_id: int,
+    project_name: str,
+    username: str,
+    token: str,
+    zip_path_str: str,
+) -> None:
+    zip_path = Path(zip_path_str)
+    try:
+        db.update_job(job_id, status="running", message="Enviando dataset para o Kaggle")
+        ds_slug = kaggle_service.upload_dataset(zip_path, project_name, username, token)
+        db.update_job(
+            job_id,
+            status="running",
+            message="Criando kernel de render no Kaggle",
+            result={"dataset_slug": ds_slug},
+        )
+        k_slug, push_out = kaggle_service.push_kernel(ds_slug, project_name, username, token)
+        db.update_kaggle_job(project_id, ds_slug, k_slug, "queued")
+        kernel_url = f"https://www.kaggle.com/code/{username}/{k_slug}"
+        db.finish_job(
+            job_id,
+            message="Render enviado ao Kaggle",
+            result={
+                "dataset_slug": ds_slug,
+                "kernel_slug": k_slug,
+                "kernel_url": kernel_url,
+                "push_out": push_out,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - registra falha operacional para a UI
+        db.update_kaggle_status(project_id, "error")
+        db.fail_job(job_id, "Falha ao enviar para o Kaggle", str(exc))
 
 
 # ------------------------------------------------------------------
@@ -499,10 +558,11 @@ def project_page(request: Request, project_id: int):
         s["assets"] = db.list_assets(s["id"])
         s["selected"] = next((a for a in s["assets"] if a["state"] == "selected"), None)
     selected_count = sum(1 for s in scenes if s.get("selected"))
-    project_work = WORK_DIR / f"project_{project_id}"
+    project_work = project_work_dir(project_id)
     narration_file = find_input_media(project_id, "narration")
     avatar_file = find_input_media(project_id, "avatar")
     outputs = local_output_videos(project_work)
+    jobs = db.list_project_jobs(project_id, user["id"])
     return templates.TemplateResponse(
         request,
         "project.html",
@@ -518,6 +578,8 @@ def project_page(request: Request, project_id: int):
             "has_base_video": outputs["base"] is not None,
             "has_master_video": outputs["master"] is not None,
             "hyperframes_status": local_hyperframes_status(project_work) or {},
+            "diagnostics": project_diagnostics_snapshot(project_id, scenes, selected_count),
+            "jobs": jobs,
         },
     )
 
@@ -730,9 +792,11 @@ def package(request: Request, project_id: int):
             f"Selecione um asset para todas as cenas antes de gerar o pacote. Faltando: {preview}{suffix}",
         )
 
-    project_work = WORK_DIR / f"project_{project_id}"
+    project_work = project_work_dir(project_id)
     narration_file = find_input_media(project_id, "narration")
     avatar_file = find_input_media(project_id, "avatar")
+    job_id = db.create_job(user["id"], "package", project_id, "Preparando pacote ZIP")
+    db.update_job(job_id, status="running", message="Gerando edit_plan e baixando assets")
     plan = edit_plan.build_edit_plan_with_llm(
         project,
         config,
@@ -742,7 +806,7 @@ def package(request: Request, project_id: int):
         avatar_file=avatar_file.name if avatar_file else "",
     )
     try:
-        packager.build_zip(
+        zip_path = packager.build_zip(
             project=project,
             config=config,
             scenes=scenes,
@@ -758,8 +822,14 @@ def package(request: Request, project_id: int):
         )
     except RuntimeError as exc:
         db.set_project_status(project_id, "package_failed")
+        db.fail_job(job_id, "Falha ao gerar pacote", str(exc))
         raise HTTPException(502, f"Falha ao gerar pacote: {exc}") from exc
     db.set_project_status(project_id, "packaged")
+    db.finish_job(
+        job_id,
+        "Pacote ZIP pronto",
+        {"zip": zip_path.name, "scenes": len(scenes), "selected": len(selected_by_scene)},
+    )
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
@@ -769,7 +839,7 @@ def download_zip(request: Request, project_id: int):
     project = db.get_project(project_id, user["id"])
     if not project:
         raise HTTPException(404)
-    project_work = WORK_DIR / f"project_{project_id}"
+    project_work = project_work_dir(project_id)
     zip_path = latest_zip(project_work)
     if project.get("status") != "packaged" or not zip_path:
         raise HTTPException(404, "ZIP não encontrado. Gere o pacote primeiro.")
@@ -780,7 +850,7 @@ def download_zip(request: Request, project_id: int):
 # Kaggle - enviar para render
 # ------------------------------------------------------------------
 @app.post("/projects/{project_id}/send-to-kaggle")
-def send_to_kaggle(request: Request, project_id: int):
+def send_to_kaggle(request: Request, project_id: int, background_tasks: BackgroundTasks):
     user = require_user(request)
     project = db.get_project(project_id, user["id"])
     if not project:
@@ -794,23 +864,134 @@ def send_to_kaggle(request: Request, project_id: int):
             status_code=400,
         )
 
-    project_work = WORK_DIR / f"project_{project_id}"
+    project_work = project_work_dir(project_id)
     zip_path = latest_zip(project_work)
     if not zip_path:
         return JSONResponse({"error": "ZIP não encontrado. Clique em '03 Preparar pacote' novamente."}, status_code=400)
 
-    try:
-        ds_slug = kaggle_service.upload_dataset(
-            zip_path, project["name"], user["kaggle_username"], user["kaggle_token"]
+    job_id = db.create_job(user["id"], "kaggle_send", project_id, "Envio ao Kaggle na fila")
+    db.update_kaggle_status(project_id, "uploading")
+    background_tasks.add_task(
+        run_kaggle_send_job,
+        job_id,
+        project_id,
+        project["name"],
+        user["kaggle_username"],
+        user["kaggle_token"],
+        str(zip_path),
+    )
+    return JSONResponse(
+        {
+            "status": "uploading",
+            "job_id": job_id,
+            "message": "Envio ao Kaggle iniciado em segundo plano.",
+        }
+    )
+
+
+@app.get("/jobs/{job_id}")
+def job_status(request: Request, job_id: int):
+    user = require_user(request)
+    job = db.get_job(job_id, user["id"])
+    if not job:
+        raise HTTPException(404)
+    return JSONResponse(job)
+
+
+@app.get("/projects/{project_id}/jobs")
+def project_jobs(request: Request, project_id: int):
+    user = require_user(request)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    return JSONResponse({"jobs": db.list_project_jobs(project_id, user["id"])})
+
+
+@app.get("/projects/{project_id}/diagnostics.json")
+def project_diagnostics_json(request: Request, project_id: int, refresh: str = ""):
+    user = require_user(request)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    scenes = db.list_scenes(project_id)
+    selected = {row["scene_id"] for row in db.list_assets_by_state(project_id, ["selected"])}
+    project_work = project_work_dir(project_id)
+    validation = None
+    if refresh:
+        validation = diagnostics.validate_outputs(
+            project_work,
+            expected_duration=expected_duration_from_scenes(scenes),
         )
-        k_slug, push_out = kaggle_service.push_kernel(
-            ds_slug, project["name"], user["kaggle_username"], user["kaggle_token"]
-        )
-        db.update_kaggle_job(project_id, ds_slug, k_slug, "queued")
-        kernel_url = f"https://www.kaggle.com/code/{user['kaggle_username']}/{k_slug}"
-        return JSONResponse({"status": "queued", "kernel_url": kernel_url, "kernel_slug": k_slug, "push_out": push_out})
-    except Exception as exc:
-        return JSONResponse({"error": str(exc)}, status_code=500)
+    snapshot = diagnostics.build_snapshot(
+        project_work=project_work,
+        zip_path=latest_zip(project_work),
+        selected_count=len(selected),
+        scene_count=len(scenes),
+        expected_duration=expected_duration_from_scenes(scenes),
+    )
+    if validation:
+        snapshot["outputs"]["validation"] = validation
+    return JSONResponse(
+        {
+            "project": {"id": project_id, "name": project["name"], "status": project["status"]},
+            "diagnostics": snapshot,
+            "jobs": db.list_project_jobs(project_id, user["id"]),
+        }
+    )
+
+
+@app.post("/projects/{project_id}/validate-output")
+def validate_output(request: Request, project_id: int):
+    user = require_user(request)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    scenes = db.list_scenes(project_id)
+    payload = diagnostics.validate_outputs(
+        project_work_dir(project_id),
+        expected_duration=expected_duration_from_scenes(scenes),
+    )
+    return JSONResponse(payload)
+
+
+def project_output_file(project_id: int, filename: str) -> Path:
+    return project_work_dir(project_id) / "kaggle_output" / filename
+
+
+@app.get("/projects/{project_id}/download-render-log")
+def download_render_log(request: Request, project_id: int):
+    user = require_user(request)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    path = project_output_file(project_id, "log_render.txt")
+    if not path.exists():
+        raise HTTPException(404, "Log de render ainda nao encontrado.")
+    return FileResponse(path, filename=path.name, media_type="text/plain")
+
+
+@app.get("/projects/{project_id}/download-validation")
+def download_validation(request: Request, project_id: int):
+    user = require_user(request)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    path = diagnostics.validation_path(project_work_dir(project_id))
+    if not path.exists():
+        raise HTTPException(404, "Validacao ainda nao gerada.")
+    return FileResponse(path, filename=path.name, media_type="application/json")
+
+
+@app.get("/projects/{project_id}/download-hyperframes-status")
+def download_hyperframes_status(request: Request, project_id: int):
+    user = require_user(request)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    path = project_output_file(project_id, "hyperframes_status.json")
+    if not path.exists():
+        raise HTTPException(404, "Status HyperFrames ainda nao encontrado.")
+    return FileResponse(path, filename=path.name, media_type="application/json")
 
 
 @app.get("/projects/{project_id}/kaggle-status")
@@ -825,7 +1006,7 @@ def kaggle_status(request: Request, project_id: int):
     try:
         info = kaggle_service.get_status(k_slug, user["kaggle_username"], user["kaggle_token"])
         if info.get("status") == "complete":
-            project_work = WORK_DIR / f"project_{project_id}"
+            project_work = project_work_dir(project_id)
             outputs = local_output_videos(project_work)
             if not outputs["base"] and not outputs["master"]:
                 kaggle_service.pull_output_video(
@@ -845,6 +1026,10 @@ def kaggle_status(request: Request, project_id: int):
             hf = local_hyperframes_status(project_work)
             if hf:
                 info["hyperframes"] = hf
+            info["validation"] = diagnostics.validate_outputs(
+                project_work,
+                expected_duration=expected_duration_from_scenes(db.list_scenes(project_id)),
+            )
         db.update_kaggle_status(project_id, info["status"])
         return JSONResponse(info)
     except Exception as exc:
@@ -857,7 +1042,7 @@ def download_kaggle_video(request: Request, project_id: int):
     project = db.get_project(project_id, user["id"])
     if not project:
         raise HTTPException(404)
-    video = latest_kaggle_video(WORK_DIR / f"project_{project_id}")
+    video = latest_kaggle_video(project_work_dir(project_id))
     if not video:
         raise HTTPException(404, "Video do Kaggle ainda nao baixado.")
     return FileResponse(video, filename=video.name, media_type="video/mp4")
@@ -869,7 +1054,7 @@ def download_base_video(request: Request, project_id: int):
     project = db.get_project(project_id, user["id"])
     if not project:
         raise HTTPException(404)
-    video = local_output_videos(WORK_DIR / f"project_{project_id}")["base"]
+    video = local_output_videos(project_work_dir(project_id))["base"]
     if not video:
         raise HTTPException(404, "Video base ainda nao baixado.")
     return FileResponse(video, filename=video.name, media_type="video/mp4")
@@ -881,7 +1066,7 @@ def download_master_video(request: Request, project_id: int):
     project = db.get_project(project_id, user["id"])
     if not project:
         raise HTTPException(404)
-    video = local_output_videos(WORK_DIR / f"project_{project_id}")["master"]
+    video = local_output_videos(project_work_dir(project_id))["master"]
     if not video:
         raise HTTPException(404, "Video master ainda nao renderizado.")
     return FileResponse(video, filename=video.name, media_type="video/mp4")

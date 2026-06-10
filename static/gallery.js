@@ -78,6 +78,7 @@ let _kagglePolling = null;
 
 const KAGGLE_LABELS = {
   queued: "na fila...",
+  uploading: "enviando...",
   running: "renderizando...",
   complete: "pronto",
   error: "erro",
@@ -125,6 +126,7 @@ function renderKaggleState(data) {
       hfState.textContent = "erro no refino — base preservada: " + String(hf.error || "").slice(0, 160);
     }
   }
+  if (data.validation) renderValidation(data.validation);
 }
 
 async function sendToKaggle(projectId) {
@@ -137,15 +139,52 @@ async function sendToKaggle(projectId) {
   document.getElementById("kaggle-status-text").textContent = "enviando ZIP...";
   try {
     const res = await postForm(`/projects/${projectId}/send-to-kaggle`, {});
-    renderKaggleState({ status: res.status, url: res.kernel_url });
     btn.textContent = "04 Renderizar no Kaggle";
-    startKagglePolling(projectId);
+    renderKaggleState({ status: res.status, url: res.kernel_url });
+    if (res.job_id) {
+      startJobPolling(res.job_id, projectId, btn);
+    } else {
+      startKagglePolling(projectId);
+    }
   } catch (e) {
     renderKaggleState({ status: "error", error: e.message });
     document.getElementById("kaggle-status-text").textContent = "erro: " + e.message;
     btn.disabled = false;
     btn.textContent = "04 Renderizar no Kaggle";
   }
+}
+
+function renderJob(job) {
+  const txt = document.getElementById("kaggle-status-text");
+  if (!txt || !job) return;
+  const msg = job.message || job.error || job.status || "job";
+  txt.textContent = `${job.kind}: ${job.status} - ${msg}`;
+}
+
+function startJobPolling(jobId, projectId, btn) {
+  const tick = async () => {
+    try {
+      const res = await fetch(`/jobs/${jobId}`);
+      const job = await res.json();
+      renderJob(job);
+      if (job.status === "complete") {
+        const kernelUrl = job.result && job.result.kernel_url;
+        renderKaggleState({ status: "queued", url: kernelUrl });
+        startKagglePolling(projectId);
+        return;
+      }
+      if (job.status === "error") {
+        renderKaggleState({ status: "error", error: job.error || job.message || "job falhou" });
+        if (btn) btn.disabled = false;
+        return;
+      }
+      setTimeout(tick, 2500);
+    } catch (e) {
+      renderKaggleState({ status: "error", error: e.message });
+      if (btn) btn.disabled = false;
+    }
+  };
+  tick();
 }
 
 function startKagglePolling(projectId) {
@@ -163,6 +202,38 @@ function startKagglePolling(projectId) {
   };
   tick();
   _kagglePolling = setInterval(tick, 20000);
+}
+
+function renderValidation(data) {
+  const status = document.getElementById("validation-status");
+  const detail = document.getElementById("validation-detail");
+  if (!status || !detail || !data) return;
+  status.classList.remove("ok-text", "warn-text", "bad-text", "muted");
+  if (data.status === "ok") status.classList.add("ok-text");
+  else if (data.status === "error") status.classList.add("bad-text");
+  else status.classList.add("warn-text");
+  status.textContent = data.status || "pendente";
+  const issue = data.issues && data.issues.length ? data.issues[0].message : "outputs coerentes";
+  detail.textContent = issue;
+}
+
+async function validateOutput(projectId, btn) {
+  const old = btn ? btn.textContent : "";
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "validando...";
+  }
+  try {
+    const data = await postForm(`/projects/${projectId}/validate-output`, {});
+    renderValidation(data);
+  } catch (e) {
+    alert("Falha na validacao: " + e.message);
+  } finally {
+    if (btn) {
+      btn.textContent = old;
+      btn.disabled = false;
+    }
+  }
 }
 
 // Inicia polling se ja tinha kernel rodando.

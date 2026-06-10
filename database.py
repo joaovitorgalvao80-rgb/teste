@@ -94,6 +94,24 @@ CREATE TABLE IF NOT EXISTS assets (
     state         TEXT DEFAULT 'pending',
     FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL,
+    project_id  INTEGER,
+    kind        TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    message     TEXT DEFAULT '',
+    detail      TEXT DEFAULT '',
+    result_json TEXT DEFAULT '{}',
+    error       TEXT DEFAULT '',
+    log_path    TEXT DEFAULT '',
+    created_at  REAL NOT NULL,
+    updated_at  REAL NOT NULL,
+    finished_at REAL DEFAULT 0,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
 """
 
 
@@ -223,6 +241,117 @@ def update_kaggle_status(project_id: int, status: str) -> None:
     try:
         conn.execute("UPDATE projects SET kaggle_status = ? WHERE id = ?", (status, project_id))
         conn.commit()
+    finally:
+        conn.close()
+
+
+# ----------------------------------------------------------------------------
+# Jobs / operational history
+# ----------------------------------------------------------------------------
+def _job_to_dict(row: sqlite3.Row) -> dict:
+    data = dict(row)
+    try:
+        data["result"] = json.loads(data.pop("result_json") or "{}")
+    except json.JSONDecodeError:
+        data["result"] = {}
+    return data
+
+
+def create_job(
+    user_id: int,
+    kind: str,
+    project_id: Optional[int] = None,
+    message: str = "",
+    log_path: str = "",
+) -> int:
+    now = time.time()
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            """INSERT INTO jobs
+               (user_id, project_id, kind, status, message, log_path, created_at, updated_at)
+               VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)""",
+            (user_id, project_id, kind, message, log_path, now, now),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def update_job(
+    job_id: int,
+    status: Optional[str] = None,
+    message: Optional[str] = None,
+    detail: Optional[str] = None,
+    result: Optional[dict] = None,
+    error: Optional[str] = None,
+    log_path: Optional[str] = None,
+    finished: bool = False,
+) -> None:
+    fields: list[str] = ["updated_at = ?"]
+    values: list[Any] = [time.time()]
+    if status is not None:
+        fields.append("status = ?")
+        values.append(status)
+    if message is not None:
+        fields.append("message = ?")
+        values.append(message)
+    if detail is not None:
+        fields.append("detail = ?")
+        values.append(detail)
+    if result is not None:
+        fields.append("result_json = ?")
+        values.append(json.dumps(result, ensure_ascii=False))
+    if error is not None:
+        fields.append("error = ?")
+        values.append(error)
+    if log_path is not None:
+        fields.append("log_path = ?")
+        values.append(log_path)
+    if finished:
+        fields.append("finished_at = ?")
+        values.append(time.time())
+    values.append(job_id)
+    conn = _connect()
+    try:
+        conn.execute(f"UPDATE jobs SET {', '.join(fields)} WHERE id = ?", values)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def finish_job(job_id: int, message: str = "", result: Optional[dict] = None) -> None:
+    update_job(job_id, status="complete", message=message, result=result or {}, error="", finished=True)
+
+
+def fail_job(job_id: int, message: str, error: str = "") -> None:
+    update_job(job_id, status="error", message=message, error=error or message, finished=True)
+
+
+def get_job(job_id: int, user_id: int) -> Optional[dict]:
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM jobs WHERE id = ? AND user_id = ?",
+            (job_id, user_id),
+        ).fetchone()
+        return _job_to_dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def list_project_jobs(project_id: int, user_id: int, limit: int = 8) -> list[dict]:
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            """SELECT * FROM jobs
+               WHERE project_id = ? AND user_id = ?
+               ORDER BY created_at DESC
+               LIMIT ?""",
+            (project_id, user_id, limit),
+        ).fetchall()
+        return [_job_to_dict(r) for r in rows]
     finally:
         conn.close()
 

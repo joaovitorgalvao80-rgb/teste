@@ -1033,6 +1033,128 @@ button.kaggle-btn {
   background: var(--danger);
 }
 
+.ok-text {
+  color: var(--accent);
+}
+
+.warn-text {
+  color: #ffd79d;
+}
+
+.bad-text {
+  color: var(--danger);
+}
+
+.ops-card {
+  display: grid;
+  gap: 14px;
+}
+
+.ops-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.ops-item {
+  min-height: 102px;
+  padding: 14px;
+  background: var(--field);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.ops-label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--muted-2);
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.ops-item strong {
+  display: block;
+  overflow: hidden;
+  font-size: 17px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ops-item small {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.ops-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.jobs-panel {
+  display: grid;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.job-list {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+}
+
+.job-list li {
+  display: grid;
+  grid-template-columns: 130px 94px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-height: 38px;
+  padding: 9px 11px;
+  background: rgba(242, 247, 244, 0.035);
+  border: 1px solid rgba(242, 247, 244, 0.08);
+  border-radius: var(--radius-sm);
+}
+
+.job-list b,
+.job-list span,
+.job-list small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-list b {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.job-list span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.job-list small {
+  color: var(--muted);
+}
+
+.job-complete span {
+  color: var(--accent);
+}
+
+.job-running span,
+.job-queued span {
+  color: var(--primary);
+}
+
+.job-error span {
+  color: var(--danger);
+}
+
 @keyframes kpulse {
   0%, 100% {
     box-shadow: 0 0 0 0 rgba(158, 231, 221, 0.46);
@@ -1264,6 +1386,11 @@ button.kaggle-btn {
   }
 
   .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ops-grid,
+  .job-list li {
     grid-template-columns: 1fr;
   }
 }
