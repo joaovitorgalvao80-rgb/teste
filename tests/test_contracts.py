@@ -89,6 +89,56 @@ class DeployContractsTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 404)
         self.assertEqual(db.get_asset(asset["id"])["state"], "pending")
 
+    def test_package_route_requires_selection_for_every_scene(self) -> None:
+        with TestClient(webapp.app) as client:
+            user_id = db.create_user("partial", "password123")
+            project_id = db.create_project(user_id, "partial project", "script", {})
+            db.replace_scenes(
+                project_id,
+                [
+                    {
+                        "scene_id": "scene_001",
+                        "idx": 1,
+                        "zone": "GANCHO",
+                        "start_time": 0,
+                        "end_time": 4,
+                        "duration": 4,
+                        "narration": "um",
+                    },
+                    {
+                        "scene_id": "scene_002",
+                        "idx": 2,
+                        "zone": "CTA",
+                        "start_time": 4,
+                        "end_time": 8,
+                        "duration": 4,
+                        "narration": "dois",
+                    },
+                ],
+            )
+            first_scene = db.list_scenes(project_id)[0]
+            db.add_assets(
+                first_scene["id"],
+                [
+                    {
+                        "source": "pexels",
+                        "asset_type": "video",
+                        "download_url": "https://example.com/a.mp4",
+                    }
+                ],
+            )
+            asset = db.list_assets(first_scene["id"])[0]
+            db.set_asset_state(asset["id"], "selected")
+            client.post(
+                "/login",
+                data={"username": "partial", "password": "password123"},
+                follow_redirects=False,
+            )
+            resp = client.post(f"/projects/{project_id}/package", follow_redirects=False)
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("scene_002", resp.text)
+
     def test_packager_fails_when_no_selected_asset_downloads(self) -> None:
         project = {"name": "Teste"}
         config = {"avatar_safe_area": "right", "resolution": "1920x1080", "format": "16:9"}
@@ -128,6 +178,74 @@ class DeployContractsTest(unittest.TestCase):
         finally:
             packager._download = original_download
 
+    def test_packager_rejects_partial_scene_downloads(self) -> None:
+        project = {"name": "Teste"}
+        config = {"avatar_safe_area": "right", "resolution": "1920x1080", "format": "16:9"}
+        scenes = [
+            {
+                "id": 1,
+                "scene_id": "scene_001",
+                "idx": 1,
+                "zone": "GANCHO",
+                "start_time": 0.0,
+                "end_time": 4.0,
+                "duration": 4.0,
+                "narration": "parte um",
+                "visual_goal": "teste",
+                "keywords": [],
+                "must_show": [],
+                "must_not_show": [],
+                "asset_type": "video",
+                "overlay_text": "",
+                "avatar_safe_area": "right",
+            },
+            {
+                "id": 2,
+                "scene_id": "scene_002",
+                "idx": 2,
+                "zone": "CTA",
+                "start_time": 4.0,
+                "end_time": 8.0,
+                "duration": 4.0,
+                "narration": "parte dois",
+                "visual_goal": "teste",
+                "keywords": [],
+                "must_show": [],
+                "must_not_show": [],
+                "asset_type": "video",
+                "overlay_text": "",
+                "avatar_safe_area": "right",
+            },
+        ]
+        selected = {
+            1: {
+                "source": "pexels",
+                "download_url": "https://example.com/a.mp4",
+                "asset_type": "video",
+                "keyword": "test",
+            },
+            2: {
+                "source": "pexels",
+                "download_url": "https://example.com/b.mp4",
+                "asset_type": "video",
+                "keyword": "test",
+            },
+        }
+
+        def fake_download(url, dest, _max_bytes):
+            if url.endswith("/a.mp4"):
+                dest.write_bytes(b"fake-video")
+                return True
+            return False
+
+        original_download = packager._download
+        packager._download = fake_download
+        try:
+            with self.assertRaisesRegex(RuntimeError, "pacote incompleto"):
+                packager.build_zip(project, config, scenes, selected, [], self.root / "work")
+        finally:
+            packager._download = original_download
+
     def test_montador_rejects_zip_slip_paths(self) -> None:
         bad_zip = self.root / "bad.zip"
         work = self.root / "work"
@@ -147,6 +265,27 @@ class DeployContractsTest(unittest.TestCase):
             scenes = parse_script(f"[00:00.0 {separator} 00:01.5] Ola mundo")
             self.assertEqual(len(scenes), 1)
             self.assertEqual(scenes[0]["duration"], 1.5)
+
+    def test_project_config_sanitizes_invalid_values(self) -> None:
+        raw = {
+            "resolution": "bogus",
+            "avatar_safe_area": "center",
+            "scene_duration": -9,
+            "avatar_safe_width_ratio": 2,
+            "per_keyword": 999,
+            "max_download_mb": "bad",
+            "image_fallback": "0",
+            "visual_style": "  ",
+        }
+        cfg = webapp.normalize_project_config(raw)
+        self.assertEqual(cfg["resolution"], "1920x1080")
+        self.assertEqual(cfg["avatar_safe_area"], "right")
+        self.assertEqual(cfg["scene_duration"], 2.0)
+        self.assertEqual(cfg["avatar_safe_width_ratio"], 0.45)
+        self.assertEqual(cfg["per_keyword"], 20)
+        self.assertEqual(cfg["max_download_mb"], 90)
+        self.assertFalse(cfg["image_fallback"])
+        self.assertEqual(cfg["visual_style"], webapp.DEFAULT_CONFIG["visual_style"])
 
     def test_pexels_video_endpoint_uses_current_v1_path(self) -> None:
         self.assertEqual(asset_search.PEXELS_VIDEO_URL, "https://api.pexels.com/v1/videos/search")
@@ -294,6 +433,26 @@ class DeployContractsTest(unittest.TestCase):
         self.assertEqual(payload["video_url"], f"/projects/{project_id}/download-master-video")
         self.assertEqual(payload["master_video_url"], f"/projects/{project_id}/download-master-video")
         self.assertEqual(payload["base_video_url"], f"/projects/{project_id}/download-base-video")
+
+    def test_send_to_kaggle_requires_valid_package_status(self) -> None:
+        original_upload = webapp.kaggle_service.upload_dataset
+        try:
+            webapp.kaggle_service.upload_dataset = lambda *_args, **_kwargs: self.fail("nao deveria enviar")
+            with TestClient(webapp.app) as client:
+                user_id = db.create_user("kaggle-user", "password123")
+                db.update_kaggle_keys(user_id, "kaggle-user", "token")
+                project_id = db.create_project(user_id, "video project", "script", {})
+                client.post(
+                    "/login",
+                    data={"username": "kaggle-user", "password": "password123"},
+                    follow_redirects=False,
+                )
+                resp = client.post(f"/projects/{project_id}/send-to-kaggle")
+        finally:
+            webapp.kaggle_service.upload_dataset = original_upload
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("pacote valido", resp.json()["error"])
 
     def test_pull_output_video_prefers_hyperframes_master(self) -> None:
         original_run = kaggle_service._run

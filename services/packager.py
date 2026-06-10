@@ -215,6 +215,14 @@ def build_zip(
             "nenhum asset selecionado conseguiu ser baixado; "
             "verifique URLs expiradas, limite de MB ou conexao com Pexels/Pixabay"
         )
+    missing = [gscene["id"] for gscene in guide["scenes"] if not gscene.get("selected_asset")]
+    if missing:
+        preview = ", ".join(missing[:8])
+        suffix = "..." if len(missing) > 8 else ""
+        raise RuntimeError(
+            "pacote incompleto; faltam assets validos para todas as cenas. "
+            f"Faltando: {preview}{suffix}"
+        )
 
     safe_name = _slug(project["name"]) or "asset_pack"
     zip_path = work_dir / f"asset_pack_{safe_name}.zip"

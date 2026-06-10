@@ -52,7 +52,7 @@ function updateSelectedCount() {
     if (sec.querySelector(".acard.state-selected")) selected++;
   });
   btn.textContent = `03 Preparar pacote (${selected}/${total})`;
-  btn.disabled = selected === 0;
+  btn.disabled = total === 0 || selected !== total;
 }
 
 async function searchMore(sceneId, btn, media) {

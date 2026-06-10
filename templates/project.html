@@ -28,7 +28,7 @@
       <button class="secondary" type="submit" {% if not scenes %}disabled{% endif %}><span>02</span> Buscar assets</button>
     </form>
     <form method="post" action="/projects/{{ project.id }}/package">
-      <button class="accent" type="submit" {% if selected_count == 0 %}disabled{% endif %}>
+      <button class="accent" type="submit" {% if scenes|length == 0 or selected_count != scenes|length %}disabled{% endif %}>
         <span>03</span> Preparar pacote ({{ selected_count }}/{{ scenes|length }})
       </button>
     </form>

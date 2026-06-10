@@ -80,6 +80,67 @@ DEFAULT_CONFIG = {
     "max_download_mb": 90,
 }
 
+ALLOWED_RESOLUTIONS = {"1920x1080", "1280x720"}
+ALLOWED_SAFE_AREAS = {"left", "right"}
+MIN_SCENE_DURATION = 2.0
+MAX_SCENE_DURATION = 8.0
+MIN_AVATAR_SAFE_RATIO = 0.10
+MAX_AVATAR_SAFE_RATIO = 0.45
+
+
+def _coerce_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "sim"}
+    return bool(value)
+
+
+def _coerce_float(value: object, default: float, minimum: float, maximum: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = default
+    return min(max(number, minimum), maximum)
+
+
+def _coerce_int(value: object, default: int, minimum: int, maximum: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    return min(max(number, minimum), maximum)
+
+
+def normalize_project_config(raw_config: Optional[dict] = None) -> dict:
+    cfg = dict(DEFAULT_CONFIG)
+    if raw_config:
+        cfg.update(raw_config)
+    if cfg.get("resolution") not in ALLOWED_RESOLUTIONS:
+        cfg["resolution"] = DEFAULT_CONFIG["resolution"]
+    if cfg.get("avatar_safe_area") not in ALLOWED_SAFE_AREAS:
+        cfg["avatar_safe_area"] = DEFAULT_CONFIG["avatar_safe_area"]
+    cfg["scene_duration"] = _coerce_float(
+        cfg.get("scene_duration"),
+        DEFAULT_CONFIG["scene_duration"],
+        MIN_SCENE_DURATION,
+        MAX_SCENE_DURATION,
+    )
+    cfg["avatar_safe_width_ratio"] = _coerce_float(
+        cfg.get("avatar_safe_width_ratio"),
+        DEFAULT_CONFIG["avatar_safe_width_ratio"],
+        MIN_AVATAR_SAFE_RATIO,
+        MAX_AVATAR_SAFE_RATIO,
+    )
+    cfg["per_keyword"] = _coerce_int(cfg.get("per_keyword"), DEFAULT_CONFIG["per_keyword"], 1, 20)
+    cfg["max_download_mb"] = _coerce_int(
+        cfg.get("max_download_mb"), DEFAULT_CONFIG["max_download_mb"], 5, 500
+    )
+    cfg["image_fallback"] = _coerce_bool(cfg.get("image_fallback"))
+    visual_style = str(cfg.get("visual_style") or "").strip()
+    cfg["visual_style"] = visual_style or DEFAULT_CONFIG["visual_style"]
+    return cfg
+
 # ------------------------------------------------------------------
 # App
 # ------------------------------------------------------------------
@@ -141,12 +202,19 @@ def require_user(request: Request) -> dict:
 
 
 def project_config(project: dict) -> dict:
-    cfg = dict(DEFAULT_CONFIG)
     try:
-        cfg.update(json.loads(project.get("config_json") or "{}"))
+        stored = json.loads(project.get("config_json") or "{}")
     except json.JSONDecodeError:
-        pass
-    return cfg
+        stored = {}
+    return normalize_project_config(stored)
+
+
+def resolution_width(config: dict) -> int:
+    return int(str(config.get("resolution") or DEFAULT_CONFIG["resolution"]).split("x", 1)[0])
+
+
+def missing_selected_scene_ids(scenes: list[dict], selected_by_scene: dict[int, dict]) -> list[str]:
+    return [s["scene_id"] for s in scenes if s["id"] not in selected_by_scene]
 
 
 def safe_next_url(raw_next: str) -> str:
@@ -401,13 +469,12 @@ def new_project(
     image_fallback: str = Form(""),
 ):
     user = require_user(request)
-    config = dict(DEFAULT_CONFIG)
-    config.update({
+    config = normalize_project_config({
         "avatar_safe_area": avatar_safe_area,
         "visual_style": visual_style.strip() or DEFAULT_CONFIG["visual_style"],
         "resolution": resolution,
-        "scene_duration": float(scene_duration or 4.0),
-        "image_fallback": bool(image_fallback),
+        "scene_duration": scene_duration,
+        "image_fallback": image_fallback,
     })
     pid = db.create_project(user["id"], name.strip() or "projeto", script, config)
     return RedirectResponse(f"/projects/{pid}", status_code=303)
@@ -510,7 +577,7 @@ def search_all(request: Request, project_id: int):
     if not user["pexels_key"] and not user["pixabay_key"]:
         raise HTTPException(400, "Cadastre ao menos uma chave de API em /settings.")
 
-    max_w = int(config["resolution"].split("x")[0])
+    max_w = resolution_width(config)
     scenes = db.list_scenes(project_id)
     seen: set = set()
     for scene in scenes:
@@ -540,7 +607,7 @@ def search_more(request: Request, scene_db_id: int, media: str = Form("all")):
     config = project_config(project)
     if media not in {"all", "video", "image"}:
         media = "all"
-    max_w = int(config["resolution"].split("x")[0])
+    max_w = resolution_width(config)
     existing = {a["download_url"] for a in db.list_assets(scene_db_id)}
     results = asset_search.search_scene(
         scene["keywords"],
@@ -654,6 +721,14 @@ def package(request: Request, project_id: int):
 
     if not selected_by_scene:
         raise HTTPException(400, "Selecione ao menos um asset antes de gerar o pacote.")
+    missing = missing_selected_scene_ids(scenes, selected_by_scene)
+    if missing:
+        preview = ", ".join(missing[:8])
+        suffix = "..." if len(missing) > 8 else ""
+        raise HTTPException(
+            400,
+            f"Selecione um asset para todas as cenas antes de gerar o pacote. Faltando: {preview}{suffix}",
+        )
 
     project_work = WORK_DIR / f"project_{project_id}"
     narration_file = find_input_media(project_id, "narration")
@@ -696,7 +771,7 @@ def download_zip(request: Request, project_id: int):
         raise HTTPException(404)
     project_work = WORK_DIR / f"project_{project_id}"
     zip_path = latest_zip(project_work)
-    if not zip_path:
+    if project.get("status") != "packaged" or not zip_path:
         raise HTTPException(404, "ZIP não encontrado. Gere o pacote primeiro.")
     return FileResponse(zip_path, filename=zip_path.name, media_type="application/zip")
 
@@ -712,6 +787,12 @@ def send_to_kaggle(request: Request, project_id: int):
         return JSONResponse({"error": "Projeto não encontrado."}, status_code=404)
     if not user.get("kaggle_username") or not user.get("kaggle_token"):
         return JSONResponse({"error": "Configure Kaggle username e token em /configurações."}, status_code=400)
+
+    if project.get("status") != "packaged":
+        return JSONResponse(
+            {"error": "Gere um pacote valido em '03 Preparar pacote' antes de enviar ao Kaggle."},
+            status_code=400,
+        )
 
     project_work = WORK_DIR / f"project_{project_id}"
     zip_path = latest_zip(project_work)
