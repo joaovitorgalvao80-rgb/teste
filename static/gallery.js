@@ -89,7 +89,9 @@ function renderKaggleState(data) {
   const txt = document.getElementById("kaggle-status-text");
   const dot = document.getElementById("kaggle-dot");
   const link = document.getElementById("kaggle-link");
-  const dl = document.getElementById("kaggle-video");
+  const dlMaster = document.getElementById("kaggle-master");
+  const dlBase = document.getElementById("kaggle-base");
+  const hfState = document.getElementById("hyperframes-state");
   const status = (data.status || "").toLowerCase();
   let label = KAGGLE_LABELS[status] || status || "verificando...";
   if (status === "error" && data.error) label = "erro: " + data.error.slice(0, 200);
@@ -102,12 +104,25 @@ function renderKaggleState(data) {
     else dot.classList.add("wait");
   }
   if (link && data.url) link.href = data.url;
-  if (dl) {
-    if (data.video_url) {
-      dl.href = data.video_url;
-      dl.style.display = "";
-    } else {
-      dl.style.display = "none";
+  if (dlMaster) {
+    const url = data.master_video_url || "";
+    if (url) dlMaster.href = url;
+    dlMaster.style.display = url ? "" : "none";
+  }
+  if (dlBase) {
+    const url = data.base_video_url || "";
+    if (url) dlBase.href = url;
+    dlBase.style.display = url ? "" : "none";
+  }
+  if (hfState && data.hyperframes) {
+    const hf = data.hyperframes;
+    if (hf.status === "complete") {
+      let extras = [];
+      if (hf.audio) extras.push("com narração");
+      if (hf.avatar) extras.push("com avatar");
+      hfState.textContent = "master pronto (" + (hf.render_mode || "mp4") + (extras.length ? ", " + extras.join(", ") : "") + ")";
+    } else if (hf.status === "error") {
+      hfState.textContent = "erro no refino — base preservada: " + String(hf.error || "").slice(0, 160);
     }
   }
 }

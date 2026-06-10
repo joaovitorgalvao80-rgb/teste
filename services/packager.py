@@ -176,6 +176,8 @@ def build_zip(
     rejected_assets: list[dict],
     work_dir: Path,
     max_download_mb: int = 90,
+    edit_plan: Optional[dict] = None,
+    extra_files: Optional[list[Path]] = None,
 ) -> Path:
     """Baixa assets selecionados, renomeia e monta o ZIP final. Retorna o caminho."""
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -225,5 +227,10 @@ def build_zip(
         zf.writestr("metadata/pexels_sources.json", json.dumps(pexels_sources, ensure_ascii=False, indent=2))
         zf.writestr("metadata/pixabay_sources.json", json.dumps(pixabay_sources, ensure_ascii=False, indent=2))
         zf.writestr("metadata/rejected_assets.json", json.dumps(rejected_assets, ensure_ascii=False, indent=2))
+        if edit_plan:
+            zf.writestr("edit_plan.json", json.dumps(edit_plan, ensure_ascii=False, indent=2))
+        for extra in extra_files or []:
+            if extra and extra.exists():
+                zf.write(extra, extra.name)
 
     return zip_path

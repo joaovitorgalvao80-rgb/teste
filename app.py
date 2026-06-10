@@ -17,7 +17,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
 import database as db
-from services import asset_search, groq_service, packager, kaggle_service
+from services import asset_search, edit_plan, groq_service, packager, kaggle_service
 from services.script_parser import parse_script
 
 ROOT = Path(__file__).resolve().parent
@@ -164,6 +164,55 @@ def latest_zip(project_work: Path) -> Optional[Path]:
 def latest_kaggle_video(project_work: Path) -> Optional[Path]:
     output_dir = project_work / "kaggle_output"
     return kaggle_service.choose_preferred_video_path(output_dir.rglob("*.mp4")) if output_dir.exists() else None
+
+
+NARRATION_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
+AVATAR_EXTS = {".webm", ".mov", ".mp4"}
+MEDIA_KINDS = {"narration": NARRATION_EXTS, "avatar": AVATAR_EXTS}
+MAX_MEDIA_UPLOAD_MB = 200
+
+
+def project_inputs_dir(project_id: int) -> Path:
+    return WORK_DIR / f"project_{project_id}" / "inputs"
+
+
+def find_input_media(project_id: int, kind: str) -> Optional[Path]:
+    folder = project_inputs_dir(project_id)
+    exts = MEDIA_KINDS.get(kind, set())
+    if not folder.exists():
+        return None
+    for f in sorted(folder.iterdir()):
+        if f.is_file() and f.stem == kind and f.suffix.lower() in exts:
+            return f
+    return None
+
+
+def local_output_videos(project_work: Path) -> dict:
+    """Separa base e master entre os MP4 baixados do Kaggle."""
+    outputs: dict = {"base": None, "master": None}
+    output_dir = project_work / "kaggle_output"
+    if not output_dir.exists():
+        return outputs
+    for p in output_dir.rglob("*.mp4"):
+        rel = str(p.relative_to(output_dir)).replace("\\", "/")
+        if rel.startswith("assets/") or "/assets/" in rel:
+            continue
+        name = p.name.lower()
+        if name == kaggle_service.MASTER_VIDEO_NAME:
+            outputs["master"] = p
+        elif name in {kaggle_service.BASE_VIDEO_NAME, kaggle_service.BASE_VIDEO_ALIAS}:
+            outputs["base"] = p
+    return outputs
+
+
+def local_hyperframes_status(project_work: Path) -> Optional[dict]:
+    status_file = project_work / "kaggle_output" / "hyperframes_status.json"
+    if not status_file.exists():
+        return None
+    try:
+        return json.loads(status_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
 
 
 # ------------------------------------------------------------------
@@ -342,6 +391,10 @@ def project_page(request: Request, project_id: int):
         s["assets"] = db.list_assets(s["id"])
         s["selected"] = next((a for a in s["assets"] if a["state"] == "selected"), None)
     selected_count = sum(1 for s in scenes if s.get("selected"))
+    project_work = WORK_DIR / f"project_{project_id}"
+    narration_file = find_input_media(project_id, "narration")
+    avatar_file = find_input_media(project_id, "avatar")
+    outputs = local_output_videos(project_work)
     return templates.TemplateResponse(
         request,
         "project.html",
@@ -352,6 +405,11 @@ def project_page(request: Request, project_id: int):
             "scenes": scenes,
             "selected_count": selected_count,
             "has_keys": bool(user["pexels_key"] or user["pixabay_key"]),
+            "narration_name": narration_file.name if narration_file else "",
+            "avatar_name": avatar_file.name if avatar_file else "",
+            "has_base_video": outputs["base"] is not None,
+            "has_master_video": outputs["master"] is not None,
+            "hyperframes_status": local_hyperframes_status(project_work) or {},
         },
     )
 
@@ -491,6 +549,53 @@ def asset_state(request: Request, asset_id: int, state: str = Form(...)):
 
 
 # ------------------------------------------------------------------
+# Midias do refinamento (narracao / avatar)
+# ------------------------------------------------------------------
+@app.post("/projects/{project_id}/upload-media")
+async def upload_media(
+    request: Request,
+    project_id: int,
+    kind: str = Form(...),
+    media: UploadFile = File(...),
+):
+    user = require_user(request)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    exts = MEDIA_KINDS.get(kind)
+    if not exts:
+        raise HTTPException(400, "Tipo de midia invalido.")
+    suffix = Path(media.filename or "").suffix.lower()
+    if suffix not in exts:
+        raise HTTPException(400, f"Extensao nao suportada para {kind}: use {', '.join(sorted(exts))}.")
+    data = await media.read()
+    if len(data) > MAX_MEDIA_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(400, f"Arquivo muito grande (maximo {MAX_MEDIA_UPLOAD_MB} MB).")
+    if not data:
+        raise HTTPException(400, "Arquivo vazio.")
+    folder = project_inputs_dir(project_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    for old in folder.glob(f"{kind}.*"):
+        old.unlink(missing_ok=True)
+    (folder / f"{kind}{suffix}").write_bytes(data)
+    return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+
+@app.post("/projects/{project_id}/remove-media")
+def remove_media(request: Request, project_id: int, kind: str = Form(...)):
+    user = require_user(request)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    if kind not in MEDIA_KINDS:
+        raise HTTPException(400, "Tipo de midia invalido.")
+    existing = find_input_media(project_id, kind)
+    if existing:
+        existing.unlink(missing_ok=True)
+    return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+
+# ------------------------------------------------------------------
 # Gerar pacote (ZIP)
 # ------------------------------------------------------------------
 @app.post("/projects/{project_id}/package")
@@ -510,6 +615,15 @@ def package(request: Request, project_id: int):
         raise HTTPException(400, "Selecione ao menos um asset antes de gerar o pacote.")
 
     project_work = WORK_DIR / f"project_{project_id}"
+    narration_file = find_input_media(project_id, "narration")
+    avatar_file = find_input_media(project_id, "avatar")
+    plan = edit_plan.build_edit_plan(
+        project,
+        config,
+        scenes,
+        narration_file=narration_file.name if narration_file else "",
+        avatar_file=avatar_file.name if avatar_file else "",
+    )
     try:
         packager.build_zip(
             project=project,
@@ -522,6 +636,8 @@ def package(request: Request, project_id: int):
             ],
             work_dir=project_work,
             max_download_mb=config["max_download_mb"],
+            edit_plan=plan,
+            extra_files=[f for f in (narration_file, avatar_file) if f],
         )
     except RuntimeError as exc:
         db.set_project_status(project_id, "package_failed")
@@ -585,18 +701,27 @@ def kaggle_status(request: Request, project_id: int):
         return JSONResponse({"status": "none"})
     try:
         info = kaggle_service.get_status(k_slug, user["kaggle_username"], user["kaggle_token"])
-        if info.get("status") == "complete" and not info.get("video_url"):
+        if info.get("status") == "complete":
             project_work = WORK_DIR / f"project_{project_id}"
-            local_video = latest_kaggle_video(project_work)
-            if not local_video:
-                local_video = kaggle_service.pull_output_video(
+            outputs = local_output_videos(project_work)
+            if not outputs["base"] and not outputs["master"]:
+                kaggle_service.pull_output_video(
                     k_slug,
                     user["kaggle_username"],
                     user["kaggle_token"],
                     project_work / "kaggle_output",
                 )
-            if local_video:
-                info["video_url"] = f"/projects/{project_id}/download-kaggle-video"
+                outputs = local_output_videos(project_work)
+            if outputs["master"]:
+                info["master_video_url"] = f"/projects/{project_id}/download-master-video"
+                info["video_url"] = info["master_video_url"]
+            if outputs["base"]:
+                info["base_video_url"] = f"/projects/{project_id}/download-base-video"
+                if not info.get("video_url"):
+                    info["video_url"] = info["base_video_url"]
+            hf = local_hyperframes_status(project_work)
+            if hf:
+                info["hyperframes"] = hf
         db.update_kaggle_status(project_id, info["status"])
         return JSONResponse(info)
     except Exception as exc:
@@ -612,6 +737,30 @@ def download_kaggle_video(request: Request, project_id: int):
     video = latest_kaggle_video(WORK_DIR / f"project_{project_id}")
     if not video:
         raise HTTPException(404, "Video do Kaggle ainda nao baixado.")
+    return FileResponse(video, filename=video.name, media_type="video/mp4")
+
+
+@app.get("/projects/{project_id}/download-base-video")
+def download_base_video(request: Request, project_id: int):
+    user = require_user(request)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    video = local_output_videos(WORK_DIR / f"project_{project_id}")["base"]
+    if not video:
+        raise HTTPException(404, "Video base ainda nao baixado.")
+    return FileResponse(video, filename=video.name, media_type="video/mp4")
+
+
+@app.get("/projects/{project_id}/download-master-video")
+def download_master_video(request: Request, project_id: int):
+    user = require_user(request)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    video = local_output_videos(WORK_DIR / f"project_{project_id}")["master"]
+    if not video:
+        raise HTTPException(404, "Video master ainda nao renderizado.")
     return FileResponse(video, filename=video.name, media_type="video/mp4")
 
 

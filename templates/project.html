@@ -50,14 +50,73 @@
         <span id="kaggle-status-text" class="kaggle-state">{{ project.kaggle_status or 'verificando...' }}</span>
       </div>
       <div class="kaggle-links">
-        <a id="kaggle-video" class="btn kaggle-dl" href="#" download style="display:none">Baixar vídeo</a>
+        <a id="kaggle-master" class="btn kaggle-dl" href="/projects/{{ project.id }}/download-master-video" download
+           {% if not has_master_video %}style="display:none"{% endif %}>Baixar master</a>
+        <a id="kaggle-base" class="btn ghost small" href="/projects/{{ project.id }}/download-base-video" download
+           {% if not has_base_video %}style="display:none"{% endif %}>Baixar base</a>
         <a id="kaggle-link" href="https://www.kaggle.com/code/{{ user.kaggle_username }}/{{ project.kaggle_kernel_slug }}" target="_blank" class="small muted">abrir no Kaggle ↗</a>
       </div>
+    </div>
+    <div class="kaggle-row hyperframes-row">
+      <span class="eyebrow">05 Refino HyperFrames</span>
+      <span id="hyperframes-state" class="kaggle-state">
+        {%- if hyperframes_status.get('status') == 'complete' -%}
+          master pronto ({{ hyperframes_status.get('render_mode', 'mp4') }}{% if hyperframes_status.get('audio') %}, com narração{% endif %}{% if hyperframes_status.get('avatar') %}, com avatar{% endif %})
+        {%- elif hyperframes_status.get('status') == 'error' -%}
+          erro no refino — base preservada
+        {%- else -%}
+          roda junto com o render do Kaggle
+        {%- endif -%}
+      </span>
     </div>
   </div>
   {% if not has_keys %}
     <p class="alert">Cadastre chaves de Pexels/Pixabay em <a href="/settings">APIs</a> para buscar assets.</p>
   {% endif %}
+</div>
+
+<div class="card refine-card">
+  <div class="toolbar-title">
+    <span class="eyebrow">Refinamento</span>
+    <h2>Narração e avatar do master</h2>
+  </div>
+  <p class="muted small">
+    Esses arquivos entram no <b>final_master.mp4</b> renderizado pelo HyperFrames.
+    Envie antes de <b>03 Preparar pacote</b> para que sigam no ZIP.
+  </p>
+  <div class="refine-grid">
+    <div class="refine-item">
+      <strong>Narração</strong>
+      {% if narration_name %}
+        <p class="small">Atual: <b>{{ narration_name }}</b></p>
+        <form method="post" action="/projects/{{ project.id }}/remove-media">
+          <input type="hidden" name="kind" value="narration">
+          <button class="ghost small" type="submit">Remover</button>
+        </form>
+      {% endif %}
+      <form method="post" action="/projects/{{ project.id }}/upload-media" enctype="multipart/form-data">
+        <input type="hidden" name="kind" value="narration">
+        <input type="file" name="media" accept=".mp3,.wav,.m4a,.aac,.ogg,.flac" required>
+        <button class="ghost small" type="submit">{% if narration_name %}Substituir{% else %}Enviar narração{% endif %}</button>
+      </form>
+    </div>
+    <div class="refine-item">
+      <strong>Avatar</strong>
+      <p class="muted small">WebM com alpha fica transparente; MP4 aparece como retângulo.</p>
+      {% if avatar_name %}
+        <p class="small">Atual: <b>{{ avatar_name }}</b></p>
+        <form method="post" action="/projects/{{ project.id }}/remove-media">
+          <input type="hidden" name="kind" value="avatar">
+          <button class="ghost small" type="submit">Remover</button>
+        </form>
+      {% endif %}
+      <form method="post" action="/projects/{{ project.id }}/upload-media" enctype="multipart/form-data">
+        <input type="hidden" name="kind" value="avatar">
+        <input type="file" name="media" accept=".webm,.mov,.mp4" required>
+        <button class="ghost small" type="submit">{% if avatar_name %}Substituir{% else %}Enviar avatar{% endif %}</button>
+      </form>
+    </div>
+  </div>
 </div>
 
 {% if not scenes %}

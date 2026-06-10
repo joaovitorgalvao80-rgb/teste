@@ -272,9 +272,10 @@ class DeployContractsTest(unittest.TestCase):
 
                 def fake_pull(_slug, _username, _token, out_dir):
                     out_dir.mkdir(parents=True, exist_ok=True)
-                    path = out_dir / "video_broll_base.mp4"
-                    path.write_bytes(b"fake-mp4")
-                    return path
+                    base = out_dir / "video_broll_base.mp4"
+                    base.write_bytes(b"fake-mp4")
+                    (out_dir / "final_master.mp4").write_bytes(b"fake-master")
+                    return base
 
                 webapp.kaggle_service.get_status = lambda *_args, **_kwargs: {
                     "status": "complete",
@@ -289,7 +290,10 @@ class DeployContractsTest(unittest.TestCase):
             webapp.kaggle_service.pull_output_video = original_pull
 
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.json()["video_url"], f"/projects/{project_id}/download-kaggle-video")
+        payload = resp.json()
+        self.assertEqual(payload["video_url"], f"/projects/{project_id}/download-master-video")
+        self.assertEqual(payload["master_video_url"], f"/projects/{project_id}/download-master-video")
+        self.assertEqual(payload["base_video_url"], f"/projects/{project_id}/download-base-video")
 
     def test_pull_output_video_prefers_hyperframes_master(self) -> None:
         original_run = kaggle_service._run
@@ -374,7 +378,173 @@ class DeployContractsTest(unittest.TestCase):
         self.assertIn("hyperframes_frames", kaggle_service._RUNNER)
         self.assertIn('"format=yuv420p"', kaggle_service._RUNNER)
         self.assertIn('"png-sequence+ffmpeg"', kaggle_service._RUNNER)
-        self.assertIn('data-duration="{duration:.3f}"', kaggle_service._RUNNER)
+        self.assertIn("data-duration=", kaggle_service._RUNNER)
+
+    def test_runner_composition_uses_edit_plan_extras(self) -> None:
+        runner = kaggle_service._RUNNER
+        compile(runner, "runner.py", "exec")
+        self.assertIn("find_pack_extras(input_root)", runner)
+        self.assertIn('"edit_plan.json"', runner)
+        self.assertIn("render_hyperframes_master(out, edit_plan, narration_file, avatar_file)", runner)
+        # camadas da composicao master
+        self.assertIn("slow_push_in", runner)
+        self.assertIn("slow_pull_out", runner)
+        self.assertIn('class="clip caption pos-', runner)
+        self.assertIn('class="clip fadeov"', runner)
+        self.assertIn('data-has-audio="true"', runner)
+        self.assertIn('class="clip avatar-clip pos-', runner)
+        # zip-slip: extras extraidos apenas pelo nome do arquivo
+        self.assertIn("PACK_EXTRAS_DIR / Path(member).name", runner)
+
+    def test_edit_plan_builder_is_deterministic(self) -> None:
+        from services import edit_plan as ep
+
+        project = {"name": "Meu Video"}
+        config = {"avatar_safe_area": "right", "resolution": "1280x720", "avatar_safe_width_ratio": 0.25}
+        scenes = [
+            {"scene_id": "scene_001", "start_time": 0.0, "end_time": 4.0, "duration": 4.0, "overlay_text": "Abertura"},
+            {"scene_id": "scene_002", "start_time": 4.0, "end_time": 9.5, "duration": 5.5, "overlay_text": ""},
+            {"scene_id": "scene_003", "start_time": 9.5, "end_time": 12.0, "duration": 2.5, "overlay_text": "Fim"},
+        ]
+        plan = ep.build_edit_plan(project, config, scenes)
+        self.assertEqual(plan["version"], 1)
+        self.assertEqual(plan["resolution"], "1280x720")
+        self.assertEqual(plan["caption_position"], "left")
+        self.assertIsNone(plan["audio"])
+        self.assertIsNone(plan["avatar"])
+        motions = [s["motion"] for s in plan["scenes"]]
+        self.assertEqual(motions, ["slow_push_in", "slow_pull_out", "slow_push_in"])
+        transitions = [s["transition_out"] for s in plan["scenes"]]
+        self.assertEqual(transitions, ["fade", "fade", "none"])
+        self.assertEqual(plan["scenes"][0]["caption"], "Abertura")
+        self.assertEqual(plan["scenes"][1]["caption"], "")
+
+        with_media = ep.build_edit_plan(
+            project, config, scenes, narration_file="narration.mp3", avatar_file="avatar.webm"
+        )
+        self.assertEqual(with_media["audio"], {"src": "narration.mp3", "volume": 1.0})
+        self.assertEqual(with_media["avatar"]["src"], "avatar.webm")
+        self.assertEqual(with_media["avatar"]["position"], "right")
+        self.assertAlmostEqual(with_media["avatar"]["scale"], 0.25)
+
+    def test_packager_includes_edit_plan_and_extra_files(self) -> None:
+        project = {"name": "Plano"}
+        config = {"avatar_safe_area": "right", "resolution": "1920x1080", "format": "16:9"}
+        scenes = [
+            {
+                "id": 1,
+                "scene_id": "scene_001",
+                "idx": 1,
+                "zone": "GANCHO",
+                "start_time": 0.0,
+                "end_time": 4.0,
+                "duration": 4.0,
+                "narration": "teste",
+                "visual_goal": "teste",
+                "keywords": [],
+                "must_show": [],
+                "must_not_show": [],
+                "asset_type": "video",
+                "overlay_text": "",
+                "avatar_safe_area": "right",
+            }
+        ]
+        selected = {
+            1: {
+                "source": "pexels",
+                "download_url": "https://example.com/a.mp4",
+                "asset_type": "video",
+                "keyword": "test",
+            }
+        }
+        narration = self.root / "narration.mp3"
+        narration.write_bytes(b"fake-audio")
+
+        def fake_download(_url, dest, _max_bytes):
+            dest.write_bytes(b"fake-video")
+            return True
+
+        original_download = packager._download
+        packager._download = fake_download
+        try:
+            zip_path = packager.build_zip(
+                project,
+                config,
+                scenes,
+                selected,
+                [],
+                self.root / "work",
+                edit_plan={"version": 1, "scenes": []},
+                extra_files=[narration],
+            )
+        finally:
+            packager._download = original_download
+
+        with zipfile.ZipFile(zip_path) as zf:
+            names = set(zf.namelist())
+        self.assertIn("edit_plan.json", names)
+        self.assertIn("narration.mp3", names)
+
+    def test_upload_media_saves_replaces_and_removes(self) -> None:
+        with TestClient(webapp.app) as client:
+            uid = db.create_user("media", "password123")
+            project_id = db.create_project(uid, "proj", "script", {})
+            client.post(
+                "/login",
+                data={"username": "media", "password": "password123"},
+                follow_redirects=False,
+            )
+            resp = client.post(
+                f"/projects/{project_id}/upload-media",
+                data={"kind": "narration"},
+                files={"media": ("voz.mp3", b"audio-bytes", "audio/mpeg")},
+                follow_redirects=False,
+            )
+            self.assertEqual(resp.status_code, 303)
+            saved = webapp.find_input_media(project_id, "narration")
+            self.assertIsNotNone(saved)
+            self.assertEqual(saved.name, "narration.mp3")
+
+            # extensao invalida e rejeitada
+            bad = client.post(
+                f"/projects/{project_id}/upload-media",
+                data={"kind": "narration"},
+                files={"media": ("voz.exe", b"x", "application/octet-stream")},
+                follow_redirects=False,
+            )
+            self.assertEqual(bad.status_code, 400)
+
+            # substituir por outra extensao remove a anterior
+            client.post(
+                f"/projects/{project_id}/upload-media",
+                data={"kind": "narration"},
+                files={"media": ("voz.wav", b"wav-bytes", "audio/wav")},
+                follow_redirects=False,
+            )
+            saved = webapp.find_input_media(project_id, "narration")
+            self.assertEqual(saved.name, "narration.wav")
+            folder = webapp.project_inputs_dir(project_id)
+            self.assertEqual(len(list(folder.glob("narration.*"))), 1)
+
+            client.post(
+                f"/projects/{project_id}/remove-media",
+                data={"kind": "narration"},
+                follow_redirects=False,
+            )
+            self.assertIsNone(webapp.find_input_media(project_id, "narration"))
+
+    def test_local_output_videos_separates_base_and_master(self) -> None:
+        project_work = self.root / "pw"
+        out = project_work / "kaggle_output"
+        (out / "hyperframes_master" / "assets").mkdir(parents=True)
+        (out / "video_broll_base.mp4").write_bytes(b"base")
+        (out / "final_master.mp4").write_bytes(b"master")
+        (out / "hyperframes_master" / "assets" / "video_broll_base.mp4").write_bytes(b"copy")
+
+        outputs = webapp.local_output_videos(project_work)
+        self.assertEqual(outputs["base"].name, "video_broll_base.mp4")
+        self.assertEqual(outputs["base"].parent, out)
+        self.assertEqual(outputs["master"].name, "final_master.mp4")
 
     def test_production_requires_strong_session_secret(self) -> None:
         old_env = webapp.APP_ENV

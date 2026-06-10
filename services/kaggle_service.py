@@ -454,14 +454,128 @@ def ensure_system_chrome():
     return find_system_chrome()
 
 
-def write_hyperframes_project(base_video, project_dir):
+EDIT_PLAN_NAME = "edit_plan.json"
+PACK_EXTRAS_DIR = Path("/kaggle/working/pack_extras")
+NL = chr(10)
+
+COMPOSITION_CSS = (
+    "html, body { margin: 0; width: 100%; height: 100%; background: #050708; overflow: hidden; }"
+    " #root { position: relative; background: #050708; overflow: hidden; }"
+    " #motion-wrap { position: absolute; inset: 0; will-change: transform; }"
+    " .base-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }"
+    " .fadeov { position: absolute; inset: 0; background: #000; opacity: 0; pointer-events: none; }"
+    " .caption { position: absolute; bottom: 72px; max-width: 46%; padding: 18px 28px;"
+    " background: rgba(5, 8, 10, 0.78); border-left: 4px solid #34d2b2; color: #f2f7f5;"
+    " font-family: Arial, Helvetica, sans-serif; font-size: 40px; line-height: 1.25;"
+    " font-weight: 600; border-radius: 10px; opacity: 0; }"
+    " .caption.pos-left { left: 72px; } .caption.pos-right { right: 72px; }"
+    " .avatar-clip { position: absolute; bottom: 0; object-fit: contain; }"
+    " .avatar-clip.pos-right { right: 24px; } .avatar-clip.pos-left { left: 24px; }"
+)
+
+NARRATION_EXTS = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac")
+AVATAR_EXTS = (".webm", ".mov", ".mp4")
+
+
+def classify_pack_extra(filename):
+    base = str(filename).lower().replace(chr(92), "/").rsplit("/", 1)[-1]
+    stem, _, ext = base.rpartition(".")
+    ext = "." + ext if ext else ""
+    if base == EDIT_PLAN_NAME:
+        return "edit_plan"
+    if stem == "narration" and ext in NARRATION_EXTS:
+        return "narration"
+    if stem == "avatar" and ext in AVATAR_EXTS:
+        return "avatar"
+    return ""
+
+
+def find_pack_extras(input_root):
+    # Localiza edit_plan.json, narracao e avatar no input (pasta ou dentro de ZIPs).
+    import zipfile
+    extras = {"edit_plan": None, "narration": None, "avatar": None}
+    for path in input_root.rglob("*"):
+        if path.is_file():
+            kind = classify_pack_extra(path.name)
+            if kind and not extras[kind]:
+                extras[kind] = path
+    if not all(extras.values()):
+        for z in input_root.rglob("*.zip"):
+            try:
+                with zipfile.ZipFile(z) as zf:
+                    for member in zf.namelist():
+                        kind = classify_pack_extra(member)
+                        if kind and not extras[kind]:
+                            PACK_EXTRAS_DIR.mkdir(parents=True, exist_ok=True)
+                            target = PACK_EXTRAS_DIR / Path(member).name
+                            with zf.open(member) as src, open(target, "wb") as dst:
+                                shutil.copyfileobj(src, dst)
+                            extras[kind] = target
+            except Exception as exc:
+                print("Aviso: falha lendo zip para extras:", exc)
+    plan = None
+    if extras["edit_plan"]:
+        try:
+            plan = json.loads(Path(extras["edit_plan"]).read_text(encoding="utf-8"))
+        except Exception as exc:
+            print("Aviso: edit_plan.json invalido, refinando sem plano:", exc)
+    return plan, extras["narration"], extras["avatar"]
+
+
+def plan_resolution(edit_plan):
+    raw = str((edit_plan or {}).get("resolution") or "1920x1080")
+    try:
+        w, h = raw.lower().split("x", 1)
+        return max(int(w), 16), max(int(h), 16)
+    except ValueError:
+        return 1920, 1080
+
+
+def plan_scenes_within(edit_plan, duration):
+    cleaned = []
+    for s in (edit_plan or {}).get("scenes") or []:
+        try:
+            start = max(float(s.get("start", 0)), 0.0)
+            dur = float(s.get("duration", 0))
+        except (TypeError, ValueError):
+            continue
+        if dur <= 0 or start >= duration:
+            continue
+        cleaned.append(
+            {
+                "start": start,
+                "duration": min(dur, duration - start),
+                "motion": str(s.get("motion") or ""),
+                "transition_out": str(s.get("transition_out") or "none"),
+                "caption": str(s.get("caption") or "").strip(),
+            }
+        )
+    cleaned.sort(key=lambda s: s["start"])
+    return cleaned
+
+
+def write_hyperframes_project(base_video, project_dir, edit_plan=None, narration=None, avatar=None):
+    import html as html_escape_mod
     if project_dir.exists():
         shutil.rmtree(project_dir)
     assets_dir = project_dir / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(base_video, assets_dir / BASE_VIDEO_NAME)
+    narration_name = ""
+    if narration:
+        narration_name = Path(narration).name
+        shutil.copy2(narration, assets_dir / narration_name)
+    avatar_name = ""
+    if avatar:
+        avatar_name = Path(avatar).name
+        shutil.copy2(avatar, assets_dir / avatar_name)
 
     duration = ffprobe_duration(base_video)
+    width, height = plan_resolution(edit_plan)
+    scenes = plan_scenes_within(edit_plan, duration)
+    caption_pos = "right" if str((edit_plan or {}).get("caption_position") or "left") == "right" else "left"
+    dur_s = "%.3f" % duration
+
     (project_dir / "meta.json").write_text(
         json.dumps({"name": "nwrch-studio-master", "id": "nwrch-studio-master"}, indent=2),
         encoding="utf-8",
@@ -470,6 +584,109 @@ def write_hyperframes_project(base_video, project_dir):
         json.dumps({"private": True, "scripts": {"render": "hyperframes render --output ../final_master.mp4"}}, indent=2),
         encoding="utf-8",
     )
+
+    body = []
+    tl = []
+
+    # camada 0: video base dentro do wrapper de motion
+    body.append('<div id="motion-wrap">')
+    body.append(
+        '<video id="base-broll" class="clip base-video" src="./assets/' + BASE_VIDEO_NAME + '"'
+        + ' data-start="0" data-duration="' + dur_s + '" data-track-index="0"'
+        + ' data-media-start="0" data-volume="0" data-has-audio="false" muted playsinline preload="auto"></video>'
+    )
+    body.append("</div>")
+
+    for s in scenes:
+        s_start = "%.3f" % s["start"]
+        s_dur = "%.3f" % s["duration"]
+        if s["motion"] == "slow_push_in":
+            tl.append(
+                'tl.fromTo("#motion-wrap", { scale: 1.0 }, { scale: 1.05, duration: '
+                + s_dur + ', ease: "none" }, ' + s_start + ");"
+            )
+        elif s["motion"] == "slow_pull_out":
+            tl.append(
+                'tl.fromTo("#motion-wrap", { scale: 1.05 }, { scale: 1.0, duration: '
+                + s_dur + ', ease: "none" }, ' + s_start + ");"
+            )
+
+    # camada 1: captions
+    cap_idx = 0
+    for s in scenes:
+        if not s["caption"]:
+            continue
+        cap_idx += 1
+        cid = "cap-" + str(cap_idx)
+        cap_start = "%.3f" % s["start"]
+        cap_dur = "%.3f" % max(s["duration"] - 0.2, 0.4)
+        body.append(
+            '<div id="' + cid + '" class="clip caption pos-' + caption_pos + '" data-start="' + cap_start
+            + '" data-duration="' + cap_dur + '" data-track-index="1">'
+            + html_escape_mod.escape(s["caption"]) + "</div>"
+        )
+        tl.append(
+            'tl.fromTo("#' + cid + '", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.35, ease: "power2.out" }, '
+            + cap_start + ");"
+        )
+
+    # camada 2: avatar
+    if avatar_name:
+        plan_avatar = (edit_plan or {}).get("avatar") or {}
+        pos = "left" if str(plan_avatar.get("position") or "right") == "left" else "right"
+        try:
+            scale = float(plan_avatar.get("scale") or 0.30)
+        except (TypeError, ValueError):
+            scale = 0.30
+        scale = min(max(scale, 0.10), 0.60)
+        avatar_w = int(width * scale)
+        body.append(
+            '<video id="avatar" class="clip avatar-clip pos-' + pos + '" src="./assets/' + avatar_name + '"'
+            + ' style="width:' + str(avatar_w) + 'px" data-start="0" data-duration="' + dur_s + '"'
+            + ' data-track-index="2" data-media-start="0" data-volume="0" data-has-audio="false"'
+            + ' muted playsinline preload="auto"></video>'
+        )
+
+    # camada 3: fades de transicao entre cenas
+    fade_idx = 0
+    for s in scenes:
+        if s["transition_out"] != "fade":
+            continue
+        boundary = s["start"] + s["duration"]
+        if boundary >= duration - 0.05:
+            continue
+        half = 0.25
+        f_start = max(boundary - half, 0.0)
+        f_dur = min(2 * half, duration - f_start)
+        fade_idx += 1
+        fid = "fade-" + str(fade_idx)
+        body.append(
+            '<div id="' + fid + '" class="clip fadeov" data-start="' + ("%.3f" % f_start)
+            + '" data-duration="' + ("%.3f" % f_dur) + '" data-track-index="3"></div>'
+        )
+        tl.append(
+            'tl.fromTo("#' + fid + '", { opacity: 0 }, { opacity: 1, duration: ' + ("%.3f" % (f_dur / 2))
+            + ', ease: "power2.in" }, ' + ("%.3f" % f_start) + ");"
+        )
+        tl.append(
+            'tl.to("#' + fid + '", { opacity: 0, duration: ' + ("%.3f" % (f_dur / 2))
+            + ', ease: "power2.out" }, ' + ("%.3f" % (f_start + f_dur / 2)) + ");"
+        )
+
+    # camada 4: narracao
+    if narration_name:
+        plan_audio = (edit_plan or {}).get("audio") or {}
+        try:
+            volume = float(plan_audio.get("volume") or 1.0)
+        except (TypeError, ValueError):
+            volume = 1.0
+        volume = min(max(volume, 0.0), 1.0)
+        body.append(
+            '<audio id="narration" class="clip" src="./assets/' + narration_name + '" data-start="0"'
+            + ' data-duration="' + dur_s + '" data-track-index="4" data-media-start="0"'
+            + ' data-volume="' + ("%.2f" % volume) + '" data-has-audio="true" preload="auto"></audio>'
+        )
+
     (project_dir / "variables.json").write_text(
         json.dumps(
             {
@@ -477,82 +694,56 @@ def write_hyperframes_project(base_video, project_dir):
                 "base_video": "assets/" + BASE_VIDEO_NAME,
                 "duration": round(duration, 3),
                 "output": MASTER_VIDEO_NAME,
+                "scenes": len(scenes),
+                "captions": cap_idx,
+                "fades": fade_idx,
+                "audio": bool(narration_name),
+                "avatar": bool(avatar_name),
             },
             indent=2,
         ),
         encoding="utf-8",
     )
-    (project_dir / "index.html").write_text(
-        f'''<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <style>
-    html, body {{
-      margin: 0;
-      width: 100%;
-      height: 100%;
-      background: #050708;
-      overflow: hidden;
-    }}
-    #root {{
-      position: relative;
-      width: 1920px;
-      height: 1080px;
-      background: #050708;
-      overflow: hidden;
-    }}
-    .base-video {{
-      position: absolute;
-      inset: 0;
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-    }}
-  </style>
-</head>
-<body>
-  <div
-    id="root"
-    data-composition-id="nwrch-master"
-    data-start="0"
-    data-duration="{duration:.3f}"
-    data-width="1920"
-    data-height="1080">
-    <video
-      id="base-broll"
-      class="clip base-video"
-      src="./assets/{BASE_VIDEO_NAME}"
-      data-start="0"
-      data-duration="{duration:.3f}"
-      data-track-index="0"
-      data-media-start="0"
-      data-volume="0"
-      data-has-audio="false"
-      muted
-      playsinline
-      preload="auto"></video>
-    <script src="https://cdn.jsdelivr.net/npm/gsap@3/dist/gsap.min.js"></script>
-    <script>
-      const tl = gsap.timeline({{ paused: true }});
-      window.__timelines = window.__timelines || {{}};
-      window.__timelines["nwrch-master"] = tl;
-    </script>
-  </div>
-</body>
-</html>
-''',
-        encoding="utf-8",
+
+    head = [
+        "<!doctype html>",
+        "<html>",
+        "<head>",
+        '<meta charset="utf-8">',
+        "<style>" + COMPOSITION_CSS + "</style>",
+        "</head>",
+        "<body>",
+        '<div id="root" data-composition-id="nwrch-master" data-start="0" data-duration="' + dur_s
+        + '" data-width="' + str(width) + '" data-height="' + str(height)
+        + '" style="width:' + str(width) + "px;height:" + str(height) + 'px">',
+    ]
+    tail = [
+        '<script src="https://cdn.jsdelivr.net/npm/gsap@3/dist/gsap.min.js"></script>',
+        "<script>",
+        "const tl = gsap.timeline({ paused: true });",
+    ] + tl + [
+        "window.__timelines = window.__timelines || {};",
+        'window.__timelines["nwrch-master"] = tl;',
+        "</script>",
+        "</div>",
+        "</body>",
+        "</html>",
+    ]
+    (project_dir / "index.html").write_text(NL.join(head + body + tail), encoding="utf-8")
+    print(
+        "Composicao: " + str(len(scenes)) + " cenas, " + str(cap_idx) + " captions, "
+        + str(fade_idx) + " fades, audio=" + ("sim" if narration_name else "nao")
+        + ", avatar=" + ("sim" if avatar_name else "nao")
     )
     return duration
 
 
-def render_hyperframes_master(base_video):
+def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar=None):
     project_dir = Path("/kaggle/working/hyperframes_master")
     master_out = Path("/kaggle/working") / MASTER_VIDEO_NAME
     frames_dir = Path("/kaggle/working/hyperframes_frames")
     assert_node_runtime()
-    duration = write_hyperframes_project(base_video, project_dir)
+    duration = write_hyperframes_project(base_video, project_dir, edit_plan, narration, avatar)
     env = os.environ.copy()
     env["CI"] = "1"
     env["HYPERFRAMES_NO_UPDATE_CHECK"] = "1"
@@ -593,6 +784,9 @@ def render_hyperframes_master(base_video):
             "duration": round(duration, 3),
             "render_mode": render_mode,
             "png_frames": png_count,
+            "scenes": len((edit_plan or {}).get("scenes") or []),
+            "audio": bool(narration),
+            "avatar": bool(avatar),
         }
     )
     print(f"Master: {master_out} ({master_out.stat().st_size/1024/1024:.1f} MB)")
@@ -619,8 +813,9 @@ print(f"Fonte: {source}")
 run_logged([sys.executable, str(montador), str(source), "--out", str(out), "--preset", "fast"], timeout=1800)
 print(f"Video: {out} ({out.stat().st_size/1024/1024:.1f} MB)")
 
+edit_plan, narration_file, avatar_file = find_pack_extras(input_root)
 try:
-    render_hyperframes_master(out)
+    render_hyperframes_master(out, edit_plan, narration_file, avatar_file)
 except Exception as exc:
     write_status({"status": "error", "error": str(exc), "base_output": str(out)})
     print("HyperFrames falhou, mas o video base foi preservado:", exc)
