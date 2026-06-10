@@ -1,0 +1,670 @@
+/* ==========================================================================
+   NWRCH CUTROOM — Design System v1
+   --------------------------------------------------------------------------
+   Conceito: sala de corte. Preto, branco-papel e cinzas fazem 100% da
+   interface. Cor existe em exatamente dois papeis:
+
+     1. --marker (amarelo lapis de cera): SOMENTE para o take selecionado
+        e realces de selecao. E a marca do editor no copiao. Nunca em
+        botoes, nunca em fundos, nunca em texto corrido.
+     2. Tally lights (--ok / --warn / --err / --rec): pontos de status de
+        8px e textos de estado. Nada alem disso.
+
+   Tudo o mais e tipografia, espaco e linha de 1px.
+   ========================================================================== */
+
+@import url('https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..900&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+:root {
+  /* ---- Tinta (fundos, do mais fundo ao mais raso) ------------------- */
+  --ink-0: #0a0a0b;   /* pagina */
+  --ink-1: #101012;   /* painel */
+  --ink-2: #161618;   /* painel elevado / hover */
+  --ink-3: #1d1d20;   /* campo / inset */
+
+  /* ---- Linhas ------------------------------------------------------- */
+  --line-0: #1f1f22;  /* hairline sutil */
+  --line-1: #2b2b2f;  /* borda padrao */
+  --line-2: #3f3f45;  /* borda interativa / hover */
+  --line-3: #6a6a72;  /* borda em foco-proximo */
+
+  /* ---- Papel (texto, do mais forte ao mais fraco) ------------------- */
+  --paper-0: #f2f2ee; /* texto principal — branco-papel, nunca #fff puro em massa */
+  --paper-1: #b6b6b1; /* secundario */
+  --paper-2: #7e7e7c; /* legenda / meta */
+  --paper-3: #545457; /* desabilitado */
+  --white:   #ffffff; /* APENAS acao primaria e foco */
+
+  /* ---- Marcador (a unica cor nao-semantica do sistema) -------------- */
+  --marker: #e9d75c;          /* lapis de cera amarelo */
+  --marker-ink: #181402;      /* texto sobre o marcador */
+  --marker-dim: rgba(233, 215, 92, 0.10);
+
+  /* ---- Tally lights (somente status) -------------------------------- */
+  --ok:   #74c98e;
+  --warn: #d9ad4e;
+  --err:  #de5b62;
+  --rec:  #e0443f;            /* render ao vivo */
+
+  /* ---- Tipografia ---------------------------------------------------- */
+  --font-sans: "Archivo", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace;
+
+  --fs-micro: 0.6875rem;  /* 11 — labels mono uppercase */
+  --fs-small: 0.8125rem;  /* 13 — meta, ajuda */
+  --fs-body:  0.9375rem;  /* 15 — corpo */
+  --fs-lead:  1.0625rem;  /* 17 — narracao, paragrafo de destaque */
+  --fs-h3:    1.375rem;   /* 22 */
+  --fs-h2:    1.75rem;    /* 28 */
+  --fs-h1:    2.5rem;     /* 40 — display condensado */
+
+  /* ---- Espaco (base 4) ----------------------------------------------- */
+  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
+  --sp-5: 24px; --sp-6: 32px; --sp-7: 48px; --sp-8: 64px;
+
+  /* ---- Forma e movimento --------------------------------------------- */
+  --radius: 3px;            /* canto duro; este sistema nao arredonda */
+  --speed: 130ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* ==========================================================================
+   Base
+   ========================================================================== */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { background: var(--ink-0); }
+
+body {
+  min-height: 100vh;
+  background: var(--ink-0);
+  color: var(--paper-0);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: var(--marker); color: var(--marker-ink); }
+
+:focus-visible {
+  outline: 2px solid var(--white);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+/* ==========================================================================
+   Tipografia
+   ========================================================================== */
+.t-display {
+  font-size: var(--fs-h1);
+  font-weight: 800;
+  font-stretch: 72%;            /* Archivo condensado: voz do display */
+  line-height: 1.04;
+  letter-spacing: -0.01em;
+  text-transform: uppercase;
+}
+
+h1, .t-h1 { font-size: var(--fs-h2); font-weight: 750; font-stretch: 84%; line-height: 1.15; }
+h2, .t-h2 { font-size: var(--fs-h3); font-weight: 700; font-stretch: 88%; line-height: 1.2; }
+h3, .t-h3 { font-size: var(--fs-lead); font-weight: 650; line-height: 1.3; }
+
+.t-lead  { font-size: var(--fs-lead); color: var(--paper-0); }
+.t-muted { color: var(--paper-1); }
+.t-faint { color: var(--paper-2); }
+small, .t-small { font-size: var(--fs-small); }
+
+/* Label tecnico: mono, caps, espacado. A "voz de maquina" do sistema. */
+.tag {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--paper-2);
+}
+
+/* Timecode: dado temporal sempre em mono com peso. */
+.tc {
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  font-weight: 600;
+  color: var(--paper-1);
+  font-variant-numeric: tabular-nums;
+}
+
+kbd {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  padding: 1px 6px;
+  border: 1px solid var(--line-2);
+  border-bottom-width: 2px;
+  border-radius: var(--radius);
+  color: var(--paper-1);
+  background: var(--ink-2);
+}
+
+/* ==========================================================================
+   Regua — separador com tracos de timeline (assinatura visual)
+   ========================================================================== */
+.rule {
+  height: 9px;
+  border: 0;
+  background-image:
+    linear-gradient(var(--line-1), var(--line-1)),
+    repeating-linear-gradient(90deg, var(--line-2) 0 1px, transparent 1px 24px);
+  background-size: 100% 1px, 100% 5px;
+  background-position: 0 100%, 0 0;
+  background-repeat: no-repeat;
+}
+
+/* ==========================================================================
+   Topbar
+   ========================================================================== */
+.topbar {
+  display: flex;
+  align-items: stretch;
+  gap: var(--sp-5);
+  border-bottom: 1px solid var(--line-1);
+  background: var(--ink-0);
+  padding: 0 var(--sp-5);
+  height: 56px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  text-decoration: none;
+  color: var(--paper-0);
+}
+
+/* Bloco da marca: claquete monocromatica */
+.brand-mark {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  background: var(--paper-0);
+  color: var(--ink-0);
+  font-family: var(--font-sans);
+  font-stretch: 72%;
+  font-weight: 900;
+  font-size: 17px;
+  border-radius: var(--radius);
+}
+
+.brand-name {
+  font-stretch: 78%;
+  font-weight: 800;
+  font-size: 1rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.brand-sub {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--paper-2);
+}
+
+.topnav { margin-left: auto; display: flex; align-items: stretch; }
+
+.topnav a {
+  display: flex;
+  align-items: center;
+  padding: 0 var(--sp-4);
+  color: var(--paper-1);
+  text-decoration: none;
+  font-size: var(--fs-small);
+  font-weight: 550;
+  border-bottom: 2px solid transparent;
+  transition: color var(--speed) var(--ease);
+}
+
+.topnav a:hover { color: var(--paper-0); }
+.topnav a[aria-current="page"] { color: var(--paper-0); border-bottom-color: var(--white); }
+
+/* ==========================================================================
+   Botoes — hierarquia por contraste, nunca por cor
+   ========================================================================== */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 9px 18px;
+  font-family: var(--font-sans);
+  font-size: var(--fs-small);
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background var(--speed) var(--ease),
+              border-color var(--speed) var(--ease),
+              color var(--speed) var(--ease);
+}
+
+.btn .idx {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  opacity: 0.55;
+}
+
+/* Primario: o unico elemento branco-cheio da tela. Um por vista. */
+.btn-primary { background: var(--white); color: var(--ink-0); }
+.btn-primary:hover { background: var(--paper-0); }
+.btn-primary:active { transform: translateY(1px); }
+
+/* Secundario: contorno */
+.btn-secondary { background: transparent; color: var(--paper-0); border-color: var(--line-2); }
+.btn-secondary:hover { border-color: var(--line-3); background: var(--ink-2); }
+
+/* Ghost: so texto, para acoes de baixa importancia */
+.btn-ghost { background: transparent; color: var(--paper-1); padding: 9px 10px; }
+.btn-ghost:hover { color: var(--paper-0); background: var(--ink-2); }
+
+/* Perigo: contorno; o vermelho so aparece no hover, como confirmacao */
+.btn-danger { background: transparent; color: var(--paper-1); border-color: var(--line-2); }
+.btn-danger:hover { color: var(--err); border-color: var(--err); }
+
+.btn:disabled, .btn[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.38;
+}
+
+.btn-sm { padding: 5px 12px; font-size: var(--fs-micro); }
+
+/* ==========================================================================
+   Campos de formulario
+   ========================================================================== */
+.field { display: grid; gap: var(--sp-2); }
+
+.field > .tag { color: var(--paper-1); }
+
+.input, textarea.input, select.input {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--ink-3);
+  border: 1px solid var(--line-1);
+  border-radius: var(--radius);
+  color: var(--paper-0);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  transition: border-color var(--speed) var(--ease);
+}
+
+.input::placeholder { color: var(--paper-3); }
+.input:hover { border-color: var(--line-2); }
+.input:focus { border-color: var(--line-3); outline: none; }
+.input:focus-visible { outline: 2px solid var(--white); outline-offset: 1px; }
+
+textarea.input { resize: vertical; min-height: 120px; line-height: 1.65; }
+
+/* Roteiro/transcricao: timestamps pedem mono */
+.input-script { font-family: var(--font-mono); font-size: var(--fs-small); }
+
+.field-hint { font-size: var(--fs-small); color: var(--paper-2); }
+.field-error { font-size: var(--fs-small); color: var(--err); }
+.input[aria-invalid="true"] { border-color: var(--err); }
+
+/* ==========================================================================
+   Tally — status como luz de painel
+   ========================================================================== */
+.tally {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--paper-1);
+}
+
+.tally::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 1px;          /* quadrado: LED de mesa de corte, nao bolinha */
+  background: var(--paper-3);
+  flex: none;
+}
+
+.tally-ok::before   { background: var(--ok); }
+.tally-ok           { color: var(--ok); }
+.tally-warn::before { background: var(--warn); }
+.tally-warn         { color: var(--warn); }
+.tally-err::before  { background: var(--err); }
+.tally-err          { color: var(--err); }
+
+.tally-rec          { color: var(--rec); }
+.tally-rec::before  { background: var(--rec); animation: tally-blink 1.1s steps(2, start) infinite; }
+
+@keyframes tally-blink { 50% { opacity: 0.25; } }
+
+/* Badge neutro para estados de pipeline (mapped, packaged...) */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--paper-1);
+  border: 1px solid var(--line-1);
+  border-radius: var(--radius);
+  background: var(--ink-2);
+}
+
+/* ==========================================================================
+   Pipeline — os 5 passos como rail persistente
+   ========================================================================== */
+.pipeline {
+  display: flex;
+  border: 1px solid var(--line-1);
+  border-radius: var(--radius);
+  background: var(--ink-1);
+  overflow: hidden;
+}
+
+.step {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-right: 1px solid var(--line-1);
+  color: var(--paper-2);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.step:last-child { border-right: 0; }
+.step:hover:not(:disabled) { background: var(--ink-2); }
+.step:disabled { cursor: not-allowed; }
+
+.step-idx {
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  font-weight: 600;
+  color: var(--paper-3);
+}
+
+.step-name { font-size: var(--fs-small); font-weight: 600; }
+
+/* feito: numero vira check, texto sobe um tom */
+.step.is-done .step-idx::before { content: "✓ "; color: var(--ok); }
+.step.is-done { color: var(--paper-1); }
+
+/* ativo: o passo atual e o unico com texto em branco-papel pleno e barra superior */
+.step.is-active {
+  color: var(--paper-0);
+  box-shadow: inset 0 2px 0 var(--white);
+  background: var(--ink-2);
+}
+.step.is-active .step-idx { color: var(--paper-0); }
+
+/* ==========================================================================
+   Cartoes e superficies
+   ========================================================================== */
+.panel {
+  background: var(--ink-1);
+  border: 1px solid var(--line-1);
+  border-radius: var(--radius);
+}
+
+.panel-pad { padding: var(--sp-5); }
+
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--line-0);
+}
+
+/* ==========================================================================
+   Cena — bloco de timeline com rail de timecode
+   ========================================================================== */
+.scene {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  border: 1px solid var(--line-1);
+  border-radius: var(--radius);
+  background: var(--ink-1);
+  overflow: hidden;
+}
+
+/* rail esquerdo: o tempo mora aqui, sempre no mesmo lugar */
+.scene-rail {
+  border-right: 1px solid var(--line-1);
+  background: var(--ink-0);
+  padding: var(--sp-4) var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  background-image: repeating-linear-gradient(
+    180deg, transparent 0 11px, var(--line-0) 11px 12px
+  );
+}
+
+.scene-rail .tc { color: var(--paper-0); font-size: var(--fs-body); }
+.scene-rail .tc-end { color: var(--paper-2); font-size: var(--fs-small); }
+.scene-rail .scene-zone {
+  margin-top: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  color: var(--paper-2);
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  align-self: start;
+}
+
+.scene-body { padding: var(--sp-4) var(--sp-5); display: grid; gap: var(--sp-3); }
+
+.scene-narration { font-size: var(--fs-lead); line-height: 1.65; max-width: 68ch; }
+
+.scene-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-small);
+  color: var(--paper-2);
+}
+
+.kw {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  padding: 2px 8px;
+  border: 1px dashed var(--line-2);
+  border-radius: var(--radius);
+  color: var(--paper-1);
+}
+
+/* ==========================================================================
+   Take (asset) — grid de candidatos
+   ========================================================================== */
+.takes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--sp-3);
+}
+
+.take {
+  position: relative;
+  border: 1px solid var(--line-1);
+  border-radius: var(--radius);
+  background: var(--ink-2);
+  overflow: hidden;
+  transition: border-color var(--speed) var(--ease);
+}
+
+.take:hover { border-color: var(--line-3); }
+
+.take-thumb {
+  aspect-ratio: 16 / 9;
+  background: var(--ink-3);
+  display: block;
+  width: 100%;
+  object-fit: cover;
+  filter: grayscale(28%) contrast(1.02);   /* thumbs levemente dessaturados: a cor volta no take escolhido */
+  transition: filter var(--speed) var(--ease);
+}
+
+.take:hover .take-thumb, .take.is-selected .take-thumb { filter: none; }
+
+.take-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--paper-2);
+}
+
+.take-actions {
+  display: flex;
+  border-top: 1px solid var(--line-0);
+}
+
+.take-actions .btn { flex: 1; border-radius: 0; justify-content: center; }
+
+/* O MARCADOR: unico lugar do sistema onde o amarelo aparece.       */
+/* Moldura de lapis de cera + etiqueta "TAKE" no canto.             */
+.take.is-selected {
+  border-color: var(--marker);
+  box-shadow: 0 0 0 1px var(--marker);
+  background: var(--marker-dim);
+}
+
+.take.is-selected::after {
+  content: "TAKE ✓";
+  position: absolute;
+  top: var(--sp-2);
+  left: var(--sp-2);
+  padding: 2px 7px;
+  background: var(--marker);
+  color: var(--marker-ink);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  border-radius: var(--radius);
+}
+
+.take.is-rejected { opacity: 0.32; }
+.take.is-rejected:hover { opacity: 0.7; }
+
+/* ==========================================================================
+   Log / jobs — linhas de console
+   ========================================================================== */
+.joblog {
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  border: 1px solid var(--line-1);
+  border-radius: var(--radius);
+  background: var(--ink-0);
+}
+
+.joblog-row {
+  display: grid;
+  grid-template-columns: 72px 110px 1fr auto;
+  gap: var(--sp-4);
+  align-items: center;
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--line-0);
+  color: var(--paper-1);
+}
+
+.joblog-row:last-child { border-bottom: 0; }
+.joblog-row .t-faint { font-variant-numeric: tabular-nums; }
+
+/* ==========================================================================
+   Alertas e toasts
+   ========================================================================== */
+.note {
+  display: flex;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--line-1);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: var(--ink-1);
+  font-size: var(--fs-small);
+  color: var(--paper-1);
+}
+
+.note-ok   { border-left-color: var(--ok); }
+.note-warn { border-left-color: var(--warn); }
+.note-err  { border-left-color: var(--err); }
+
+/* ==========================================================================
+   Tabela de diagnostico
+   ========================================================================== */
+.dtable { width: 100%; border-collapse: collapse; font-size: var(--fs-small); }
+
+.dtable th {
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--paper-2);
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--line-1);
+}
+
+.dtable td {
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--line-0);
+  color: var(--paper-1);
+}
+
+.dtable td:first-child { color: var(--paper-0); }
+
+/* ==========================================================================
+   Estado vazio
+   ========================================================================== */
+.empty {
+  display: grid;
+  justify-items: start;
+  gap: var(--sp-3);
+  padding: var(--sp-7) var(--sp-6);
+  border: 1px dashed var(--line-2);
+  border-radius: var(--radius);
+  color: var(--paper-1);
+}
+
+/* ==========================================================================
+   Layout utilitario
+   ========================================================================== */
+.container { max-width: 1180px; margin: 0 auto; padding: var(--sp-6) var(--sp-5) var(--sp-8); }
+.stack-2 > * + * { margin-top: var(--sp-2); }
+.stack-4 > * + * { margin-top: var(--sp-4); }
+.stack-5 > * + * { margin-top: var(--sp-5); }
+.stack-6 > * + * { margin-top: var(--sp-6); }
+.row { display: flex; align-items: center; gap: var(--sp-3); }
+.row-between { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-4); }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-4); }
+
+@media (max-width: 760px) {
+  .grid-2 { grid-template-columns: 1fr; }
+  .scene { grid-template-columns: 64px 1fr; }
+  .pipeline { flex-direction: column; }
+  .step { border-right: 0; border-bottom: 1px solid var(--line-1); }
+}

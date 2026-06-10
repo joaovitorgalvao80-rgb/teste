@@ -3,38 +3,38 @@
 {% block content %}
 <div class="page-head">
   <div>
-    <span class="eyebrow">Workspace</span>
+    <p class="tag" style="margin-bottom:var(--sp-2)">Workspace</p>
     <h1>Projetos</h1>
-    <p class="muted">Pipeline de curadoria, pacote e render dos seus vídeos.</p>
+    <p class="t-muted" style="margin-top:var(--sp-2)">Pipeline de curadoria, pacote e render dos seus vídeos.</p>
   </div>
-  <a class="primary btn" href="/projects/new">+ Novo projeto</a>
+  <a class="btn btn-primary" href="/projects/new">+ Novo projeto</a>
 </div>
 
 {% if not projects %}
-  <div class="card empty">
-    <span class="eyebrow">Comece aqui</span>
+  <div class="empty">
+    <p class="tag">Comece aqui</p>
     <h2>Nenhum projeto ainda.</h2>
-    <p>Crie seu primeiro workspace visual e conecte roteiro, assets e render em uma linha só.</p>
-    <a class="primary btn" href="/projects/new">Criar o primeiro</a>
+    <p class="t-muted t-small">Crie seu primeiro workspace visual e conecte roteiro, assets e render em uma linha só.</p>
+    <a class="btn btn-primary" href="/projects/new">Criar o primeiro</a>
   </div>
 {% else %}
   <div class="project-list">
     {% for p in projects %}
       <div class="project-item">
         <a class="project-main" href="/projects/{{ p.id }}">
-          <span class="project-kicker">NWRCH Project</span>
+          <span class="tag">NWRCH Project</span>
           <span class="project-name">{{ p.name }}</span>
         </a>
         <div class="project-meta">
           <span class="badge status-{{ p.status }}">{{ p.status }}</span>
           {% if p.kaggle_status and p.kaggle_status not in ['', 'none'] %}
-            <span class="badge status-kaggle">kaggle: {{ p.kaggle_status }}</span>
+            <span class="tally tally-rec">kaggle · {{ p.kaggle_status }}</span>
           {% endif %}
         </div>
         <div class="project-actions">
-          <a class="btn ghost" href="/projects/{{ p.id }}">Abrir</a>
+          <a class="btn btn-ghost btn-sm" href="/projects/{{ p.id }}">Abrir</a>
           <form method="post" action="/projects/{{ p.id }}/delete" onsubmit="return confirm('Apagar este projeto?')">
-            <button class="ghost danger" type="submit">Apagar</button>
+            <button class="btn btn-danger btn-sm" type="submit">Apagar</button>
           </form>
         </div>
       </div>

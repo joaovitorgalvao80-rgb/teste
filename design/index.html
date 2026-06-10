@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NWRCH CUTROOM — Design System v1</title>
+<link rel="stylesheet" href="nwrch.css">
+<style>
+  /* estilos exclusivos da documentacao */
+  .doc-section { padding-top: var(--sp-7); }
+  .doc-section + .doc-section { margin-top: var(--sp-7); border-top: 1px solid var(--line-0); }
+  .doc-num { color: var(--paper-3); margin-right: var(--sp-3); }
+  .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--sp-3); }
+  .swatch { border: 1px solid var(--line-1); border-radius: var(--radius); overflow: hidden; }
+  .swatch-chip { height: 64px; }
+  .swatch-info { padding: var(--sp-2) var(--sp-3); display: grid; gap: 2px; background: var(--ink-1); }
+  .swatch-info .tc { font-size: var(--fs-micro); }
+  .spec { display: grid; grid-template-columns: 180px 1fr; gap: var(--sp-2) var(--sp-5); font-size: var(--fs-small); }
+  .spec dt { font-family: var(--font-mono); font-size: var(--fs-micro); letter-spacing: 0.1em; text-transform: uppercase; color: var(--paper-2); padding-top: 2px; }
+  .spec dd { color: var(--paper-1); }
+  .demo { border: 1px solid var(--line-0); border-radius: var(--radius); padding: var(--sp-5); background: var(--ink-0); display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-4); }
+  .demo-col { display: grid; gap: var(--sp-4); align-items: start; }
+  .dont-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-4); }
+  .dont-card { border: 1px solid var(--line-1); border-radius: var(--radius); padding: var(--sp-4); }
+  .dont-card.no { border-left: 3px solid var(--err); }
+  .dont-card.yes { border-left: 3px solid var(--ok); }
+  .type-row { display: flex; align-items: baseline; gap: var(--sp-5); padding: var(--sp-3) 0; border-bottom: 1px solid var(--line-0); }
+  .type-row .tag { width: 150px; flex: none; }
+  @media (max-width: 760px) { .dont-grid { grid-template-columns: 1fr; } .spec { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <a class="brand" href="#">
+    <span class="brand-mark">N</span>
+    <span>
+      <span class="brand-name">NWRCH Cutroom</span><br>
+      <span class="brand-sub">Design System v1</span>
+    </span>
+  </a>
+  <nav class="topnav">
+    <a href="#fundacao">Fundação</a>
+    <a href="#cor">Cor</a>
+    <a href="#tipo">Tipo</a>
+    <a href="#componentes">Componentes</a>
+    <a href="#regras">Regras</a>
+    <a href="preview-project.html">Preview da tela →</a>
+  </nav>
+</header>
+
+<main class="container">
+
+  <!-- ============================================================ -->
+  <section class="doc-section" style="padding-top: var(--sp-6)">
+    <p class="tag">Proposta de identidade · NWRCH Studio</p>
+    <h1 class="t-display" style="margin-top: var(--sp-3); max-width: 18ch;">
+      A interface é uma sala de corte.
+    </h1>
+    <div class="stack-4" style="max-width: 64ch; margin-top: var(--sp-5);">
+      <p class="t-lead">
+        O NWRCH Studio não é um site — é uma bancada de trabalho. Este sistema
+        tira a estética de onde o trabalho realmente acontece: a ilha de edição.
+        Preto de sala escura, texto branco-papel, timecode em monoespaçada,
+        réguas de timeline como separadores.
+      </p>
+      <p class="t-muted">
+        A decisão central: <strong style="color: var(--paper-0)">a interface é monocromática</strong>.
+        Cor não decora — cor significa. O amarelo de lápis de cera marca o take
+        escolhido, como um editor marcava o copião. Verde, âmbar e vermelho
+        existem apenas como luzes de tally, em pontos de 8 píxeis. Todo o resto
+        é tipografia, espaço e linha de um píxel.
+      </p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section class="doc-section" id="fundacao">
+    <h2><span class="doc-num tc">01</span>Fundação</h2>
+    <div class="stack-5" style="margin-top: var(--sp-5);">
+      <dl class="spec">
+        <dt>Superfície</dt>
+        <dd>Quatro níveis de tinta (<code class="tc">ink-0…3</code>). Profundidade vem de borda de 1px, nunca de sombra difusa ou glassmorphism.</dd>
+        <dt>Forma</dt>
+        <dd>Cantos duros: raio máximo de 3px. Nada de pílulas, nada de cartões "fofos". A única moldura especial é a do take selecionado.</dd>
+        <dt>Espaço</dt>
+        <dd>Escala base 4 (4 / 8 / 12 / 16 / 24 / 32 / 48 / 64). Texto corrido limitado a ~68ch para leitura confortável.</dd>
+        <dt>Movimento</dt>
+        <dd>Uma duração (130ms), uma curva. Transições só em cor/borda. A única animação contínua é o tally de gravação piscando. <code class="tc">prefers-reduced-motion</code> respeitado.</dd>
+        <dt>Foco</dt>
+        <dd>Anel branco de 2px com offset, visível em qualquer fundo. Navegação por teclado é cidadã de primeira classe.</dd>
+      </dl>
+      <hr class="rule">
+      <p class="t-faint t-small">↑ Esta régua com traços de timeline é o separador-assinatura do sistema. Use-a entre seções maiores no lugar de <code class="tc">&lt;hr&gt;</code> comum.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section class="doc-section" id="cor">
+    <h2><span class="doc-num tc">02</span>Cor</h2>
+    <p class="t-muted" style="margin-top: var(--sp-3); max-width: 64ch;">
+      Três famílias: <strong style="color:var(--paper-0)">tinta</strong> (fundos),
+      <strong style="color:var(--paper-0)">papel</strong> (texto) e
+      <strong style="color:var(--paper-0)">linha</strong> (bordas). O branco puro
+      (<code class="tc">#FFFFFF</code>) é reservado: só ação primária e anel de foco.
+    </p>
+
+    <div class="stack-5" style="margin-top: var(--sp-5);">
+      <div>
+        <p class="tag" style="margin-bottom: var(--sp-3);">Tinta — fundos</p>
+        <div class="swatches">
+          <div class="swatch"><div class="swatch-chip" style="background:#0a0a0b"></div><div class="swatch-info"><span class="tc">--ink-0 #0A0A0B</span><span class="t-faint t-small">página</span></div></div>
+          <div class="swatch"><div class="swatch-chip" style="background:#101012"></div><div class="swatch-info"><span class="tc">--ink-1 #101012</span><span class="t-faint t-small">painel</span></div></div>
+          <div class="swatch"><div class="swatch-chip" style="background:#161618"></div><div class="swatch-info"><span class="tc">--ink-2 #161618</span><span class="t-faint t-small">elevado / hover</span></div></div>
+          <div class="swatch"><div class="swatch-chip" style="background:#1d1d20"></div><div class="swatch-info"><span class="tc">--ink-3 #1D1D20</span><span class="t-faint t-small">campo / inset</span></div></div>
+        </div>
+      </div>
+
+      <div>
+        <p class="tag" style="margin-bottom: var(--sp-3);">Papel — texto</p>
+        <div class="swatches">
+          <div class="swatch"><div class="swatch-chip" style="background:#f2f2ee"></div><div class="swatch-info"><span class="tc">--paper-0 #F2F2EE</span><span class="t-faint t-small">principal (branco-papel)</span></div></div>
+          <div class="swatch"><div class="swatch-chip" style="background:#b6b6b1"></div><div class="swatch-info"><span class="tc">--paper-1 #B6B6B1</span><span class="t-faint t-small">secundário</span></div></div>
+          <div class="swatch"><div class="swatch-chip" style="background:#7e7e7c"></div><div class="swatch-info"><span class="tc">--paper-2 #7E7E7C</span><span class="t-faint t-small">legenda / meta</span></div></div>
+          <div class="swatch"><div class="swatch-chip" style="background:#ffffff"></div><div class="swatch-info"><span class="tc">--white #FFFFFF</span><span class="t-faint t-small">SÓ ação primária + foco</span></div></div>
+        </div>
+      </div>
+
+      <div>
+        <p class="tag" style="margin-bottom: var(--sp-3);">O marcador — a única cor não-semântica</p>
+        <div class="swatches" style="grid-template-columns: minmax(150px, 320px);">
+          <div class="swatch"><div class="swatch-chip" style="background:#e9d75c"></div><div class="swatch-info"><span class="tc">--marker #E9D75C</span><span class="t-faint t-small">lápis de cera: take selecionado, seleção de texto. Nunca em botões, fundos ou texto corrido.</span></div></div>
+        </div>
+      </div>
+
+      <div>
+        <p class="tag" style="margin-bottom: var(--sp-3);">Tally lights — somente status, somente em pontos e texto de estado</p>
+        <div class="demo">
+          <span class="tally tally-ok">pronto</span>
+          <span class="tally tally-warn">atenção</span>
+          <span class="tally tally-err">erro</span>
+          <span class="tally tally-rec">renderizando</span>
+          <span class="tally">aguardando</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section class="doc-section" id="tipo">
+    <h2><span class="doc-num tc">03</span>Tipografia</h2>
+    <p class="t-muted" style="margin-top: var(--sp-3); max-width: 64ch;">
+      Duas vozes. <strong style="color:var(--paper-0)">Archivo</strong> (variável, condensada
+      nos títulos) é a voz humana — narração, ações, títulos.
+      <strong style="color:var(--paper-0)">IBM Plex Mono</strong> é a voz da máquina —
+      timecodes, estados, keywords, logs. Se um dado veio do sistema, ele é mono.
+    </p>
+    <div style="margin-top: var(--sp-5);">
+      <div class="type-row"><span class="tag">display · 40</span><span class="t-display">Sala de corte</span></div>
+      <div class="type-row"><span class="tag">h1 · 28</span><span class="t-h1">Fluxo de produção</span></div>
+      <div class="type-row"><span class="tag">h2 · 22</span><span class="t-h2">Curadoria de takes</span></div>
+      <div class="type-row"><span class="tag">lead · 17</span><span class="t-lead">A narração da cena é o texto mais importante da tela.</span></div>
+      <div class="type-row"><span class="tag">body · 15</span><span>Texto de interface padrão, confortável em fundo escuro.</span></div>
+      <div class="type-row"><span class="tag">mono · 13</span><span class="tc">00:04.2 → 00:08.0 · scene_002 · 4.0s</span></div>
+      <div class="type-row"><span class="tag">tag · 11</span><span class="tag">Pipeline · Etapa 03</span></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section class="doc-section" id="componentes">
+    <h2><span class="doc-num tc">04</span>Componentes</h2>
+
+    <div class="stack-6" style="margin-top: var(--sp-5);">
+
+      <div>
+        <p class="tag" style="margin-bottom: var(--sp-3);">Botões — hierarquia por contraste, nunca por cor. Um primário por vista.</p>
+        <div class="demo">
+          <button class="btn btn-primary"><span class="idx">04</span> Renderizar no Kaggle</button>
+          <button class="btn btn-secondary">Baixar base</button>
+          <button class="btn btn-ghost">Novas keywords</button>
+          <button class="btn btn-danger">Apagar projeto</button>
+          <button class="btn btn-primary" disabled><span class="idx">03</span> Preparar pacote (2/6)</button>
+          <button class="btn btn-secondary btn-sm">ação compacta</button>
+        </div>
+      </div>
+
+      <div>
+        <p class="tag" style="margin-bottom: var(--sp-3);">Pipeline — rail persistente; o passo ativo carrega a barra branca</p>
+        <div class="pipeline">
+          <button class="step is-done"><span class="step-idx">01</span><span class="step-name">Mapa visual</span></button>
+          <button class="step is-done"><span class="step-idx">02</span><span class="step-name">Buscar takes</span></button>
+          <button class="step is-active"><span class="step-idx">03</span><span class="step-name">Preparar pacote</span></button>
+          <button class="step" disabled><span class="step-idx">04</span><span class="step-name">Render Kaggle</span></button>
+          <button class="step" disabled><span class="step-idx">05</span><span class="step-name">Refino master</span></button>
+        </div>
+      </div>
+
+      <div>
+        <p class="tag" style="margin-bottom: var(--sp-3);">Cena — rail de timecode fixo à esquerda; a narração é protagonista</p>
+        <div class="scene">
+          <div class="scene-rail">
+            <span class="tc">00:04.2</span>
+            <span class="tc tc-end">→ 00:08.0</span>
+            <span class="scene-zone">gancho</span>
+          </div>
+          <div class="scene-body">
+            <p class="scene-narration">O problema é que quase ninguém fala disso — e é exatamente aí que mora a oportunidade.</p>
+            <div class="scene-meta">
+              <span class="kw">stagnant water backyard</span>
+              <span class="kw">mosquito breeding close up</span>
+              <span class="kw">rural brazil daily life</span>
+            </div>
+            <div class="row">
+              <button class="btn btn-secondary btn-sm">+ vídeos</button>
+              <button class="btn btn-secondary btn-sm">+ imagens</button>
+              <button class="btn btn-ghost btn-sm">novas keywords</button>
+              <span class="tag" style="margin-left:auto">avatar: direita</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <p class="tag" style="margin-bottom: var(--sp-3);">Takes — thumbs levemente dessaturados; a cor "volta" no hover e no escolhido. O selecionado ganha a moldura de marcador.</p>
+        <div class="takes">
+          <article class="take is-selected">
+            <div class="take-thumb" style="background: linear-gradient(120deg, #2e3a33 0%, #51614f 55%, #2a2e29 100%);"></div>
+            <div class="take-meta"><span>pexels · 1920×1080</span><span>12s</span></div>
+            <div class="take-actions">
+              <button class="btn btn-ghost btn-sm">Selecionado</button>
+              <button class="btn btn-ghost btn-sm">Rejeitar</button>
+            </div>
+          </article>
+          <article class="take">
+            <div class="take-thumb" style="background: linear-gradient(160deg, #3a3a40 0%, #1d1d22 70%);"></div>
+            <div class="take-meta"><span>pixabay · 1280×720</span><span>8s</span></div>
+            <div class="take-actions">
+              <button class="btn btn-ghost btn-sm">Selecionar</button>
+              <button class="btn btn-ghost btn-sm">Rejeitar</button>
+            </div>
+          </article>
+          <article class="take is-rejected">
+            <div class="take-thumb" style="background: linear-gradient(200deg, #44403a 0%, #211f1c 75%);"></div>
+            <div class="take-meta"><span>pexels · 1920×1080</span><span>21s</span></div>
+            <div class="take-actions">
+              <button class="btn btn-ghost btn-sm">Selecionar</button>
+              <button class="btn btn-ghost btn-sm">Rejeitado</button>
+            </div>
+          </article>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="demo-col">
+          <p class="tag">Formulário</p>
+          <label class="field">
+            <span class="tag">Nome do projeto</span>
+            <input class="input" placeholder="video_dengue_bti">
+          </label>
+          <label class="field">
+            <span class="tag">Roteiro com timestamps</span>
+            <textarea class="input input-script" rows="4">[00:00.0 - 00:04.2] Você sabia que existe uma forma barata?
+[00:04.2 - 00:08.0] O problema é que ninguém fala disso.</textarea>
+            <span class="field-hint">Formato: [mm:ss.s - mm:ss.s] fala. Sem timestamps, o sistema fatia em cenas.</span>
+          </label>
+          <label class="field">
+            <span class="tag">Chave inválida</span>
+            <input class="input" aria-invalid="true" value="gsk_xxx">
+            <span class="field-error">A Groq recusou esta chave (HTTP 401).</span>
+          </label>
+        </div>
+        <div class="demo-col">
+          <p class="tag">Notas e alertas</p>
+          <div class="note note-ok">Pacote ZIP pronto — 6 cenas, 6 takes, 48 MB.</div>
+          <div class="note note-warn">HyperFrames falhou; master gerado via fallback FFmpeg. A base foi preservada.</div>
+          <div class="note note-err">Render ficou 12s mais curto que o roteiro. Verifique a cena 04.</div>
+          <p class="tag" style="margin-top: var(--sp-3);">Badges de estado do projeto</p>
+          <div class="row">
+            <span class="badge">created</span>
+            <span class="badge">mapped</span>
+            <span class="badge">packaged</span>
+            <span class="badge">render_ok</span>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <p class="tag" style="margin-bottom: var(--sp-3);">Jobs — console, não cartões</p>
+        <div class="joblog">
+          <div class="joblog-row"><span class="t-faint">14:02:11</span><span class="tally tally-rec">running</span><span>kaggle_send — enviando dataset para o Kaggle</span><a class="btn btn-ghost btn-sm" href="#">log</a></div>
+          <div class="joblog-row"><span class="t-faint">13:58:40</span><span class="tally tally-ok">complete</span><span>package — pacote ZIP pronto (6/6 cenas)</span><a class="btn btn-ghost btn-sm" href="#">zip</a></div>
+          <div class="joblog-row"><span class="t-faint">13:51:02</span><span class="tally tally-err">error</span><span>package — 2 downloads expiraram (Pexels)</span><a class="btn btn-ghost btn-sm" href="#">detalhe</a></div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section class="doc-section" id="regras">
+    <h2><span class="doc-num tc">05</span>Regras de uso</h2>
+    <div class="dont-grid" style="margin-top: var(--sp-5);">
+      <div class="dont-card yes">
+        <p class="tag" style="color: var(--ok); margin-bottom: var(--sp-3);">Sim</p>
+        <ul class="stack-2 t-small t-muted" style="list-style: none;">
+          <li>Um botão branco-cheio por vista — a próxima ação do fluxo.</li>
+          <li>Amarelo marcador apenas no take selecionado e em ::selection.</li>
+          <li>Todo dado de sistema (tempo, estado, contagem, slug) em mono.</li>
+          <li>Profundidade com borda 1px e níveis de tinta.</li>
+          <li>Status sempre com tally + palavra ("erro", não só vermelho).</li>
+          <li>Narração da cena em 17px/1.65 — é o texto que o usuário relê.</li>
+        </ul>
+      </div>
+      <div class="dont-card no">
+        <p class="tag" style="color: var(--err); margin-bottom: var(--sp-3);">Não</p>
+        <ul class="stack-2 t-small t-muted" style="list-style: none;">
+          <li>Gradientes coloridos, glow, glassmorphism, sombras difusas.</li>
+          <li>Verde-menta ou lima como cor de marca (sistema anterior).</li>
+          <li>Cantos arredondados acima de 3px; pílulas.</li>
+          <li>Cor para hierarquia de botões (primário colorido etc.).</li>
+          <li>Emoji na interface; ícones decorativos sem função.</li>
+          <li>Mais de uma animação contínua por tela (só o tally REC pisca).</li>
+        </ul>
+      </div>
+    </div>
+
+    <hr class="rule" style="margin-top: var(--sp-7);">
+    <div class="row-between" style="margin-top: var(--sp-4);">
+      <p class="t-faint t-small">NWRCH CUTROOM v1 · tokens e componentes em <code class="tc">design/nwrch.css</code> — prontos para substituir <code class="tc">static/style.css</code> gradualmente.</p>
+      <a class="btn btn-primary" href="preview-project.html">Ver a tela do projeto →</a>
+    </div>
+  </section>
+
+</main>
+</body>
+</html>

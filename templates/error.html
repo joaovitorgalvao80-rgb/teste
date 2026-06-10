@@ -1,10 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Erro {{ status_code }}{% endblock %}
 {% block content %}
-<div class="card" style="max-width:520px;margin:60px auto;text-align:center">
-  <span class="eyebrow">NWRCH Studio</span>
-  <h1>{{ status_code }}</h1>
-  <p>{{ detail or "Algo deu errado." }}</p>
-  <a class="primary btn" href="/projects">Voltar para projetos</a>
+<div class="panel panel-pad" style="max-width:480px;margin:var(--sp-7) auto;text-align:center">
+  <p class="tag" style="margin-bottom:var(--sp-3)">NWRCH Studio</p>
+  <h1 style="font-size:var(--fs-h1);margin-bottom:var(--sp-3)">{{ status_code }}</h1>
+  <p class="t-muted" style="margin-bottom:var(--sp-5)">{{ detail or "Algo deu errado." }}</p>
+  <a class="btn btn-primary" href="/projects">Voltar para projetos</a>
 </div>
 {% endblock %}

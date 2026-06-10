@@ -10,17 +10,16 @@
   <header class="topbar">
     <a class="brand" href="/projects" aria-label="NWRCH Studio">
       <span class="brand-mark">N</span>
-      <span class="brand-copy">
-        <strong>NWRCH Studio</strong>
-        <em>AI B-roll Production</em>
+      <span>
+        <span class="brand-name">NWRCH Studio</span><br>
+        <span class="brand-sub">Cutroom Console</span>
       </span>
     </a>
-    <nav>
+    <nav class="topnav">
       {% if user %}
         <a href="/projects">Projetos</a>
         <a href="/settings">Configurações</a>
-        <span class="who">{{ user.username }}</span>
-        <a class="logout-link" href="/logout">Sair</a>
+        <a href="/logout">{{ user.username }} · sair</a>
       {% endif %}
     </nav>
   </header>

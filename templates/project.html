@@ -1,64 +1,83 @@
 {% extends "base.html" %}
 {% block title %}{{ project.name }} | NWRCH Studio{% endblock %}
 {% block content %}
-<div class="page-head project-head">
+
+<!-- Cabeçalho do projeto -->
+<div class="page-head">
   <div>
-    <a class="muted small back-link" href="/projects">&larr; Projetos</a>
-    <span class="eyebrow">Production console</span>
+    <a class="back-link" href="/projects">&larr; Projetos</a>
+    <p class="tag" style="margin-bottom:var(--sp-2)">Production console</p>
     <h1>{{ project.name }}</h1>
-    <p class="muted">Mapa visual, curadoria de assets, pacote e render final.</p>
   </div>
   <div class="head-status">
     <span class="badge status-{{ project.status }}">{{ project.status }}</span>
-    <span class="mini-stat"><strong>{{ scenes|length }}</strong> cenas</span>
-    <span class="mini-stat"><strong>{{ selected_count }}</strong> selecionadas</span>
+    <span class="mini-stat"><strong>{{ scenes|length }}</strong>&nbsp;cenas</span>
+    <span class="mini-stat"><strong>{{ selected_count }}</strong>&nbsp;selecionadas</span>
   </div>
 </div>
 
-<div class="card toolbar">
-  <div class="toolbar-title">
-    <span class="eyebrow">Pipeline</span>
-    <h2>Fluxo de produção</h2>
-  </div>
-  <div class="steps">
-    <form method="post" action="/projects/{{ project.id }}/generate-map">
-      <button class="primary" type="submit"><span>01</span> Gerar mapa visual</button>
-    </form>
-    <form method="post" action="/projects/{{ project.id }}/search">
-      <button class="secondary" type="submit" {% if not scenes %}disabled{% endif %}><span>02</span> Buscar assets</button>
-    </form>
-    <form method="post" action="/projects/{{ project.id }}/package">
-      <button class="accent" type="submit" {% if scenes|length == 0 or selected_count != scenes|length %}disabled{% endif %}>
-        <span>03</span> Preparar pacote ({{ selected_count }}/{{ scenes|length }})
+<!-- Pipeline -->
+<div class="panel" style="margin-bottom:var(--sp-5)">
+  <div class="pipeline">
+    <form method="post" action="/projects/{{ project.id }}/generate-map" style="flex:1;display:contents">
+      <button class="step {% if scenes %}is-done{% endif %}" type="submit">
+        <span class="step-idx">01</span>
+        <span class="step-name">Mapa visual</span>
       </button>
     </form>
-    {% if project.status == 'packaged' %}
-    <a class="btn ghost small" href="/projects/{{ project.id }}/download-zip">Baixar ZIP</a>
-    {% endif %}
-    <button class="kaggle-btn" id="btn-kaggle"
+    <form method="post" action="/projects/{{ project.id }}/search" style="flex:1;display:contents">
+      <button class="step {% if project.status in ['searched','packaged'] %}is-done{% endif %}" type="submit"
+              {% if not scenes %}disabled{% endif %}>
+        <span class="step-idx">02</span>
+        <span class="step-name">Buscar assets</span>
+      </button>
+    </form>
+    <form method="post" action="/projects/{{ project.id }}/package" style="flex:1;display:contents">
+      <button class="step {% if project.status == 'packaged' %}is-done{% endif %}" id="btn-package" type="submit"
+              {% if scenes|length == 0 or selected_count != scenes|length %}disabled{% endif %}>
+        <span class="step-idx">03</span>
+        <span class="step-name">Pacote ({{ selected_count }}/{{ scenes|length }})</span>
+      </button>
+    </form>
+    <button class="step {% if project.kaggle_status and project.kaggle_status not in ['','none'] %}is-active{% endif %}"
+            id="btn-kaggle"
             onclick="sendToKaggle({{ project.id }})"
             {% if project.status not in ['packaged'] %}disabled{% endif %}>
-      <span>04</span> Renderizar no Kaggle
+      <span class="step-idx">04</span>
+      <span class="step-name">Render Kaggle</span>
+    </button>
+    <button class="step" disabled>
+      <span class="step-idx">05</span>
+      <span class="step-name">Refino master</span>
     </button>
   </div>
+
+  {% if not has_keys %}
+    <div style="padding:var(--sp-3) var(--sp-5)">
+      <p class="note note-warn">Cadastre chaves de Pexels/Pixabay em <a href="/settings" style="color:var(--paper-0)">Configurações → APIs</a> para buscar assets.</p>
+    </div>
+  {% endif %}
+
+  <!-- Kaggle status bar -->
   <div id="kaggle-status-bar" class="kaggle-panel"
        {% if not project.kaggle_kernel_slug %}style="display:none"{% endif %}>
     <div class="kaggle-row">
-      <span id="kaggle-dot" class="kaggle-dot"></span>
+      <span id="kaggle-dot" class="tally"></span>
       <div class="kaggle-info">
         <strong>Render no Kaggle</strong>
         <span id="kaggle-status-text" class="kaggle-state">{{ project.kaggle_status or 'verificando...' }}</span>
       </div>
       <div class="kaggle-links">
-        <a id="kaggle-master" class="btn kaggle-dl" href="/projects/{{ project.id }}/download-master-video" download
+        <a id="kaggle-master" class="btn btn-secondary btn-sm" href="/projects/{{ project.id }}/download-master-video" download
            {% if not has_master_video %}style="display:none"{% endif %}>Baixar master</a>
-        <a id="kaggle-base" class="btn ghost small" href="/projects/{{ project.id }}/download-base-video" download
+        <a id="kaggle-base" class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}/download-base-video" download
            {% if not has_base_video %}style="display:none"{% endif %}>Baixar base</a>
-        <a id="kaggle-link" href="https://www.kaggle.com/code/{{ user.kaggle_username }}/{{ project.kaggle_kernel_slug }}" target="_blank" class="small muted">abrir no Kaggle ↗</a>
+        <a id="kaggle-link" href="https://www.kaggle.com/code/{{ user.kaggle_username }}/{{ project.kaggle_kernel_slug }}"
+           target="_blank" class="btn btn-ghost btn-sm">abrir no Kaggle ↗</a>
       </div>
     </div>
     <div class="kaggle-row hyperframes-row">
-      <span class="eyebrow">05 Refino HyperFrames</span>
+      <span class="tag">05 Refino HyperFrames</span>
       <span id="hyperframes-state" class="kaggle-state">
         {%- if hyperframes_status.get('status') == 'complete' -%}
           master pronto ({{ hyperframes_status.get('render_mode', 'mp4') }}{% if hyperframes_status.get('audio') %}, com narração{% endif %}{% if hyperframes_status.get('avatar') %}, com avatar{% endif %})
@@ -72,192 +91,220 @@
       </span>
     </div>
   </div>
-  {% if not has_keys %}
-    <p class="alert">Cadastre chaves de Pexels/Pixabay em <a href="/settings">APIs</a> para buscar assets.</p>
+
+  {% if project.status == 'packaged' %}
+  <div style="padding:var(--sp-3) var(--sp-5);border-top:1px solid var(--line-0)">
+    <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}/download-zip">Baixar ZIP</a>
+  </div>
   {% endif %}
 </div>
 
-<div class="card ops-card">
-  <div class="toolbar-title">
-    <span class="eyebrow">Operacao</span>
-    <h2>Saude do projeto</h2>
-  </div>
-  <div class="ops-grid">
-    <div class="ops-item">
-      <span class="ops-label">Selecao</span>
-      <strong class="{% if diagnostics.selection.complete %}ok-text{% else %}warn-text{% endif %}">
-        {{ diagnostics.selection.selected }}/{{ diagnostics.selection.scenes }}
-      </strong>
-      <small>{% if diagnostics.selection.complete %}pronta para pacote{% else %}faltam cenas{% endif %}</small>
+<!-- Diagnóstico + jobs -->
+<div class="grid-2" style="margin-bottom:var(--sp-5)">
+  <div class="panel ops-card">
+    <div class="panel-head">
+      <span class="tag">Saúde do projeto</span>
+      <button class="btn btn-ghost btn-sm" type="button" onclick="validateOutput({{ project.id }}, this)">Validar outputs</button>
     </div>
-    <div class="ops-item">
-      <span class="ops-label">Pacote</span>
-      <strong class="{% if diagnostics.zip.exists %}ok-text{% else %}muted{% endif %}">
-        {% if diagnostics.zip.exists %}{{ diagnostics.zip.name }}{% else %}sem ZIP{% endif %}
-      </strong>
-      <small>{% if diagnostics.zip.exists %}{{ diagnostics.zip.size_mb }} MB{% else %}gere a etapa 03{% endif %}</small>
+    <div style="padding:0 var(--sp-5) var(--sp-3)">
+      <div class="ops-grid" style="margin-top:var(--sp-4)">
+        <div class="ops-item">
+          <span class="ops-label">Seleção</span>
+          <strong class="{% if diagnostics.selection.complete %}ok-text{% else %}warn-text{% endif %}">
+            {{ diagnostics.selection.selected }}/{{ diagnostics.selection.scenes }}
+          </strong>
+          <small>{% if diagnostics.selection.complete %}pronta para pacote{% else %}faltam cenas{% endif %}</small>
+        </div>
+        <div class="ops-item">
+          <span class="ops-label">Pacote</span>
+          <strong class="{% if diagnostics.zip.exists %}ok-text{% else %}muted{% endif %}">
+            {% if diagnostics.zip.exists %}{{ diagnostics.zip.name }}{% else %}sem ZIP{% endif %}
+          </strong>
+          <small>{% if diagnostics.zip.exists %}{{ diagnostics.zip.size_mb }} MB{% else %}gere a etapa 03{% endif %}</small>
+        </div>
+        {% set validation = diagnostics.outputs.validation %}
+        <div class="ops-item">
+          <span class="ops-label">Validação</span>
+          <strong id="validation-status"
+                  class="{% if validation and validation.status == 'ok' %}ok-text{% elif validation and validation.status == 'error' %}bad-text{% else %}warn-text{% endif %}">
+            {% if validation %}{{ validation.status }}{% else %}pendente{% endif %}
+          </strong>
+          <small id="validation-detail">
+            {% if validation and validation.issues %}{{ validation.issues[0].message }}
+            {% elif validation %}outputs coerentes
+            {% else %}valide após baixar o render{% endif %}
+          </small>
+        </div>
+      </div>
     </div>
-    {% set validation = diagnostics.outputs.validation %}
-    <div class="ops-item">
-      <span class="ops-label">Validacao</span>
-      <strong id="validation-status"
-              class="{% if validation and validation.status == 'ok' %}ok-text{% elif validation and validation.status == 'error' %}bad-text{% else %}warn-text{% endif %}">
-        {% if validation %}{{ validation.status }}{% else %}pendente{% endif %}
-      </strong>
-      <small id="validation-detail">
-        {% if validation and validation.issues %}
-          {{ validation.issues[0].message }}
-        {% elif validation %}
-          outputs coerentes
-        {% else %}
-          valide apos baixar o render
-        {% endif %}
-      </small>
+    <div class="ops-actions">
+      <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}/diagnostics.json" target="_blank">Diagnóstico JSON</a>
+      {% if diagnostics.logs.render_log %}
+        <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}/download-render-log">Log render</a>
+      {% endif %}
+      {% if diagnostics.logs.hyperframes_status %}
+        <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}/download-hyperframes-status">Status HyperFrames</a>
+      {% endif %}
+      {% if diagnostics.logs.validation %}
+        <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}/download-validation">Validação JSON</a>
+      {% endif %}
     </div>
   </div>
-  <div class="ops-actions">
-    <button class="ghost small" type="button" onclick="validateOutput({{ project.id }}, this)">Validar outputs</button>
-    <a class="btn ghost small" href="/projects/{{ project.id }}/diagnostics.json" target="_blank">Diagnostico JSON</a>
-    {% if diagnostics.logs.render_log %}
-      <a class="btn ghost small" href="/projects/{{ project.id }}/download-render-log">Log render</a>
-    {% endif %}
-    {% if diagnostics.logs.hyperframes_status %}
-      <a class="btn ghost small" href="/projects/{{ project.id }}/download-hyperframes-status">Status HyperFrames</a>
-    {% endif %}
-    {% if diagnostics.logs.validation %}
-      <a class="btn ghost small" href="/projects/{{ project.id }}/download-validation">Validacao JSON</a>
-    {% endif %}
-  </div>
-  <div class="jobs-panel">
-    <span class="eyebrow">Jobs recentes</span>
-    {% if jobs %}
-      <ul class="job-list" id="job-list">
-        {% for job in jobs %}
-          <li class="job-{{ job.status }}">
-            <b>{{ job.kind }}</b>
-            <span>{{ job.status }}</span>
-            <small>{{ job.message or job.error or '-' }}</small>
-          </li>
-        {% endfor %}
-      </ul>
-    {% else %}
-      <p class="muted small">Nenhum job registrado ainda.</p>
-    {% endif %}
+
+  <div class="panel">
+    <div class="panel-head">
+      <span class="tag">Jobs recentes</span>
+    </div>
+    <div class="jobs-panel" style="padding:var(--sp-4) var(--sp-5)">
+      {% if jobs %}
+        <ul class="job-list" id="job-list">
+          {% for job in jobs %}
+            <li class="job-{{ job.status }}">
+              <b>{{ job.kind }}</b>
+              <span>{{ job.status }}</span>
+              <small>{{ job.message or job.error or '-' }}</small>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="t-muted t-small">Nenhum job registrado ainda.</p>
+      {% endif %}
+    </div>
   </div>
 </div>
 
-<div class="card refine-card">
-  <div class="toolbar-title">
-    <span class="eyebrow">Refinamento</span>
-    <h2>Narração e avatar do master</h2>
+<!-- Refinamento (narração + avatar) -->
+<div class="panel" style="margin-bottom:var(--sp-5)">
+  <div class="panel-head">
+    <span class="tag">Refinamento · narração e avatar</span>
   </div>
-  <p class="muted small">
-    Esses arquivos entram no <b>final_master.mp4</b> renderizado pelo HyperFrames.
-    Envie antes de <b>03 Preparar pacote</b> para que sigam no ZIP.
-  </p>
-  <div class="refine-grid">
-    <div class="refine-item">
-      <strong>Narração</strong>
-      {% if narration_name %}
-        <p class="small">Atual: <b>{{ narration_name }}</b></p>
-        <form method="post" action="/projects/{{ project.id }}/remove-media">
+  <div style="padding:var(--sp-4) var(--sp-5)">
+    <p class="t-muted t-small" style="margin-bottom:var(--sp-4)">
+      Esses arquivos entram no <code>final_master.mp4</code> renderizado pelo HyperFrames.
+      Envie antes de <strong>03 Preparar pacote</strong> para que sigam no ZIP.
+    </p>
+    <div class="refine-grid">
+      <div class="refine-item">
+        <strong>Narração</strong>
+        {% if narration_name %}
+          <p class="t-small">Atual: <strong>{{ narration_name }}</strong></p>
+          <form method="post" action="/projects/{{ project.id }}/remove-media">
+            <input type="hidden" name="kind" value="narration">
+            <button class="btn btn-danger btn-sm" type="submit">Remover</button>
+          </form>
+        {% endif %}
+        <form method="post" action="/projects/{{ project.id }}/upload-media" enctype="multipart/form-data">
           <input type="hidden" name="kind" value="narration">
-          <button class="ghost small" type="submit">Remover</button>
+          <input type="file" name="media" accept=".mp3,.wav,.m4a,.aac,.ogg,.flac" required>
+          <button class="btn btn-secondary btn-sm" type="submit">{% if narration_name %}Substituir{% else %}Enviar narração{% endif %}</button>
         </form>
-      {% endif %}
-      <form method="post" action="/projects/{{ project.id }}/upload-media" enctype="multipart/form-data">
-        <input type="hidden" name="kind" value="narration">
-        <input type="file" name="media" accept=".mp3,.wav,.m4a,.aac,.ogg,.flac" required>
-        <button class="ghost small" type="submit">{% if narration_name %}Substituir{% else %}Enviar narração{% endif %}</button>
-      </form>
-    </div>
-    <div class="refine-item">
-      <strong>Avatar</strong>
-      <p class="muted small">WebM com alpha fica transparente; MP4 aparece como retângulo.</p>
-      {% if avatar_name %}
-        <p class="small">Atual: <b>{{ avatar_name }}</b></p>
-        <form method="post" action="/projects/{{ project.id }}/remove-media">
+      </div>
+      <div class="refine-item">
+        <strong>Avatar</strong>
+        <p class="t-muted t-small">WebM com alpha fica transparente; MP4 aparece como retângulo.</p>
+        {% if avatar_name %}
+          <p class="t-small">Atual: <strong>{{ avatar_name }}</strong></p>
+          <form method="post" action="/projects/{{ project.id }}/remove-media">
+            <input type="hidden" name="kind" value="avatar">
+            <button class="btn btn-danger btn-sm" type="submit">Remover</button>
+          </form>
+        {% endif %}
+        <form method="post" action="/projects/{{ project.id }}/upload-media" enctype="multipart/form-data">
           <input type="hidden" name="kind" value="avatar">
-          <button class="ghost small" type="submit">Remover</button>
+          <input type="file" name="media" accept=".webm,.mov,.mp4" required>
+          <button class="btn btn-secondary btn-sm" type="submit">{% if avatar_name %}Substituir{% else %}Enviar avatar{% endif %}</button>
         </form>
-      {% endif %}
-      <form method="post" action="/projects/{{ project.id }}/upload-media" enctype="multipart/form-data">
-        <input type="hidden" name="kind" value="avatar">
-        <input type="file" name="media" accept=".webm,.mov,.mp4" required>
-        <button class="ghost small" type="submit">{% if avatar_name %}Substituir{% else %}Enviar avatar{% endif %}</button>
-      </form>
+      </div>
     </div>
   </div>
 </div>
 
 {% if not scenes %}
-  <div class="card empty">
-    <span class="eyebrow">Mapa visual</span>
+  <div class="empty">
+    <p class="tag">Mapa visual</p>
     <h2>Sem cenas ainda.</h2>
-    <p>Clique em <b>Gerar mapa visual</b> para dividir o roteiro em cenas e gerar keywords.</p>
+    <p class="t-muted t-small">Clique em <strong>01 Mapa visual</strong> para dividir o roteiro em cenas e gerar keywords.</p>
   </div>
 {% endif %}
 
+<!-- Curadoria de cenas -->
+{% if scenes %}
+<hr class="rule" style="margin-bottom:var(--sp-5)">
+<div class="row-between" style="margin-bottom:var(--sp-4)">
+  <h2>Curadoria de takes</h2>
+  <span class="t-small t-faint"><kbd>S</kbd> selecionar · <kbd>R</kbd> rejeitar</span>
+</div>
+{% endif %}
+
 {% for scene in scenes %}
-  <section class="scene zone-{{ scene.zone|lower }}" id="scene-{{ scene.id }}" data-scene="{{ scene.id }}">
-    <div class="scene-head">
-      <div>
-        <h2>
-          <span class="zone zone-{{ scene.zone|lower }}">{{ scene.zone or 'CENA' }}</span>
-          {{ scene.scene_id }}
-          <span class="time">{{ '%.1f'|format(scene.start_time) }}s – {{ '%.1f'|format(scene.end_time) }}s</span>
-          <span class="dur">({{ '%.1f'|format(scene.duration) }}s)</span>
-        </h2>
-        <p class="narration">{{ scene.narration }}</p>
-        <p class="goal"><b>Objetivo:</b> {{ scene.visual_goal }}</p>
-        <p class="keywords">
-          <b>Keywords:</b>
-          <span class="kw-list" id="kw-{{ scene.id }}">{{ scene.keywords|join(', ') }}</span>
-        </p>
-        {% if scene.must_not_show %}
-          <p class="muted small">Evitar: {{ scene.must_not_show|join(', ') }}</p>
+  <section class="scene scene-zone-{{ scene.zone|lower }}" id="scene-{{ scene.id }}" data-scene="{{ scene.id }}">
+    <div class="scene-rail">
+      <span class="tc">{{ '%.1f'|format(scene.start_time) }}s</span>
+      <span class="tc tc-end">{{ '%.1f'|format(scene.end_time) }}s</span>
+      <span class="scene-zone-label">{{ scene.zone or 'cena' }}</span>
+    </div>
+    <div class="scene-body">
+      <p class="scene-narration">{{ scene.narration }}</p>
+
+      <div class="scene-meta">
+        {% for kw in scene.keywords %}
+          <span class="kw">{{ kw }}</span>
+        {% endfor %}
+        {% if scene.assets | selectattr('state', 'equalto', 'selected') | list %}
+          <span class="tally tally-ok" style="margin-left:auto">take marcado</span>
+        {% else %}
+          <span class="tally tally-warn" style="margin-left:auto">sem take marcado</span>
         {% endif %}
       </div>
-      <div class="scene-actions">
-        <span class="safe-tag">avatar: {{ scene.avatar_safe_area }}</span>
-        <div class="media-pick">
-          <button class="ghost" onclick="searchMore({{ scene.id }}, this, 'video')">+ vídeos</button>
-          <button class="ghost" onclick="searchMore({{ scene.id }}, this, 'image')">+ imagens</button>
-        </div>
-        <button class="ghost" onclick="regenKeywords({{ scene.id }})">Novas keywords</button>
-      </div>
-    </div>
 
-    <div class="grid" id="grid-{{ scene.id }}">
-      {% for a in scene.assets %}
-        <article class="acard state-{{ a.state }}" id="asset-{{ a.id }}" data-id="{{ a.id }}">
-          <div class="thumb">
+      {% if scene.must_not_show %}
+        <p class="t-small t-faint">Evitar: {{ scene.must_not_show|join(', ') }}</p>
+      {% endif %}
+
+      <div class="takes" id="grid-{{ scene.id }}">
+        {% for a in scene.assets %}
+          <article class="take is-{{ a.state }}" id="asset-{{ a.id }}" data-id="{{ a.id }}">
             {% if a.asset_type == 'video' %}
-              <video muted loop preload="none" poster="{{ a.preview_url }}"
+              <video class="take-thumb" muted loop preload="none" poster="{{ a.preview_url }}"
                      src="{{ a.download_url }}"
                      onmouseover="this.play()" onmouseout="this.pause()"></video>
-              <span class="type-tag">vid</span>
             {% else %}
-              <img loading="lazy" src="{{ a.preview_url or a.download_url }}" alt="">
-              <span class="type-tag img">img</span>
+              <img class="take-thumb" loading="lazy" src="{{ a.preview_url or a.download_url }}" alt="">
             {% endif %}
-          </div>
-          <div class="meta">
-            <span>{{ a.source }} · {{ a.width }}x{{ a.height }}{% if a.duration %} · {{ a.duration }}s{% endif %}</span>
-            <span class="kw">{{ a.keyword }}</span>
-            {% if a.author %}<a class="muted small" href="{{ a.author_url }}" target="_blank" rel="noopener">{{ a.author }}</a>{% endif %}
-          </div>
-          <div class="actions">
-            <button class="sel" onclick="setState({{ a.id }}, 'selected')">{% if a.state == 'selected' %}Selecionado{% else %}Selecionar{% endif %}</button>
-            <button class="fav" onclick="setState({{ a.id }}, 'favorite')" aria-label="Favoritar">★</button>
-            <button class="rej" onclick="setState({{ a.id }}, 'rejected')">Rejeitar</button>
-          </div>
-        </article>
-      {% endfor %}
+            <div class="take-meta">
+              <span>{{ a.source }} · {{ a.width }}x{{ a.height }}{% if a.duration %} · {{ a.duration }}s{% endif %}</span>
+              <span class="kw-label">{{ a.keyword }}</span>
+            </div>
+            {% if a.author %}
+              <div style="padding:0 var(--sp-3) var(--sp-1)">
+                <a class="t-small t-faint" href="{{ a.author_url }}" target="_blank" rel="noopener">{{ a.author }}</a>
+              </div>
+            {% endif %}
+            <div class="take-actions">
+              <button class="btn btn-ghost btn-sm sel" onclick="setState({{ a.id }}, 'selected')">
+                {% if a.state == 'selected' %}Selecionado{% else %}Selecionar{% endif %}
+              </button>
+              <button class="btn btn-ghost btn-sm" onclick="setState({{ a.id }}, 'favorite')" aria-label="Favoritar">★</button>
+              <button class="btn btn-ghost btn-sm" onclick="setState({{ a.id }}, 'rejected')">Rejeitar</button>
+            </div>
+          </article>
+        {% endfor %}
+      </div>
+
+      {% if not scene.assets %}
+        <p class="empty-grid">Nenhum asset buscado para esta cena. Use <strong>02 Buscar assets</strong> ou busque mais abaixo.</p>
+      {% endif %}
+
+      <div class="row">
+        <button class="btn btn-secondary btn-sm" onclick="searchMore({{ scene.id }}, this, 'video')">+ vídeos</button>
+        <button class="btn btn-secondary btn-sm" onclick="searchMore({{ scene.id }}, this, 'image')">+ imagens</button>
+        <button class="btn btn-ghost btn-sm" onclick="regenKeywords({{ scene.id }})">
+          novas keywords
+          <span id="kw-{{ scene.id }}" style="display:none">{{ scene.keywords|join(', ') }}</span>
+        </button>
+        <span class="t-small t-faint" style="margin-left:auto">avatar: {{ scene.avatar_safe_area }}</span>
+      </div>
     </div>
-    {% if not scene.assets %}
-      <p class="muted empty-grid">Nenhum asset buscado para esta cena. Use <b>Buscar assets</b> ou <b>buscar mais</b>.</p>
-    {% endif %}
   </section>
 {% endfor %}
 {% endblock %}

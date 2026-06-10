@@ -3,13 +3,13 @@
 {% block content %}
 <div class="page-head">
   <div>
-    <span class="eyebrow">Novo workspace</span>
+    <p class="tag" style="margin-bottom:var(--sp-2)">Novo workspace</p>
     <h1>Novo projeto</h1>
-    <p class="muted">Cole o roteiro, defina o enquadramento e deixe o NWRCH montar o mapa visual.</p>
+    <p class="t-muted" style="margin-top:var(--sp-2)">Cole o roteiro, defina o enquadramento e deixe o NWRCH montar o mapa visual.</p>
   </div>
 </div>
 
-<div class="card">
+<div class="panel panel-pad">
   <form method="post" action="/projects/new" id="new-project-form" enctype="multipart/form-data">
 
     <label>Nome do projeto
@@ -18,7 +18,7 @@
 
     <div class="transcribe-zone" id="transcribe-zone">
       <div class="transcribe-header">
-        <span class="small muted">Tem a narração gravada?</span>
+        <span class="t-small t-muted">Tem a narração gravada?</span>
         <label class="audio-pick-btn" for="audio-upload">
           Transcrever áudio automaticamente
           <input type="file" id="audio-upload" name="narration_media" accept="audio/*,video/*" style="display:none">
@@ -34,7 +34,7 @@
       <textarea name="script" id="script-area" rows="12" required
         placeholder="[00:00.0 - 00:04.2] Você sabia que existe uma forma barata de controlar mosquito?&#10;[00:04.2 - 00:08.0] O problema é que quase ninguém fala disso.&#10;&#10;Ou cole um roteiro em texto corrido; o sistema fatia em cenas automaticamente."></textarea>
     </label>
-    <p class="muted small">Formato ideal: <code>[mm:ss.s - mm:ss.s] fala</code>. Sem timestamps o sistema corta em blocos de duração média.</p>
+    <p class="t-muted t-small" style="margin-top:calc(-1 * var(--sp-3));margin-bottom:var(--sp-4)">Formato ideal: <code>[mm:ss.s - mm:ss.s] fala</code>. Sem timestamps o sistema corta em blocos de duração média.</p>
 
     <div class="grid-2">
       <label>Área segura do avatar
@@ -52,19 +52,21 @@
     </div>
 
     <div class="grid-2">
-      <label>Duração média por cena (s) - usada sem timestamps
+      <label>Duração média por cena (s) — usada sem timestamps
         <input name="scene_duration" type="number" step="0.5" min="2" max="8" value="4">
       </label>
-      <label class="check">
-        <input type="checkbox" name="image_fallback" value="1"> Permitir imagem como fallback
-      </label>
+      <div style="padding-top:var(--sp-4);display:flex;align-items:center">
+        <label class="check">
+          <input type="checkbox" name="image_fallback" value="1"> Permitir imagem como fallback
+        </label>
+      </div>
     </div>
 
     <label>Estilo visual
       <input name="visual_style" value="{{ config.visual_style }}">
     </label>
 
-    <button class="primary" type="submit">Criar projeto</button>
+    <button class="btn btn-primary" type="submit">Criar projeto</button>
   </form>
 </div>
 {% endblock %}
@@ -91,7 +93,7 @@ document.getElementById("audio-upload").addEventListener("change", async functio
     }
     const data = await res.json();
     area.value = data.transcript;
-    area.style.borderColor = "var(--accent)";
+    area.style.borderColor = "var(--ok)";
     progress.style.display = "none";
     this.disabled = false;
   } catch (e) {

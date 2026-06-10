@@ -16,23 +16,23 @@ async function setState(assetId, state) {
   const card = document.getElementById("asset-" + assetId);
   try {
     const res = await postForm(`/assets/${assetId}/state`, { state });
-    // limpa classes de estado e aplica a nova
-    card.classList.remove("state-pending", "state-selected", "state-rejected", "state-favorite");
-    card.classList.add("state-" + res.state);
+    card.classList.remove("is-pending", "is-selected", "is-rejected", "is-favorite");
+    card.classList.add("is-" + res.state);
     const selectButton = card.querySelector(".sel");
     if (selectButton) selectButton.textContent = res.state === "selected" ? "Selecionado" : "Selecionar";
 
     if (res.state === "selected") {
-      // uma cena tem 1 selecionado: rebaixa visualmente os irmaos
-      const grid = card.closest(".grid");
-      grid.querySelectorAll(".acard.state-selected").forEach((el) => {
-        if (el !== card) {
-          el.classList.remove("state-selected");
-          el.classList.add("state-pending");
-          const siblingButton = el.querySelector(".sel");
-          if (siblingButton) siblingButton.textContent = "Selecionar";
-        }
-      });
+      // rebaixa irmãos da mesma cena
+      const grid = card.closest(".takes");
+      if (grid) {
+        grid.querySelectorAll(".take.is-selected").forEach((el) => {
+          if (el !== card) {
+            el.classList.remove("is-selected");
+            const siblingButton = el.querySelector(".sel");
+            if (siblingButton) siblingButton.textContent = "Selecionar";
+          }
+        });
+      }
       updateSelectedCount();
     } else {
       updateSelectedCount();
@@ -43,15 +43,16 @@ async function setState(assetId, state) {
 }
 
 function updateSelectedCount() {
-  const btn = document.querySelector("button.accent");
+  const btn = document.getElementById("btn-package");
   if (!btn) return;
   const total = document.querySelectorAll("section.scene").length;
-  // conta cenas que tem ao menos um selecionado
   let selected = 0;
   document.querySelectorAll("section.scene").forEach((sec) => {
-    if (sec.querySelector(".acard.state-selected")) selected++;
+    if (sec.querySelector(".take.is-selected")) selected++;
   });
-  btn.innerHTML = `<span>03</span> Preparar pacote (${selected}/${total})`;
+  // atualiza o texto do step no pipeline
+  const nameSpan = btn.querySelector(".step-name");
+  if (nameSpan) nameSpan.textContent = `Pacote (${selected}/${total})`;
   btn.disabled = total === 0 || selected !== total;
 }
 
@@ -97,13 +98,15 @@ function renderKaggleState(data) {
   let label = KAGGLE_LABELS[status] || status || "verificando...";
   if (status === "error" && data.error) label = "erro: " + data.error.slice(0, 200);
   if (txt) txt.textContent = label;
+
   if (dot) {
-    dot.className = "kaggle-dot";
-    if (status === "complete") dot.classList.add("ok");
-    else if (status === "error") dot.classList.add("err");
-    else if (status === "running") dot.classList.add("run");
-    else dot.classList.add("wait");
+    dot.className = "tally";
+    if (status === "complete")      dot.classList.add("tally-ok");
+    else if (status === "error")    dot.classList.add("tally-err");
+    else if (status === "running")  dot.classList.add("tally-rec");
+    else                            dot.classList.add("tally-warn");
   }
+
   if (link && data.url) link.href = data.url;
   if (dlMaster) {
     const url = data.master_video_url || "";
@@ -135,13 +138,14 @@ async function sendToKaggle(projectId) {
   const btn = document.getElementById("btn-kaggle");
   const bar = document.getElementById("kaggle-status-bar");
   btn.disabled = true;
-  btn.textContent = "Enviando...";
+  const nameSpan = btn.querySelector(".step-name");
+  if (nameSpan) nameSpan.textContent = "Enviando...";
   bar.style.display = "";
   renderKaggleState({ status: "queued" });
   document.getElementById("kaggle-status-text").textContent = "enviando ZIP...";
   try {
     const res = await postForm(`/projects/${projectId}/send-to-kaggle`, {});
-    btn.textContent = "04 Renderizar no Kaggle";
+    if (nameSpan) nameSpan.textContent = "Render Kaggle";
     renderKaggleState({ status: res.status, url: res.kernel_url });
     if (res.job_id) {
       startJobPolling(res.job_id, projectId, btn);
@@ -152,7 +156,7 @@ async function sendToKaggle(projectId) {
     renderKaggleState({ status: "error", error: e.message });
     document.getElementById("kaggle-status-text").textContent = "erro: " + e.message;
     btn.disabled = false;
-    btn.textContent = "04 Renderizar no Kaggle";
+    if (nameSpan) nameSpan.textContent = "Render Kaggle";
   }
 }
 
@@ -184,7 +188,6 @@ function startJobPolling(jobId, projectId, btn) {
       }
       setTimeout(tick, 2500);
     } catch (e) {
-      // falha transitoria de rede nao deve matar o polling de um job em andamento
       failures += 1;
       if (failures < 4) {
         setTimeout(tick, 4000);
@@ -229,24 +232,18 @@ function renderValidation(data) {
 
 async function validateOutput(projectId, btn) {
   const old = btn ? btn.textContent : "";
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = "validando...";
-  }
+  if (btn) { btn.disabled = true; btn.textContent = "validando..."; }
   try {
     const data = await postForm(`/projects/${projectId}/validate-output`, {});
     renderValidation(data);
   } catch (e) {
     alert("Falha na validacao: " + e.message);
   } finally {
-    if (btn) {
-      btn.textContent = old;
-      btn.disabled = false;
-    }
+    if (btn) { btn.textContent = old; btn.disabled = false; }
   }
 }
 
-// Inicia polling se ja tinha kernel rodando.
+// Inicia polling se já tinha kernel rodando ao carregar a página.
 document.addEventListener("DOMContentLoaded", () => {
   const bar = document.getElementById("kaggle-status-bar");
   const txt = document.getElementById("kaggle-status-text");
@@ -260,14 +257,31 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 async function regenKeywords(sceneId) {
+  // hidden span armazena os keywords atuais para restaurar em caso de erro
   const span = document.getElementById("kw-" + sceneId);
-  const old = span.textContent;
-  span.textContent = "gerando...";
+  const old = span ? span.textContent : "";
+  // atualiza visualmente as chips de keyword da cena
+  const scene = document.getElementById("scene-" + sceneId);
+  const metaKws = scene ? scene.querySelectorAll(".scene-meta .kw") : [];
+  metaKws.forEach(el => el.textContent = "gerando...");
   try {
     const res = await postForm(`/scenes/${sceneId}/regen-keywords`, {});
-    span.textContent = res.keywords.join(", ");
+    if (span) span.textContent = res.keywords.join(", ");
+    // rebuild keyword chips
+    const meta = scene ? scene.querySelector(".scene-meta") : null;
+    if (meta) {
+      const existing = meta.querySelectorAll(".kw");
+      existing.forEach(el => el.remove());
+      const tally = meta.querySelector(".tally");
+      res.keywords.forEach(kw => {
+        const chip = document.createElement("span");
+        chip.className = "kw";
+        chip.textContent = kw;
+        meta.insertBefore(chip, tally || null);
+      });
+    }
   } catch (e) {
-    span.textContent = old;
+    metaKws.forEach((el, i) => { el.textContent = old.split(", ")[i] || el.textContent; });
     alert("Falha ao gerar keywords: " + e.message);
   }
 }

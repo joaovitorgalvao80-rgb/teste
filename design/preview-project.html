@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>video_dengue_bti — NWRCH Studio (preview CUTROOM)</title>
+<link rel="stylesheet" href="nwrch.css">
+<style>
+  /* composicao especifica desta tela */
+  .console-head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--sp-5); flex-wrap: wrap; }
+  .console-stats { display: flex; gap: var(--sp-5); }
+  .stat { display: grid; gap: 2px; }
+  .stat strong { font-family: var(--font-mono); font-size: var(--fs-h3); font-weight: 600; line-height: 1; }
+  .render-bar { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: var(--sp-4); }
+  .scene-block { display: grid; gap: var(--sp-3); }
+  .preview-note {
+    position: fixed; right: var(--sp-4); bottom: var(--sp-4);
+    padding: var(--sp-2) var(--sp-3);
+    background: var(--ink-2); border: 1px solid var(--line-2); border-radius: var(--radius);
+    font-family: var(--font-mono); font-size: var(--fs-micro); letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--paper-2);
+  }
+  @media (max-width: 760px) { .render-bar { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <a class="brand" href="#">
+    <span class="brand-mark">N</span>
+    <span>
+      <span class="brand-name">NWRCH Studio</span><br>
+      <span class="brand-sub">Cutroom Console</span>
+    </span>
+  </a>
+  <nav class="topnav">
+    <a href="#" aria-current="page">Projetos</a>
+    <a href="#">Configurações</a>
+    <a href="#">joaovitor · sair</a>
+  </nav>
+</header>
+
+<main class="container stack-6">
+
+  <!-- Cabecalho do projeto -->
+  <section class="console-head">
+    <div>
+      <p class="tag">Projetos / <span style="color: var(--paper-0)">video_dengue_bti</span></p>
+      <h1 class="t-display" style="margin-top: var(--sp-2);">video_dengue_bti</h1>
+      <div class="row" style="margin-top: var(--sp-3);">
+        <span class="badge">packaged</span>
+        <span class="tally tally-rec">render no kaggle</span>
+        <span class="tc t-faint">duração-alvo 01:12.0</span>
+      </div>
+    </div>
+    <div class="console-stats">
+      <div class="stat"><strong>18</strong><span class="tag">cenas</span></div>
+      <div class="stat"><strong>18<span style="color: var(--paper-3)">/18</span></strong><span class="tag">takes marcados</span></div>
+      <div class="stat"><strong>48<span style="color: var(--paper-3)">mb</span></strong><span class="tag">pacote</span></div>
+    </div>
+  </section>
+
+  <!-- Pipeline -->
+  <section class="stack-4">
+    <div class="pipeline">
+      <button class="step is-done"><span class="step-idx">01</span><span class="step-name">Mapa visual</span></button>
+      <button class="step is-done"><span class="step-idx">02</span><span class="step-name">Buscar takes</span></button>
+      <button class="step is-done"><span class="step-idx">03</span><span class="step-name">Preparar pacote</span></button>
+      <button class="step is-active"><span class="step-idx">04</span><span class="step-name">Render Kaggle</span></button>
+      <button class="step" disabled><span class="step-idx">05</span><span class="step-name">Refino master</span></button>
+    </div>
+
+    <!-- Barra de render: estado vivo + saidas -->
+    <div class="panel panel-pad render-bar">
+      <span class="tally tally-rec">renderizando</span>
+      <div>
+        <p class="t-small t-muted">kaggle · <span class="tc">b-rolls-render-p7-video-dengue-bti</span> — montando base e refinando master (HyperFrames)</p>
+        <p class="t-small t-faint">última checagem há 20s · narração ✓ · avatar ✓ · plano editorial: llm</p>
+      </div>
+      <div class="row">
+        <button class="btn btn-secondary btn-sm" disabled>Baixar master</button>
+        <button class="btn btn-secondary btn-sm" disabled>Baixar base</button>
+        <a class="btn btn-ghost btn-sm" href="#">abrir no Kaggle ↗</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Operacao: saude + jobs -->
+  <section class="grid-2">
+    <div class="panel">
+      <div class="panel-head">
+        <span class="tag">Saúde do projeto</span>
+        <button class="btn btn-ghost btn-sm">Validar outputs</button>
+      </div>
+      <table class="dtable">
+        <tr><th>Checagem</th><th>Estado</th><th></th></tr>
+        <tr><td>Seleção de takes</td><td><span class="tally tally-ok">18/18</span></td><td class="t-faint t-small">pronta para pacote</td></tr>
+        <tr><td>Pacote ZIP</td><td><span class="tally tally-ok">ok</span></td><td class="t-faint t-small">asset_pack… · 48 MB</td></tr>
+        <tr><td>Duração do render</td><td><span class="tally">pendente</span></td><td class="t-faint t-small">valide após baixar</td></tr>
+        <tr><td>Narração no master</td><td><span class="tally">pendente</span></td><td class="t-faint t-small">requested_audio ✓</td></tr>
+      </table>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <span class="tag">Jobs recentes</span>
+        <a class="btn btn-ghost btn-sm" href="#">diagnóstico JSON</a>
+      </div>
+      <div class="joblog" style="border: 0;">
+        <div class="joblog-row"><span class="t-faint">14:02:11</span><span class="tally tally-rec">running</span><span>kaggle_send — criando kernel de render</span><a class="btn btn-ghost btn-sm" href="#">log</a></div>
+        <div class="joblog-row"><span class="t-faint">13:58:40</span><span class="tally tally-ok">complete</span><span>package — ZIP pronto (18/18)</span><a class="btn btn-ghost btn-sm" href="#">zip</a></div>
+        <div class="joblog-row"><span class="t-faint">13:40:19</span><span class="tally tally-ok">complete</span><span>map — 18 cenas, 54 keywords</span><a class="btn btn-ghost btn-sm" href="#">ver</a></div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule">
+
+  <!-- Curadoria -->
+  <section class="stack-5">
+    <div class="row-between">
+      <h2 class="t-h1">Curadoria de takes</h2>
+      <div class="row">
+        <span class="t-small t-faint"><kbd>S</kbd> selecionar · <kbd>R</kbd> rejeitar · <kbd>J</kbd>/<kbd>K</kbd> navegar cenas</span>
+      </div>
+    </div>
+
+    <!-- Cena 1: completa -->
+    <div class="scene-block">
+      <div class="scene">
+        <div class="scene-rail">
+          <span class="tc">00:00.0</span>
+          <span class="tc tc-end">→ 00:04.2</span>
+          <span class="scene-zone">gancho</span>
+        </div>
+        <div class="scene-body">
+          <p class="scene-narration">Você sabia que existe uma forma barata de controlar o mosquito da dengue no seu quintal?</p>
+          <div class="scene-meta">
+            <span class="kw">aedes aegypti macro</span>
+            <span class="kw">backyard water bucket</span>
+            <span class="kw">rural brazil home</span>
+            <span style="margin-left:auto" class="tally tally-ok">take marcado</span>
+          </div>
+          <div class="takes">
+            <article class="take is-selected">
+              <div class="take-thumb" style="background: linear-gradient(115deg, #37423a 0%, #5d6e57 50%, #232722 100%);"></div>
+              <div class="take-meta"><span>pexels · 1920×1080</span><span>12s</span></div>
+              <div class="take-actions">
+                <button class="btn btn-ghost btn-sm">Selecionado</button>
+                <button class="btn btn-ghost btn-sm">Rejeitar</button>
+              </div>
+            </article>
+            <article class="take">
+              <div class="take-thumb" style="background: linear-gradient(150deg, #3c3c44 0%, #191920 80%);"></div>
+              <div class="take-meta"><span>pixabay · 1920×1080</span><span>9s</span></div>
+              <div class="take-actions">
+                <button class="btn btn-ghost btn-sm">Selecionar</button>
+                <button class="btn btn-ghost btn-sm">Rejeitar</button>
+              </div>
+            </article>
+            <article class="take is-rejected">
+              <div class="take-thumb" style="background: linear-gradient(200deg, #45413b 0%, #1f1d1a 70%);"></div>
+              <div class="take-meta"><span>pexels · 1280×720</span><span>23s</span></div>
+              <div class="take-actions">
+                <button class="btn btn-ghost btn-sm">Selecionar</button>
+                <button class="btn btn-ghost btn-sm">Rejeitado</button>
+              </div>
+            </article>
+            <article class="take">
+              <div class="take-thumb" style="background: linear-gradient(135deg, #2f3a42 0%, #15191d 75%);"></div>
+              <div class="take-meta"><span>pixabay · 1920×1080</span><span>15s</span></div>
+              <div class="take-actions">
+                <button class="btn btn-ghost btn-sm">Selecionar</button>
+                <button class="btn btn-ghost btn-sm">Rejeitar</button>
+              </div>
+            </article>
+          </div>
+          <div class="row">
+            <button class="btn btn-secondary btn-sm">+ vídeos</button>
+            <button class="btn btn-secondary btn-sm">+ imagens</button>
+            <button class="btn btn-ghost btn-sm">novas keywords</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cena 2: pendente -->
+    <div class="scene-block">
+      <div class="scene">
+        <div class="scene-rail">
+          <span class="tc">00:04.2</span>
+          <span class="tc tc-end">→ 00:08.0</span>
+          <span class="scene-zone">desenv</span>
+        </div>
+        <div class="scene-body">
+          <p class="scene-narration">O problema é que quase ninguém fala disso — e é aí que mora a oportunidade.</p>
+          <div class="scene-meta">
+            <span class="kw">stagnant water close up</span>
+            <span class="kw">mosquito larvae</span>
+            <span style="margin-left:auto" class="tally tally-warn">sem take marcado</span>
+          </div>
+          <div class="empty" style="padding: var(--sp-5);">
+            <p class="t-small">Nenhum candidato aprovado para esta cena.</p>
+            <div class="row">
+              <button class="btn btn-secondary btn-sm">+ vídeos</button>
+              <button class="btn btn-ghost btn-sm">novas keywords</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule">
+
+  <!-- Refinamento -->
+  <section class="grid-2">
+    <div class="panel panel-pad stack-4">
+      <span class="tag">Refino · narração</span>
+      <p class="t-small t-muted">Entra no <span class="tc">final_master.mp4</span>. Envie antes da etapa 03 para seguir no ZIP.</p>
+      <div class="row">
+        <span class="tally tally-ok">narration.mp3</span>
+        <button class="btn btn-ghost btn-sm" style="margin-left:auto">Substituir</button>
+        <button class="btn btn-danger btn-sm">Remover</button>
+      </div>
+    </div>
+    <div class="panel panel-pad stack-4">
+      <span class="tag">Refino · avatar</span>
+      <p class="t-small t-muted">WebM com alpha fica transparente; MP4 aparece como retângulo.</p>
+      <div class="row">
+        <span class="tally">nenhum arquivo</span>
+        <button class="btn btn-secondary btn-sm" style="margin-left:auto">Enviar avatar</button>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<div class="preview-note">preview estático · cutroom v1</div>
+</body>
+</html>

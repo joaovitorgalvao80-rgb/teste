@@ -3,20 +3,20 @@
 {% block content %}
 <div class="page-head">
   <div>
-    <span class="eyebrow">Integrações</span>
+    <p class="tag" style="margin-bottom:var(--sp-2)">Integrações</p>
     <h1>Configurações</h1>
-    <p class="muted">Conecte os provedores que alimentam busca, IA e render.</p>
+    <p class="t-muted" style="margin-top:var(--sp-2)">Conecte os provedores que alimentam busca, IA e render.</p>
   </div>
 </div>
-{% if saved %}<p class="alert ok">Salvo com sucesso.</p>{% endif %}
+{% if saved %}<p class="alert ok" style="margin-bottom:var(--sp-5)">Salvo com sucesso.</p>{% endif %}
 
 <div class="settings-grid">
   <form method="post" action="/settings" class="settings-form">
 
     <section class="settings-section">
-      <span class="eyebrow">Assets</span>
+      <p class="tag">Assets</p>
       <h2 class="settings-heading">Bibliotecas visuais</h2>
-      <p class="muted small">Necessário para buscar vídeos e imagens.</p>
+      <p class="t-muted t-small" style="margin-bottom:var(--sp-4)">Necessário para buscar vídeos e imagens.</p>
       <label>Pexels API Key
         <input type="password" autocomplete="off" name="pexels" value="{{ user.pexels_key }}" placeholder="cole sua chave Pexels">
       </label>
@@ -26,9 +26,9 @@
     </section>
 
     <section class="settings-section">
-      <span class="eyebrow">Groq</span>
+      <p class="tag">Groq</p>
       <h2 class="settings-heading">IA + transcrição de áudio</h2>
-      <p class="muted small">Usado para gerar o mapa visual e transcrever narração.</p>
+      <p class="t-muted t-small" style="margin-bottom:var(--sp-4)">Usado para gerar o mapa visual e transcrever narração.</p>
       <label>Groq API Key
         <input type="password" autocomplete="off" name="groq" value="{{ user.groq_key }}" placeholder="gsk_...">
       </label>
@@ -42,47 +42,49 @@
     </section>
 
     <section class="settings-section">
-      <span class="eyebrow">OpenRouter</span>
+      <p class="tag">OpenRouter</p>
       <h2 class="settings-heading">Cérebro editorial</h2>
-      <p class="muted small">Decide motion, transições e captions do master final. Opcional: sem chave, o plano de edição usa o modo determinístico.</p>
+      <p class="t-muted t-small" style="margin-bottom:var(--sp-4)">Decide motion, transições e captions do master final. Opcional: sem chave, o plano de edição usa o modo determinístico.</p>
       <label>OpenRouter API Key
         <input type="password" autocomplete="off" name="openrouter" value="{{ user.openrouter_key }}" placeholder="sk-or-...">
       </label>
     </section>
 
     <section class="settings-section">
-      <span class="eyebrow">Kaggle</span>
+      <p class="tag">Kaggle</p>
       <h2 class="settings-heading">Render automático</h2>
-      <p class="muted small">Para renderizar o vídeo final via kernel Kaggle.</p>
+      <p class="t-muted t-small" style="margin-bottom:var(--sp-4)">Para renderizar o vídeo final via kernel Kaggle.</p>
       <label>Kaggle Username
         <input name="kaggle_username" value="{{ user.kaggle_username }}" placeholder="seu username no Kaggle">
       </label>
       <label>Kaggle API Token
         <input type="password" autocomplete="off" name="kaggle_token" value="{{ user.kaggle_token }}" placeholder="KGAT_...">
       </label>
-      <button type="button" class="ghost" onclick="testKaggle(this)" style="margin-top:4px">Verificar credenciais</button>
-      <span id="kaggle-test-result" style="font-size:13px;margin-left:10px"></span>
+      <div class="row" style="margin-top:var(--sp-2)">
+        <button type="button" class="btn btn-ghost btn-sm" onclick="testKaggle(this)">Verificar credenciais</button>
+        <span id="kaggle-test-result" class="t-small"></span>
+      </div>
     </section>
 
-    <button class="primary" type="submit">Salvar configurações</button>
+    <button class="btn btn-primary" type="submit">Salvar configurações</button>
   </form>
 
   <aside class="settings-help">
-    <div class="card hint">
-      <span class="eyebrow">Setup</span>
+    <div class="panel panel-pad stack-4">
+      <p class="tag">Setup</p>
       <h3>Onde conseguir as chaves</h3>
       <ul class="help-list">
-        <li><strong>Pexels</strong><br><code>pexels.com/api</code></li>
-        <li><strong>Pixabay</strong><br><code>pixabay.com/api/docs</code></li>
-        <li><strong>Groq</strong><br><code>console.groq.com</code></li>
-        <li><strong>OpenRouter</strong><br><code>openrouter.ai/keys</code></li>
-        <li><strong>Kaggle</strong><br><code>kaggle.com/settings</code> → API → Create New Token</li>
+        <li><strong>Pexels</strong><code>pexels.com/api</code></li>
+        <li><strong>Pixabay</strong><code>pixabay.com/api/docs</code></li>
+        <li><strong>Groq</strong><code>console.groq.com</code></li>
+        <li><strong>OpenRouter</strong><code>openrouter.ai/keys</code></li>
+        <li><strong>Kaggle</strong><code>kaggle.com/settings</code> → API → Create New Token</li>
       </ul>
     </div>
-    <div class="card hint" style="margin-top:16px">
-      <span class="eyebrow">Modelo</span>
+    <div class="panel panel-pad stack-4" style="margin-top:var(--sp-4)">
+      <p class="tag">Modelo</p>
       <h3>Sobre o modelo Groq</h3>
-      <p class="small muted">O modelo afeta a qualidade das keywords e do mapa visual. O Llama 3.3 70B é o melhor custo-benefício. O 8B Instant é mais rápido para projetos longos.</p>
+      <p class="t-small t-muted">O modelo afeta a qualidade das keywords e do mapa visual. O Llama 3.3 70B é o melhor custo-benefício. O 8B Instant é mais rápido para projetos longos.</p>
     </div>
   </aside>
 </div>
@@ -93,15 +95,15 @@ async function testKaggle(btn) {
   const result = document.getElementById("kaggle-test-result");
   btn.disabled = true;
   result.textContent = "testando...";
-  result.style.color = "var(--muted)";
+  result.style.color = "var(--paper-2)";
   try {
     const r = await fetch("/settings/test-kaggle");
     const d = await r.json();
     result.textContent = d.detail;
-    result.style.color = d.ok ? "var(--accent)" : "var(--danger)";
+    result.style.color = d.ok ? "var(--ok)" : "var(--err)";
   } catch(e) {
     result.textContent = "Erro: " + e.message;
-    result.style.color = "var(--danger)";
+    result.style.color = "var(--err)";
   }
   btn.disabled = false;
 }

@@ -3,7 +3,7 @@
 {% block content %}
 <div class="auth-wrap">
   <section class="auth-intro">
-    <span class="eyebrow">NWRCH Studio</span>
+    <span class="tag">NWRCH Studio</span>
     <h1>Console de produção visual com IA.</h1>
     <p>Transforme roteiro em mapa visual, assets aprovados, pacote e render final no Kaggle sem sair do fluxo.</p>
     <div class="auth-stats">
@@ -14,27 +14,27 @@
   </section>
 
   <div class="auth-stack">
-  <div class="card auth-card auth-primary">
-    <span class="eyebrow">Acessar workspace</span>
-    <h2>Entrar</h2>
-    {% if error %}<p class="alert">{{ error }}</p>{% endif %}
-    <form method="post" action="/login">
-      <label>Usuário<input name="username" required autofocus></label>
-      <label>Senha<input name="password" type="password" required></label>
-      <button class="primary" type="submit">Entrar</button>
-    </form>
-  </div>
+    <div class="panel panel-pad">
+      <p class="tag" style="margin-bottom:var(--sp-3)">Acessar workspace</p>
+      <h2 style="margin-bottom:var(--sp-4)">Entrar</h2>
+      {% if error %}<p class="alert">{{ error }}</p>{% endif %}
+      <form method="post" action="/login">
+        <label>Usuário<input name="username" required autofocus></label>
+        <label>Senha<input name="password" type="password" required></label>
+        <button class="btn btn-primary" type="submit" style="width:100%">Entrar</button>
+      </form>
+    </div>
 
-  <div class="card auth-card">
-    <span class="eyebrow">Primeiro acesso</span>
-    <h2>Criar conta</h2>
-    <p class="muted">Crie um usuário local e cadastre suas APIs para começar.</p>
-    <form method="post" action="/register">
-      <label>Usuário<input name="username" required></label>
-      <label>Senha (min 4)<input name="password" type="password" required minlength="4"></label>
-      <button class="secondary" type="submit">Criar e continuar</button>
-    </form>
-  </div>
+    <div class="panel panel-pad">
+      <p class="tag" style="margin-bottom:var(--sp-3)">Primeiro acesso</p>
+      <h2 style="margin-bottom:var(--sp-2)">Criar conta</h2>
+      <p class="t-muted t-small" style="margin-bottom:var(--sp-4)">Crie um usuário local e cadastre suas APIs para começar.</p>
+      <form method="post" action="/register">
+        <label>Usuário<input name="username" required></label>
+        <label>Senha (min 4)<input name="password" type="password" required minlength="4"></label>
+        <button class="btn btn-secondary" type="submit" style="width:100%">Criar e continuar</button>
+      </form>
+    </div>
   </div>
 </div>
 {% endblock %}
