@@ -111,6 +111,8 @@ DEFAULT_CONFIG = {
     "part_target_seconds": 150,
 }
 
+EDIT_PLAN_FILENAME = "edit_plan.json"
+
 ALLOWED_RESOLUTIONS = {"1920x1080", "1280x720"}
 ALLOWED_SAFE_AREAS = {"left", "right"}
 MIN_SCENE_DURATION = 2.0
@@ -423,6 +425,7 @@ def remove_project_artifacts(project_id: int, include_generated: bool = False) -
         return
     for zip_file in project_work.glob("*.zip"):
         zip_file.unlink(missing_ok=True)
+    (project_work / EDIT_PLAN_FILENAME).unlink(missing_ok=True)
     for folder_name in ["assets_tmp", "kaggle_output"]:
         folder = _safe_child_dir(project_work, project_work / folder_name)
         if folder and folder.exists():
@@ -576,6 +579,16 @@ def local_output_videos(project_work: Path) -> dict:
         elif name in {kaggle_service.BASE_VIDEO_NAME, kaggle_service.BASE_VIDEO_ALIAS}:
             outputs["base"] = p
     return outputs
+
+
+def local_edit_plan(project_id: int) -> Optional[dict]:
+    plan_path = project_work_dir(project_id) / EDIT_PLAN_FILENAME
+    if not plan_path.exists():
+        return None
+    try:
+        return json.loads(plan_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
 
 
 def local_hyperframes_status(project_work: Path) -> Optional[dict]:
@@ -779,6 +792,122 @@ def settings_save(
 
 
 # ------------------------------------------------------------------
+# Importação de chaves por arquivo .txt (detecção automática)
+# ------------------------------------------------------------------
+MAX_KEYS_FILE_BYTES = 64 * 1024
+
+# Formatos conhecidos de cada provedor; usados quando a linha não tem rótulo.
+_KEY_GUESS_PATTERNS = [
+    ("groq", re.compile(r"^gsk_[A-Za-z0-9_-]{20,}$")),
+    ("openrouter", re.compile(r"^sk-or-[A-Za-z0-9_-]{20,}$")),
+    ("kaggle_token", re.compile(r"^KGAT[A-Za-z0-9_-]{10,}$", re.IGNORECASE)),
+    ("pixabay", re.compile(r"^\d{6,10}-[0-9a-f]{20,40}$", re.IGNORECASE)),
+    ("kaggle_token", re.compile(r"^[0-9a-f]{32}$")),
+    ("pexels", re.compile(r"^[A-Za-z0-9]{45,60}$")),
+]
+
+KEY_FIELD_LABELS = {
+    "pexels": "Pexels",
+    "pixabay": "Pixabay",
+    "groq": "Groq",
+    "openrouter": "OpenRouter",
+    "kaggle_username": "Kaggle username",
+    "kaggle_token": "Kaggle token",
+}
+
+
+def _key_field_from_label(label: str) -> Optional[str]:
+    low = label.lower()
+    if "pexels" in low:
+        return "pexels"
+    if "pixabay" in low:
+        return "pixabay"
+    if "groq" in low:
+        return "groq"
+    if "openrouter" in low or "open router" in low or "open_router" in low:
+        return "openrouter"
+    if "kaggle" in low:
+        return "kaggle_username" if "user" in low else "kaggle_token"
+    if low.strip() in {"username", "user"}:
+        return "kaggle_username"
+    return None
+
+
+def detect_api_keys(text: str) -> dict[str, str]:
+    """Lê um .txt (ou kaggle.json) e descobre qual chave pertence a qual API.
+
+    Aceita linhas rotuladas ("pexels: CHAVE", "groq = CHAVE"), o kaggle.json
+    oficial e chaves soltas reconhecidas pelo formato (gsk_, sk-or-, etc).
+    """
+    detected: dict[str, str] = {}
+
+    # kaggle.json oficial: {"username": "...", "key": "..."}
+    m_user = re.search(r'"username"\s*:\s*"([^"\s]+)"', text)
+    m_key = re.search(r'"key"\s*:\s*"([^"\s]+)"', text)
+    if m_user and m_key:
+        detected["kaggle_username"] = m_user.group(1)
+        detected["kaggle_token"] = m_key.group(1)
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip().strip(",;")
+        if not line or line.startswith("#") or line.startswith("//"):
+            continue
+        match = re.match(r"^[-*\s]*([A-Za-z _\-]{2,40}?)\s*[:=]\s*(\S+)\s*$", line)
+        if match:
+            field = _key_field_from_label(match.group(1))
+            value = match.group(2).strip().strip('"').strip("'")
+            min_len = 3 if field == "kaggle_username" else 8
+            if field and len(value) >= min_len:
+                detected.setdefault(field, value)
+                continue
+        for token in re.split(r"[\s,;]+", line):
+            token = token.strip().strip('"').strip("'")
+            if not token:
+                continue
+            for field, pattern in _KEY_GUESS_PATTERNS:
+                if field not in detected and pattern.match(token):
+                    detected[field] = token
+                    break
+    return detected
+
+
+@app.post("/settings/import-keys")
+async def import_keys(
+    request: Request,
+    keys_file: UploadFile = File(...),
+    csrf_token: str = Form(""),
+):
+    user = require_user(request)
+    verify_csrf(request, csrf_token)
+    raw = await keys_file.read()
+    if len(raw) > MAX_KEYS_FILE_BYTES:
+        return JSONResponse({"error": "Arquivo grande demais (máx. 64 KB)."}, status_code=400)
+    text = raw.decode("utf-8", errors="replace")
+    detected = detect_api_keys(text)
+    if not detected:
+        return JSONResponse(
+            {"error": "Nenhuma chave reconhecida. Use linhas como 'pexels: SUA_CHAVE' ou envie o kaggle.json."},
+            status_code=400,
+        )
+    db.update_api_keys(
+        user["id"],
+        detected.get("pexels", user.get("pexels_key", "")),
+        detected.get("pixabay", user.get("pixabay_key", "")),
+        detected.get("groq", user.get("groq_key", "")),
+        user.get("groq_model", ""),
+        openrouter=detected.get("openrouter", user.get("openrouter_key", "")),
+    )
+    if detected.get("kaggle_username") or detected.get("kaggle_token"):
+        db.update_kaggle_keys(
+            user["id"],
+            detected.get("kaggle_username", user.get("kaggle_username", "")),
+            detected.get("kaggle_token", user.get("kaggle_token", "")),
+        )
+    saved = [KEY_FIELD_LABELS.get(field, field) for field in sorted(detected)]
+    return JSONResponse({"saved": saved, "detail": f"{len(saved)} chave(s) detectadas e salvas: " + ", ".join(saved)})
+
+
+# ------------------------------------------------------------------
 # Transcrição de áudio (Groq Whisper → timestamps)
 # ------------------------------------------------------------------
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".flv", ".wmv"}
@@ -944,6 +1073,7 @@ def project_page(request: Request, project_id: int):
             "avatar_name": avatar_file.name if avatar_file else "",
             "has_base_video": outputs["base"] is not None,
             "has_master_video": outputs["master"] is not None,
+            "edit_plan": local_edit_plan(project_id),
             "hyperframes_status": local_hyperframes_status(project_work) or {},
             "diagnostics": project_diagnostics_snapshot(project_id, scenes, selected_count),
             "jobs": jobs,
@@ -1871,6 +2001,11 @@ def run_package_job(
             narration_file=narration_file.name if narration_file else "",
             avatar_file=avatar_file.name if avatar_file else "",
         )
+        # copia local do plano: permite revisar a edicao antes de enviar ao Kaggle
+        project_work.mkdir(parents=True, exist_ok=True)
+        (project_work / EDIT_PLAN_FILENAME).write_text(
+            json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         zip_path = packager.build_zip(
             project=project,
             config=config,
@@ -1947,6 +2082,19 @@ def download_zip(request: Request, project_id: int):
     if project.get("status") != "packaged" or not zip_path:
         raise HTTPException(404, "ZIP não encontrado. Gere o pacote primeiro.")
     return FileResponse(zip_path, filename=zip_path.name, media_type="application/zip")
+
+
+@app.get("/projects/{project_id}/edit-plan")
+def get_edit_plan(request: Request, project_id: int):
+    """Plano de edição gerado no pacote — para revisão antes do envio ao Kaggle."""
+    user = require_user(request)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    plan = local_edit_plan(project_id)
+    if not plan:
+        raise HTTPException(404, "Plano de edição não encontrado. Gere o pacote (etapa 03) primeiro.")
+    return JSONResponse(plan)
 
 
 # ------------------------------------------------------------------

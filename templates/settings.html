@@ -10,6 +10,23 @@
 </div>
 {% if saved %}<p class="alert ok" style="margin-bottom:var(--sp-5)">Salvo com sucesso.</p>{% endif %}
 
+<div class="panel panel-pad" style="margin-bottom:var(--sp-5)">
+  <p class="tag">Importação rápida</p>
+  <h3 style="margin-top:var(--sp-2)">Importar chaves de um arquivo</h3>
+  <p class="t-muted t-small" style="margin-top:var(--sp-2)">
+    Envie um <strong>.txt</strong> com suas chaves (uma por linha, com ou sem rótulo — ex.: <code>pexels: SUA_CHAVE</code>)
+    ou o <strong>kaggle.json</strong>. O sistema identifica qual chave é de qual API e cadastra automaticamente.
+  </p>
+  <form id="import-keys-form" style="margin-top:var(--sp-3)" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="row">
+      <input type="file" name="keys_file" accept=".txt,.json,text/plain,application/json" required>
+      <button class="btn btn-secondary btn-sm" type="submit">Importar e detectar</button>
+    </div>
+    <p class="t-small" id="import-keys-result" style="margin-top:var(--sp-2)"></p>
+  </form>
+</div>
+
 <div class="settings-grid">
   <form method="post" action="/settings" class="settings-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -113,5 +130,28 @@ async function testKaggle(btn) {
   }
   btn.disabled = false;
 }
+
+const importForm = document.getElementById("import-keys-form");
+if (importForm) importForm.addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const result = document.getElementById("import-keys-result");
+  const btn = importForm.querySelector("button[type=submit]");
+  const fd = new FormData(importForm);
+  btn.disabled = true;
+  result.textContent = "analisando arquivo...";
+  result.style.color = "var(--paper-2)";
+  try {
+    const r = await fetch("/settings/import-keys", { method: "POST", body: fd });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || d.detail || ("HTTP " + r.status));
+    result.textContent = d.detail + " — atualizando...";
+    result.style.color = "var(--ok)";
+    setTimeout(() => location.reload(), 1200);
+  } catch (e) {
+    result.textContent = "Falha: " + e.message;
+    result.style.color = "var(--err)";
+    btn.disabled = false;
+  }
+});
 </script>
 {% endblock %}

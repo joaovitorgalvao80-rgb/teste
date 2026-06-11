@@ -14,9 +14,15 @@ import math
 
 from . import llm_service
 
-EDIT_PLAN_VERSION = 1
+EDIT_PLAN_VERSION = 2
 NARRATION_BASENAME = "narration"
 AVATAR_BASENAME = "avatar"
+
+# Regras de alternancia avatar/b-roll quando o avatar e a base do video:
+# - o avatar nunca fica mais de 30s sozinho na tela;
+# - o b-roll nunca cobre o video inteiro (o avatar precisa aparecer).
+MAX_AVATAR_SOLO_SECONDS = 30.0
+MAX_BROLL_RUN_SECONDS = 22.0
 
 MAX_CAPTION_DENSITY = 0.38
 KEY_TERMS = {
@@ -112,6 +118,94 @@ def _transition_for(idx: int, total: int, current: dict, next_scene: dict | None
     return "fade" if (idx + 1) % 4 == 0 else "none"
 
 
+def _scene_duration(scene: dict) -> float:
+    duration = float(scene.get("duration") or 0)
+    if duration <= 0:
+        duration = max(float(scene.get("end_time") or 0) - float(scene.get("start_time") or 0), 0.5)
+    return duration
+
+
+def _broll_flags(scenes: list[dict]) -> list[bool]:
+    """Decide, cena a cena, se o b-roll cobre o avatar (deterministico).
+
+    O avatar e a camada base; o gancho inicial e o fechamento ficam com o
+    apresentador na tela, e corridas longas de b-roll ganham um respiro.
+    """
+    n = len(scenes)
+    flags = [False] * n
+    run = 0.0
+    for i, scene in enumerate(scenes):
+        if i == 0 or i == n - 1:
+            run = 0.0
+            continue
+        duration = _scene_duration(scene)
+        if run >= MAX_BROLL_RUN_SECONDS:
+            run = 0.0
+            continue
+        flags[i] = True
+        run += duration
+    return flags
+
+
+def _avatar_solo_runs(plan_scenes: list[dict]) -> list[list[int]]:
+    runs: list[list[int]] = []
+    current: list[int] = []
+    for idx, scene in enumerate(plan_scenes):
+        if scene.get("broll"):
+            if current:
+                runs.append(current)
+                current = []
+        else:
+            current.append(idx)
+    if current:
+        runs.append(current)
+    return runs
+
+
+def enforce_broll_policy(plan_scenes: list[dict], source_scenes: list[dict]) -> dict:
+    """Garante as regras de alternancia mesmo quando o LLM decide o b-roll.
+
+    1. Nunca 100% b-roll: o avatar precisa abrir o video na tela.
+    2. Nenhum trecho de avatar sozinho pode passar de MAX_AVATAR_SOLO_SECONDS.
+    Retorna o resumo de cobertura para o plano.
+    """
+    n = len(plan_scenes)
+    if n == 0:
+        return {"coverage": 0.0, "max_avatar_solo_seconds": MAX_AVATAR_SOLO_SECONDS}
+
+    if all(scene.get("broll") for scene in plan_scenes):
+        plan_scenes[0]["broll"] = False
+
+    while True:
+        oversized = None
+        for run in _avatar_solo_runs(plan_scenes):
+            solo = sum(float(plan_scenes[i].get("duration") or 0) for i in run)
+            if solo > MAX_AVATAR_SOLO_SECONDS and len(run) > 1:
+                oversized = run
+                break
+        if not oversized:
+            break
+        # vira b-roll a cena mais forte do trecho (sem mexer no gancho inicial)
+        candidates = [i for i in oversized if i != 0] or oversized
+        middle = oversized[len(oversized) // 2]
+        best = max(
+            candidates,
+            key=lambda i: (_scene_score(source_scenes[i], i, n), -abs(i - middle)),
+        )
+        plan_scenes[best]["broll"] = True
+
+    total = sum(float(scene.get("duration") or 0) for scene in plan_scenes)
+    covered = sum(
+        float(scene.get("duration") or 0) for scene in plan_scenes if scene.get("broll")
+    )
+    return {
+        "coverage": round(covered / total, 3) if total else 0.0,
+        "max_avatar_solo_seconds": MAX_AVATAR_SOLO_SECONDS,
+        "broll_scenes": sum(1 for scene in plan_scenes if scene.get("broll")),
+        "total_scenes": n,
+    }
+
+
 def enforce_caption_policy(
     plan_scenes: list[dict],
     source_scenes: list[dict],
@@ -151,11 +245,10 @@ def build_edit_plan(
     """
     safe_area = (config.get("avatar_safe_area") or "right").lower()
     captioned_indexes = _caption_indexes(scenes)
+    broll_flags = _broll_flags(scenes)
     plan_scenes = []
     for i, scene in enumerate(scenes):
-        duration = float(scene.get("duration") or 0)
-        if duration <= 0:
-            duration = max(float(scene.get("end_time") or 0) - float(scene.get("start_time") or 0), 0.5)
+        duration = _scene_duration(scene)
         start = round(float(scene.get("start_time") or 0), 3)
         caption = _clean_caption(scene.get("overlay_text") or "") if i in captioned_indexes else ""
         cap_start, cap_duration = _caption_timing(start, duration)
@@ -170,8 +263,10 @@ def build_edit_plan(
                 "caption": caption,
                 "caption_start": cap_start if caption else None,
                 "caption_duration": cap_duration if caption else 0,
+                "broll": broll_flags[i],
             }
         )
+    broll_policy = enforce_broll_policy(plan_scenes, scenes)
 
     plan: dict = {
         "version": EDIT_PLAN_VERSION,
@@ -185,6 +280,7 @@ def build_edit_plan(
             "total_scenes": len(plan_scenes),
         },
         "editorial_mode": "deterministic_v2",
+        "broll_policy": broll_policy,
         "scenes": plan_scenes,
         "audio": None,
         "avatar": None,
@@ -192,8 +288,10 @@ def build_edit_plan(
     if narration_file:
         plan["audio"] = {"src": narration_file, "volume": 1.0}
     if avatar_file:
+        # O avatar e a base do video: tela cheia, com os b-rolls por cima.
         plan["avatar"] = {
             "src": avatar_file,
+            "mode": "base",
             "position": safe_area if safe_area in {"left", "right"} else "right",
             "scale": float(config.get("avatar_safe_width_ratio") or 0.30),
         }
@@ -234,10 +332,14 @@ def build_edit_plan_with_llm(
         if directive["transition_out"]:
             scene["transition_out"] = directive["transition_out"]
         scene["caption"] = directive["caption"]
+        if directive.get("broll") is not None:
+            scene["broll"] = directive["broll"]
         # ultima cena nunca tem transicao de saida
         if i == last_idx:
             scene["transition_out"] = "none"
     enforce_caption_policy(plan["scenes"], scenes, fallback_to_source=False)
+    # mesmo com o LLM decidindo, as regras de avatar/b-roll sao inegociaveis
+    plan["broll_policy"] = enforce_broll_policy(plan["scenes"], scenes)
     plan["caption_policy"]["selected"] = sum(1 for scene in plan["scenes"] if scene["caption"])
     plan["editorial"] = "llm"
     return plan

@@ -213,6 +213,58 @@
   {% endif %}
 </div>
 
+<!-- Plano de edição (revisão antes do render) -->
+{% if edit_plan %}
+<div class="panel" style="margin-bottom:var(--sp-5)" id="edit-plan-panel">
+  <div class="panel-head">
+    <span class="tag">Plano de edição · revise antes do render</span>
+    <span class="plan-mode {% if edit_plan.editorial == 'llm' %}plan-mode-llm{% endif %}">
+      {% if edit_plan.editorial == 'llm' %}orquestrado por IA (OpenRouter){% else %}determinístico — cadastre a chave OpenRouter para orquestração por IA{% endif %}
+    </span>
+  </div>
+  <div style="padding:var(--sp-4) var(--sp-5)">
+    <p class="t-muted t-small" style="margin-bottom:var(--sp-3)">
+      Este é o plano que o HyperFrames vai executar na etapa <strong>04 Render Kaggle</strong>.
+      {% if edit_plan.avatar %}
+        O avatar é a base do vídeo inteiro; os b-rolls entram por cima nas cenas marcadas.
+        Regra: o avatar nunca fica mais de {{ edit_plan.broll_policy.max_avatar_solo_seconds|int if edit_plan.broll_policy else 30 }}s sozinho na tela, e o b-roll nunca cobre o vídeo todo.
+      {% endif %}
+    </p>
+    {% if edit_plan.broll_policy and edit_plan.avatar %}
+    <div class="row" style="gap:var(--sp-5);margin-bottom:var(--sp-3)">
+      <span class="t-small">cobertura de b-roll: <strong>{{ (edit_plan.broll_policy.coverage * 100)|round|int }}%</strong></span>
+      <span class="t-small">cenas com b-roll: <strong>{{ edit_plan.broll_policy.broll_scenes }}/{{ edit_plan.broll_policy.total_scenes }}</strong></span>
+      {% if edit_plan.caption_policy %}<span class="t-small">captions: <strong>{{ edit_plan.caption_policy.selected }}</strong></span>{% endif %}
+    </div>
+    {% endif %}
+    <table class="plan-table">
+      <thead>
+        <tr><th>cena</th><th>início</th><th>dur</th>{% if edit_plan.avatar %}<th>na tela</th>{% endif %}<th>motion</th><th>transição</th><th>caption</th></tr>
+      </thead>
+      <tbody>
+        {% for s in edit_plan.scenes %}
+        <tr>
+          <td class="tc">{{ s.scene_id }}</td>
+          <td class="tc">{{ '%.1f'|format(s.start) }}s</td>
+          <td class="tc">{{ '%.1f'|format(s.duration) }}s</td>
+          {% if edit_plan.avatar %}
+          <td>{% if s.broll %}<span class="plan-chip plan-chip-broll">b-roll</span>{% else %}<span class="plan-chip plan-chip-avatar">avatar</span>{% endif %}</td>
+          {% endif %}
+          <td>{{ s.motion }}</td>
+          <td>{{ s.transition_out }}</td>
+          <td>{{ s.caption or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="row" style="margin-top:var(--sp-3)">
+      <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}/edit-plan" target="_blank">Abrir JSON do plano</a>
+      <span class="t-small t-faint">Para regerar com outras decisões, rode <strong>03 Pacote</strong> de novo.</span>
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <!-- Diagnóstico + jobs -->
 <div class="grid-2" style="margin-bottom:var(--sp-5)">
   <div class="panel ops-card">

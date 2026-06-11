@@ -232,16 +232,16 @@ kbd {
   display: flex;
   align-items: center;
   padding: 0 var(--sp-4);
-  color: var(--paper-1);
+  color: var(--paper-0);
   text-decoration: none;
   font-size: var(--fs-small);
-  font-weight: 550;
+  font-weight: 650;
   border-bottom: 2px solid transparent;
   transition: color var(--speed) var(--ease);
 }
 
-.topnav a:hover { color: var(--paper-0); }
-.topnav a[aria-current="page"] { color: var(--paper-0); border-bottom-color: var(--white); }
+.topnav a:hover { color: var(--white); }
+.topnav a[aria-current="page"] { color: var(--white); border-bottom-color: var(--white); }
 
 /* ==========================================================================
    Botoes
@@ -268,11 +268,11 @@ kbd {
 .btn-primary:hover { background: var(--paper-0); color: var(--ink-0); }
 .btn-primary:active { transform: translateY(1px); }
 
-.btn-secondary { background: transparent; color: var(--paper-0); border-color: var(--line-2); }
-.btn-secondary:hover { border-color: var(--line-3); background: var(--ink-2); }
+.btn-secondary { background: var(--ink-2); color: var(--paper-0); border-color: var(--line-3); }
+.btn-secondary:hover { border-color: var(--line-3); background: var(--ink-3); color: var(--white); }
 
-.btn-ghost { background: transparent; color: var(--paper-1); padding: 9px 10px; }
-.btn-ghost:hover { color: var(--paper-0); background: var(--ink-2); }
+.btn-ghost { background: transparent; color: var(--paper-0); border-color: var(--line-2); padding: 9px 10px; }
+.btn-ghost:hover { color: var(--white); border-color: var(--line-3); background: var(--ink-2); }
 
 .btn-danger { background: transparent; color: var(--paper-1); border-color: var(--line-2); }
 .btn-danger:hover { color: var(--err); border-color: var(--err); }
@@ -308,6 +308,57 @@ button > span {
   font-weight: 600;
   opacity: 0.55;
 }
+
+/* ==========================================================================
+   Plano de edicao (revisao antes do render)
+   ========================================================================== */
+.plan-mode {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--paper-1);
+}
+
+.plan-mode-llm { color: var(--ok); }
+
+.plan-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-small);
+}
+
+.plan-table th {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--paper-2);
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line-1);
+}
+
+.plan-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line-0);
+  color: var(--paper-0);
+  vertical-align: top;
+}
+
+.plan-chip {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.plan-chip-broll { background: var(--marker-dim); color: var(--marker); border: 1px solid rgba(233, 215, 92, 0.35); }
+.plan-chip-avatar { background: var(--ink-3); color: var(--paper-1); border: 1px solid var(--line-2); }
 
 /* ==========================================================================
    Campos de formulario

@@ -165,6 +165,35 @@ function ensurePuterLoaded() {
   return _puterLoadPromise;
 }
 
+// O Puter passou a exigir `model` no txt2img ("Missing `model`").
+// Tenta uma lista de modelos conhecidos até um funcionar.
+const PUTER_IMAGE_MODELS = ["gpt-image-1", "dall-e-3", "gemini-2.5-flash-image-preview"];
+
+async function puterTxt2Img(prompt, status) {
+  let lastErr = null;
+  for (const model of PUTER_IMAGE_MODELS) {
+    try {
+      return await withTimeout(
+        puter.ai.txt2img(prompt, { model }),
+        GEN_TIMEOUT_MS,
+        "geração demorou demais — tente de novo"
+      );
+    } catch (e) {
+      lastErr = e;
+      const msg = genErrorMessage(e);
+      // só tenta o próximo modelo em erro de modelo; outros erros param aqui
+      if (!/model|not (found|supported|available)|unsupported|invalid/i.test(msg)) throw e;
+      if (status) status.textContent = "modelo " + model + " indisponível — tentando outro...";
+    }
+  }
+  // último recurso: assinatura antiga sem opções
+  try {
+    return await withTimeout(puter.ai.txt2img(prompt), GEN_TIMEOUT_MS, "geração demorou demais — tente de novo");
+  } catch (e) {
+    throw lastErr || e;
+  }
+}
+
 function genErrorMessage(e) {
   // Puter pode rejeitar com Error, string ou objeto {error:{message}} / {message}
   if (!e) return "erro desconhecido";
@@ -193,7 +222,7 @@ async function generateImage(sceneId, btn) {
       throw new Error("Puter.js não inicializou");
     }
     if (status) status.textContent = "gerando imagem (pode levar até 1 min; na primeira vez o Puter pede login)...";
-    const img = await withTimeout(puter.ai.txt2img(prompt), GEN_TIMEOUT_MS, "geração demorou demais — tente de novo");
+    const img = await puterTxt2Img(prompt, status);
     const src = img && img.src;
     if (!src) throw new Error("o gerador não retornou imagem");
     // garante naturalWidth/Height preenchidos antes de ler

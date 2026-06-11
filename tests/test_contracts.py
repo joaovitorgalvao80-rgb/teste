@@ -792,7 +792,7 @@ class DeployContractsTest(unittest.TestCase):
         self.assertIn("find_pack_extras(input_root)", runner)
         self.assertIn('"edit_plan.json"', runner)
         self.assertIn("render_hyperframes_master(out, edit_plan, narration_file, avatar_file)", runner)
-        self.assertIn("apply_master_postprocess(master_out, narration, avatar, edit_plan)", runner)
+        self.assertIn("apply_master_postprocess(master_out, narration, avatar, edit_plan, avatar_mode=avatar_mode)", runner)
         self.assertIn('"--no-overlay"', runner)
         # camadas da composicao master
         self.assertIn("slow_push_in", runner)
@@ -808,6 +808,24 @@ class DeployContractsTest(unittest.TestCase):
         # zip-slip: extras extraidos apenas pelo nome do arquivo
         self.assertIn("PACK_EXTRAS_DIR / Path(member).name", runner)
 
+    def test_runner_avatar_base_composition_and_broll_windows(self) -> None:
+        runner = kaggle_service._RUNNER
+        compile(runner, "runner.py", "exec")
+        # avatar e a base do video; b-rolls entram por cima em janelas
+        self.assertIn('class="clip avatar-base"', runner)
+        self.assertIn('class="clip broll-clip"', runner)
+        self.assertIn("broll_windows(scenes, duration, base_dur)", runner)
+        self.assertIn("enforce_avatar_solo_guard", runner)
+        self.assertIn("MAX_AVATAR_SOLO_SECONDS = 30.0", runner)
+        # fix do "pulo duplo" no inicio de cena (fade + zoom)
+        self.assertIn("immediateRender: false", runner)
+        # audio nunca e cortado no final: video estende com tpad
+        self.assertIn("tpad=stop_mode=clone", runner)
+        self.assertNotIn('"-shortest"', runner)
+        # fallback sem HyperFrames mantem o avatar como base
+        self.assertIn("plan_avatar_mode(edit_plan, avatar_file)", runner)
+        self.assertIn("avatar_audio", runner)
+
     def test_edit_plan_builder_is_deterministic(self) -> None:
         from services import edit_plan as ep
 
@@ -819,7 +837,7 @@ class DeployContractsTest(unittest.TestCase):
             {"scene_id": "scene_003", "start_time": 9.5, "end_time": 12.0, "duration": 2.5, "overlay_text": "Fim"},
         ]
         plan = ep.build_edit_plan(project, config, scenes)
-        self.assertEqual(plan["version"], 1)
+        self.assertEqual(plan["version"], 2)
         self.assertEqual(plan["resolution"], "1280x720")
         self.assertEqual(plan["caption_position"], "left")
         self.assertIsNone(plan["audio"])
@@ -933,6 +951,217 @@ class DeployContractsTest(unittest.TestCase):
             plan = ep.build_edit_plan_with_llm(project, config, scenes, openrouter_key="sk-or-test")
 
         self.assertEqual([scene["caption"] for scene in plan["scenes"]], ["", ""])
+
+    def test_edit_plan_broll_rules_with_avatar_base(self) -> None:
+        from services import edit_plan as ep
+
+        scenes = [
+            {
+                "scene_id": f"scene_{i:03d}",
+                "start_time": i * 10.0,
+                "end_time": (i + 1) * 10.0,
+                "duration": 10.0,
+                "narration": f"cena {i}",
+                "overlay_text": "",
+            }
+            for i in range(6)
+        ]
+        plan = ep.build_edit_plan(
+            {"name": "Avatar"}, {"avatar_safe_area": "right"}, scenes, avatar_file="avatar.mp4"
+        )
+        flags = [s["broll"] for s in plan["scenes"]]
+        self.assertEqual(plan["avatar"]["mode"], "base")
+        # b-roll existe, mas nunca cobre o video inteiro
+        self.assertTrue(any(flags))
+        self.assertFalse(all(flags))
+        # o avatar nunca fica mais de 30s sozinho na tela
+        solo = 0.0
+        for s in plan["scenes"]:
+            if s["broll"]:
+                solo = 0.0
+            else:
+                solo += s["duration"]
+                self.assertLessEqual(solo, ep.MAX_AVATAR_SOLO_SECONDS)
+        self.assertIn("broll_policy", plan)
+        self.assertGreater(plan["broll_policy"]["coverage"], 0)
+        self.assertLess(plan["broll_policy"]["coverage"], 1)
+
+    def test_broll_policy_bounds_llm_extremes(self) -> None:
+        from services import edit_plan as ep
+        from services import llm_service
+
+        scenes = [
+            {
+                "scene_id": f"scene_{i:03d}",
+                "start_time": i * 10.0,
+                "end_time": (i + 1) * 10.0,
+                "duration": 10.0,
+                "narration": f"cena {i}",
+                "overlay_text": "",
+            }
+            for i in range(6)
+        ]
+
+        def fake_resp(broll_value):
+            payload = {
+                "scenes": [
+                    {"scene_id": f"scene_{i:03d}", "motion": "hold", "transition_out": "none",
+                     "caption": "", "broll": broll_value}
+                    for i in range(6)
+                ]
+            }
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {"choices": [{"message": {"content": json.dumps(payload)}}]},
+            )
+
+        # LLM tentando avatar o video todo: a regra dos 30s abre janelas de b-roll
+        with patch.object(llm_service.requests, "post", return_value=fake_resp(False)):
+            plan = ep.build_edit_plan_with_llm(
+                {"name": "x"}, {"avatar_safe_area": "right"}, scenes,
+                openrouter_key="sk-or-test", avatar_file="avatar.mp4",
+            )
+        flags = [s["broll"] for s in plan["scenes"]]
+        self.assertTrue(any(flags))
+        solo = 0.0
+        for s in plan["scenes"]:
+            solo = 0.0 if s["broll"] else solo + s["duration"]
+            self.assertLessEqual(solo, ep.MAX_AVATAR_SOLO_SECONDS)
+
+        # LLM tentando b-roll o video todo: o avatar precisa abrir na tela
+        with patch.object(llm_service.requests, "post", return_value=fake_resp(True)):
+            plan = ep.build_edit_plan_with_llm(
+                {"name": "x"}, {"avatar_safe_area": "right"}, scenes,
+                openrouter_key="sk-or-test", avatar_file="avatar.mp4",
+            )
+        self.assertFalse(plan["scenes"][0]["broll"])
+
+    def test_detect_api_keys_from_txt_and_kaggle_json(self) -> None:
+        pexels_key = "A1" * 28
+        pixabay_key = "12345678-" + "a" * 25
+        groq_key = "gsk_" + "x" * 30
+        openrouter_key = "sk-or-" + "y" * 30
+        kaggle_token = "f" * 32
+        content = "\n".join(
+            [
+                "# minhas chaves",
+                f"Pexels: {pexels_key}",
+                f"pixabay = {pixabay_key}",
+                groq_key,
+                f"minha chave openrouter: {openrouter_key}",
+                '{"username": "kg-user", "key": "' + kaggle_token + '"}',
+            ]
+        )
+        detected = webapp.detect_api_keys(content)
+        self.assertEqual(detected["pexels"], pexels_key)
+        self.assertEqual(detected["pixabay"], pixabay_key)
+        self.assertEqual(detected["groq"], groq_key)
+        self.assertEqual(detected["openrouter"], openrouter_key)
+        self.assertEqual(detected["kaggle_username"], "kg-user")
+        self.assertEqual(detected["kaggle_token"], kaggle_token)
+
+    def test_import_keys_route_saves_detected_keys(self) -> None:
+        with TestClient(webapp.app) as client:
+            uid = db.create_user("import-keys", "password123")
+            client.post(
+                "/login",
+                data={"username": "import-keys", "password": "password123"},
+                follow_redirects=False,
+            )
+            content = "groq: gsk_" + "z" * 30 + "\nopenrouter: sk-or-" + "w" * 30
+            resp = client.post(
+                "/settings/import-keys",
+                files={"keys_file": ("chaves.txt", content.encode("utf-8"), "text/plain")},
+            )
+            empty = client.post(
+                "/settings/import-keys",
+                files={"keys_file": ("vazio.txt", b"nada aqui", "text/plain")},
+            )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Groq", resp.json()["detail"])
+        user = db.get_user(uid)
+        self.assertTrue(user["groq_key"].startswith("gsk_"))
+        self.assertTrue(user["openrouter_key"].startswith("sk-or-"))
+        self.assertEqual(empty.status_code, 400)
+
+    def test_edit_plan_route_and_review_panel(self) -> None:
+        with TestClient(webapp.app) as client:
+            _, project_id, _scene = self._project_with_scene("plan-route")
+            client.post(
+                "/login",
+                data={"username": "plan-route", "password": "password123"},
+                follow_redirects=False,
+            )
+            missing = client.get(f"/projects/{project_id}/edit-plan")
+            plan_path = webapp.project_work_dir(project_id) / webapp.EDIT_PLAN_FILENAME
+            plan_path.parent.mkdir(parents=True, exist_ok=True)
+            plan_path.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "editorial": "llm",
+                        "avatar": {"src": "avatar.mp4", "mode": "base"},
+                        "broll_policy": {"coverage": 0.6, "max_avatar_solo_seconds": 30, "broll_scenes": 1, "total_scenes": 1},
+                        "caption_policy": {"selected": 0},
+                        "scenes": [
+                            {"scene_id": "scene_001", "start": 0.0, "duration": 4.0,
+                             "motion": "slow_push_in", "transition_out": "none", "caption": "", "broll": True}
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            ok = client.get(f"/projects/{project_id}/edit-plan")
+            page = client.get(f"/projects/{project_id}")
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(ok.status_code, 200)
+        self.assertEqual(ok.json()["version"], 2)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Plano de edição", page.text)
+        self.assertIn("orquestrado por IA (OpenRouter)", page.text)
+        self.assertIn("plan-chip-broll", page.text)
+
+    def test_package_job_saves_edit_plan_for_review(self) -> None:
+        db.init_db()
+        uid = db.create_user("plan-save", "password123")
+        project_id = db.create_project(uid, "proj plano", "script", {})
+        db.replace_scenes(
+            project_id,
+            [
+                {"scene_id": "scene_001", "idx": 1, "start_time": 0, "end_time": 4, "duration": 4, "narration": "a"},
+            ],
+        )
+        scene = db.list_scenes(project_id)[0]
+        db.add_assets(scene["id"], [{"source": "pexels", "download_url": "https://example.com/a.mp4"}])
+        asset = db.list_assets(scene["id"])[0]
+        db.set_asset_state(asset["id"], "selected")
+        job_id = db.create_job(uid, "package", project_id, "pacote")
+
+        def fake_zip(**kwargs):
+            zp = kwargs["work_dir"] / "asset_pack_proj.zip"
+            zp.parent.mkdir(parents=True, exist_ok=True)
+            zp.write_bytes(b"zip")
+            return zp
+
+        with patch.object(webapp.packager, "build_zip", side_effect=fake_zip):
+            webapp.run_package_job(job_id, project_id, uid, "")
+
+        plan_path = webapp.project_work_dir(project_id) / webapp.EDIT_PLAN_FILENAME
+        self.assertTrue(plan_path.exists())
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        self.assertEqual(plan["version"], 2)
+        self.assertIn("broll", plan["scenes"][0])
+
+    def test_montador_keeps_full_audio_and_static_images(self) -> None:
+        import inspect
+
+        source = inspect.getsource(montador)
+        # imagens nao tem mais zoom proprio (o motion vem do HyperFrames)
+        self.assertNotIn("zoompan", source)
+        # audio mais longo que o video estende o ultimo frame em vez de cortar
+        self.assertIn("tpad=stop_mode=clone", source)
+        self.assertNotIn('"-shortest"', source)
 
     def test_settings_saves_openrouter_key(self) -> None:
         with TestClient(webapp.app) as client:

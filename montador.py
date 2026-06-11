@@ -285,20 +285,12 @@ def build_clip(
         # asset curto: loop infinito + corte por -t preenche a cena
         cmd = ["ffmpeg", "-y", "-stream_loop", "-1", *seek, "-i", str(src), *common_out]
     else:
-        # imagem (fallback): Ken Burns leve (zoom lento) durante a cena
-        zoom = (
-            f"scale={width*2}:{height*2}:force_original_aspect_ratio=increase,"
-            f"crop={width*2}:{height*2},"
-            f"zoompan=z='min(zoom+0.0006,1.12)':d={int(duration*fps)}:s={width}x{height}:fps={fps},"
-            "setsar=1"
-        )
-        vf_img = zoom
-        if overlay_filter:
-            # reanexa o drawtext no fim da cadeia da imagem
-            vf_img = zoom + "," + overlay_filter
+        # imagem (fallback): frame estatico; o motion (zoom/pan) e aplicado
+        # depois pelo HyperFrames. Zoom aqui causava movimento duplicado e
+        # o "pulo" visual no inicio da cena.
         cmd = [
             "ffmpeg", "-y", "-loop", "1", "-i", str(src),
-            "-t", f"{duration:.3f}", "-vf", vf_img, "-an",
+            "-t", f"{duration:.3f}", "-vf", ",".join(vf), "-an",
             "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
             "-pix_fmt", "yuv420p", str(out),
         ]
@@ -331,12 +323,25 @@ def concat_and_finalize(
     out_video.parent.mkdir(parents=True, exist_ok=True)
     if audio and audio.exists():
         log(f"Mixando audio guia: {audio.name}")
-        result = run([
+        video_dur = ffprobe_duration(silent)
+        audio_dur = ffprobe_duration(audio)
+        cmd = [
             "ffmpeg", "-y", "-i", str(silent), "-i", str(audio),
             "-map", "0:v:0", "-map", "1:a:0",
-            "-c:v", "copy", "-c:a", "aac", "-shortest",
-            "-movflags", "+faststart", str(out_video),
-        ], timeout=1200)
+        ]
+        if audio_dur > video_dur + 0.2:
+            # o audio manda na duracao: congela o ultimo frame em vez de
+            # cortar o final (o -shortest deixava o video incompleto)
+            extra = audio_dur - video_dur
+            log(f"Audio {audio_dur:.1f}s > video {video_dur:.1f}s; estendendo ultimo frame em {extra:.1f}s")
+            cmd += [
+                "-vf", f"tpad=stop_mode=clone:stop_duration={extra:.3f}",
+                "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p",
+            ]
+        else:
+            cmd += ["-c:v", "copy"]
+        cmd += ["-c:a", "aac", "-movflags", "+faststart", str(out_video)]
+        result = run(cmd, timeout=1800)
         if result.returncode != 0:
             raise RuntimeError(f"Mix de audio falhou:\n{result.stderr[-1000:]}")
     else:

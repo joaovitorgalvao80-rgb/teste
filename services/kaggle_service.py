@@ -511,6 +511,9 @@ COMPOSITION_CSS = (
     " #root { position: relative; background: #050708; overflow: hidden; }"
     " #motion-wrap { position: absolute; inset: 0; will-change: transform; }"
     " .base-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }"
+    " .avatar-base { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }"
+    " .broll-clip { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;"
+    " opacity: 0; will-change: transform, opacity; }"
     " .fadeov { position: absolute; inset: 0; background: #000; opacity: 0; pointer-events: none; }"
     " .caption { position: absolute; bottom: 92px; max-width: 40%; padding: 14px 22px;"
     " background: rgba(5, 8, 10, 0.72); border-left: 4px solid #34d2b2; color: #f2f7f5;"
@@ -611,13 +614,115 @@ def plan_scenes_within(edit_plan, duration):
                 "caption": str(s.get("caption") or "").strip(),
                 "caption_start": cap_start,
                 "caption_duration": cap_duration,
+                "broll": bool(s.get("broll")),
             }
         )
     cleaned.sort(key=lambda s: s["start"])
     return cleaned
 
 
-def write_hyperframes_project(base_video, project_dir, edit_plan=None, narration=None, avatar=None):
+MAX_AVATAR_SOLO_SECONDS = 30.0
+BROLL_FADE_SECONDS = 0.45
+
+
+def broll_windows(scenes, master_duration, base_duration):
+    # Junta cenas broll consecutivas em janelas continuas de overlay.
+    windows = []
+    current = None
+    for s in scenes:
+        if not s.get("broll"):
+            if current:
+                windows.append(current)
+                current = None
+            continue
+        if current and abs(current["end"] - s["start"]) < 0.05:
+            current["end"] = s["start"] + s["duration"]
+            current["scenes"].append(s)
+        else:
+            if current:
+                windows.append(current)
+            current = {"start": s["start"], "end": s["start"] + s["duration"], "scenes": [s]}
+    if current:
+        windows.append(current)
+    cleaned = []
+    for w in windows:
+        start = max(min(w["start"], master_duration), 0.0)
+        end = min(w["end"], master_duration, base_duration)
+        if end - start < 0.4:
+            continue
+        cleaned.append({"start": start, "end": end, "duration": end - start, "scenes": w["scenes"]})
+    return cleaned
+
+
+def enforce_avatar_solo_guard(windows, master_duration, base_duration):
+    # Rede de seguranca: se mesmo assim sobrar um trecho de avatar sozinho
+    # maior que 30s, abre uma janela de b-roll no meio do trecho.
+    guarded = sorted(windows, key=lambda w: w["start"])
+    result = []
+    cursor = 0.0
+    for w in guarded + [{"start": master_duration, "end": master_duration, "duration": 0, "scenes": []}]:
+        gap = w["start"] - cursor
+        if gap > MAX_AVATAR_SOLO_SECONDS and base_duration > 1.0:
+            mid = cursor + gap / 2
+            ins_dur = min(8.0, gap - MAX_AVATAR_SOLO_SECONDS + 8.0, base_duration)
+            ins_start = max(cursor + 1.0, mid - ins_dur / 2)
+            ins_end = min(ins_start + ins_dur, w["start"] - 0.5, base_duration)
+            if ins_end - ins_start >= 1.0:
+                result.append(
+                    {
+                        "start": ins_start,
+                        "end": ins_end,
+                        "duration": ins_end - ins_start,
+                        "scenes": [{"start": ins_start, "duration": ins_end - ins_start, "motion": "slow_push_in"}],
+                        "auto_guard": True,
+                    }
+                )
+        if w["duration"] > 0:
+            result.append(w)
+        cursor = max(cursor, w["end"])
+    return sorted(result, key=lambda w: w["start"])
+
+
+def motion_tweens(target, scenes, base_scale=1.0):
+    # immediateRender: false evita o "pulo duplo" no inicio de cada cena:
+    # sem ele o GSAP pre-renderiza o estado from do ultimo fromTo do alvo,
+    # fazendo a imagem aparecer reenquadrada duas vezes seguidas.
+    tweens = []
+    for s in scenes:
+        s_start = "%.3f" % s["start"]
+        s_dur = "%.3f" % s["duration"]
+        motion = s.get("motion") or "hold"
+        push = "%.3f" % (base_scale * 1.05)
+        drift = "%.3f" % (base_scale * 1.035)
+        base = "%.3f" % base_scale
+        if motion == "slow_push_in":
+            tweens.append(
+                'tl.fromTo("' + target + '", { scale: ' + base + ', xPercent: 0 }, { scale: ' + push
+                + ', xPercent: 0, duration: ' + s_dur + ', ease: "none", immediateRender: false }, ' + s_start + ");"
+            )
+        elif motion == "slow_pull_out":
+            tweens.append(
+                'tl.fromTo("' + target + '", { scale: ' + push + ', xPercent: 0 }, { scale: ' + base
+                + ', xPercent: 0, duration: ' + s_dur + ', ease: "none", immediateRender: false }, ' + s_start + ");"
+            )
+        elif motion == "drift_left":
+            tweens.append(
+                'tl.fromTo("' + target + '", { scale: ' + drift + ', xPercent: 0.8 }, { scale: ' + drift
+                + ', xPercent: -0.8, duration: ' + s_dur + ', ease: "none", immediateRender: false }, ' + s_start + ");"
+            )
+        elif motion == "drift_right":
+            tweens.append(
+                'tl.fromTo("' + target + '", { scale: ' + drift + ', xPercent: -0.8 }, { scale: ' + drift
+                + ', xPercent: 0.8, duration: ' + s_dur + ', ease: "none", immediateRender: false }, ' + s_start + ");"
+            )
+        elif motion == "hold":
+            tweens.append(
+                'tl.set("' + target + '", { scale: ' + base + ', xPercent: 0 }, ' + s_start + ");"
+            )
+    return tweens
+
+
+def write_hyperframes_project(base_video, project_dir, edit_plan=None, narration=None, avatar=None, avatar_mode="none"):
     import html as html_escape_mod
     if project_dir.exists():
         shutil.rmtree(project_dir)
@@ -632,8 +737,16 @@ def write_hyperframes_project(base_video, project_dir, edit_plan=None, narration
     if avatar:
         avatar_name = Path(avatar).name
         shutil.copy2(avatar, assets_dir / avatar_name)
+    if not avatar_name:
+        avatar_mode = "none"
 
-    duration = ffprobe_duration(base_video)
+    base_dur = ffprobe_duration(base_video)
+    # No modo base o avatar comanda a duracao do master: nada do material
+    # original e cortado no final (a base de b-roll pode ser mais curta).
+    if avatar_mode == "base":
+        duration = ffprobe_duration(avatar)
+    else:
+        duration = base_dur
     width, height = plan_resolution(edit_plan)
     scenes = plan_scenes_within(edit_plan, duration)
     caption_pos = "right" if str((edit_plan or {}).get("caption_position") or "left") == "right" else "left"
@@ -650,45 +763,51 @@ def write_hyperframes_project(base_video, project_dir, edit_plan=None, narration
 
     body = []
     tl = []
+    windows = []
 
-    # camada 0: video base dentro do wrapper de motion
-    body.append('<div id="motion-wrap">')
-    body.append(
-        '<video id="base-broll" class="clip base-video" src="./assets/' + BASE_VIDEO_NAME + '"'
-        + ' data-start="0" data-duration="' + dur_s + '" data-track-index="0"'
-        + ' data-media-start="0" data-volume="0" data-has-audio="false" muted playsinline preload="auto"></video>'
-    )
-    body.append("</div>")
+    if avatar_mode == "base":
+        # camada 0: avatar em tela cheia e a base do video inteiro
+        body.append(
+            '<video id="avatar-base" class="clip avatar-base" src="./assets/' + avatar_name + '"'
+            + ' data-start="0" data-duration="' + dur_s + '" data-track-index="0"'
+            + ' data-media-start="0" data-volume="0" data-has-audio="false" muted playsinline preload="auto"></video>'
+        )
+        # camada 1: janelas de b-roll por cima do avatar, com fade + motion
+        windows = enforce_avatar_solo_guard(
+            broll_windows(scenes, duration, base_dur), duration, base_dur
+        )
+        for k, w in enumerate(windows, 1):
+            wid = "broll-" + str(k)
+            w_start = "%.3f" % w["start"]
+            w_dur = "%.3f" % w["duration"]
+            fade = min(BROLL_FADE_SECONDS, w["duration"] / 4)
+            body.append(
+                '<video id="' + wid + '" class="clip broll-clip" src="./assets/' + BASE_VIDEO_NAME + '"'
+                + ' data-start="' + w_start + '" data-duration="' + w_dur + '" data-track-index="1"'
+                + ' data-media-start="' + w_start + '" data-volume="0" data-has-audio="false"'
+                + ' muted playsinline preload="auto"></video>'
+            )
+            tl.append(
+                'tl.fromTo("#' + wid + '", { opacity: 0 }, { opacity: 1, duration: ' + ("%.3f" % fade)
+                + ', ease: "power2.out", immediateRender: false }, ' + w_start + ");"
+            )
+            tl.append(
+                'tl.to("#' + wid + '", { opacity: 0, duration: ' + ("%.3f" % fade)
+                + ', ease: "power2.in" }, ' + ("%.3f" % max(w["start"] + w["duration"] - fade, w["start"])) + ");"
+            )
+            tl.extend(motion_tweens("#" + wid, w.get("scenes") or []))
+    else:
+        # camada 0: video base dentro do wrapper de motion
+        body.append('<div id="motion-wrap">')
+        body.append(
+            '<video id="base-broll" class="clip base-video" src="./assets/' + BASE_VIDEO_NAME + '"'
+            + ' data-start="0" data-duration="' + dur_s + '" data-track-index="0"'
+            + ' data-media-start="0" data-volume="0" data-has-audio="false" muted playsinline preload="auto"></video>'
+        )
+        body.append("</div>")
+        tl.extend(motion_tweens("#motion-wrap", scenes))
 
-    for s in scenes:
-        s_start = "%.3f" % s["start"]
-        s_dur = "%.3f" % s["duration"]
-        if s["motion"] == "slow_push_in":
-            tl.append(
-                'tl.fromTo("#motion-wrap", { scale: 1.0, xPercent: 0 }, { scale: 1.05, xPercent: 0, duration: '
-                + s_dur + ', ease: "none" }, ' + s_start + ");"
-            )
-        elif s["motion"] == "slow_pull_out":
-            tl.append(
-                'tl.fromTo("#motion-wrap", { scale: 1.05, xPercent: 0 }, { scale: 1.0, xPercent: 0, duration: '
-                + s_dur + ', ease: "none" }, ' + s_start + ");"
-            )
-        elif s["motion"] == "drift_left":
-            tl.append(
-                'tl.fromTo("#motion-wrap", { scale: 1.035, xPercent: 0.8 }, { scale: 1.035, xPercent: -0.8, duration: '
-                + s_dur + ', ease: "none" }, ' + s_start + ");"
-            )
-        elif s["motion"] == "drift_right":
-            tl.append(
-                'tl.fromTo("#motion-wrap", { scale: 1.035, xPercent: -0.8 }, { scale: 1.035, xPercent: 0.8, duration: '
-                + s_dur + ', ease: "none" }, ' + s_start + ");"
-            )
-        elif s["motion"] == "hold":
-            tl.append(
-                'tl.to("#motion-wrap", { scale: 1.0, xPercent: 0, duration: 0.001 }, ' + s_start + ");"
-            )
-
-    # camada 1: captions
+    # captions
     cap_idx = 0
     for s in scenes:
         if not s["caption"]:
@@ -699,16 +818,16 @@ def write_hyperframes_project(base_video, project_dir, edit_plan=None, narration
         cap_dur = "%.3f" % max(s["caption_duration"], 0.4)
         body.append(
             '<div id="' + cid + '" class="clip caption pos-' + caption_pos + '" data-start="' + cap_start
-            + '" data-duration="' + cap_dur + '" data-track-index="1">'
+            + '" data-duration="' + cap_dur + '" data-track-index="2">'
             + html_escape_mod.escape(s["caption"]) + "</div>"
         )
         tl.append(
-            'tl.fromTo("#' + cid + '", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.35, ease: "power2.out" }, '
-            + cap_start + ");"
+            'tl.fromTo("#' + cid + '", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.35,'
+            + ' ease: "power2.out", immediateRender: false }, ' + cap_start + ");"
         )
 
-    # camada 2: avatar
-    if avatar_name:
+    # avatar de canto (modo legado, sem avatar como base)
+    if avatar_name and avatar_mode == "corner":
         plan_avatar = (edit_plan or {}).get("avatar") or {}
         pos = "left" if str(plan_avatar.get("position") or "right") == "left" else "right"
         try:
@@ -720,37 +839,39 @@ def write_hyperframes_project(base_video, project_dir, edit_plan=None, narration
         body.append(
             '<video id="avatar" class="clip avatar-clip pos-' + pos + '" src="./assets/' + avatar_name + '"'
             + ' style="width:' + str(avatar_w) + 'px" data-start="0" data-duration="' + dur_s + '"'
-            + ' data-track-index="2" data-media-start="0" data-volume="0" data-has-audio="false"'
+            + ' data-track-index="3" data-media-start="0" data-volume="0" data-has-audio="false"'
             + ' muted playsinline preload="auto"></video>'
         )
 
-    # camada 3: fades de transicao entre cenas
+    # fades de transicao entre cenas (so no modo legado; no modo base os
+    # proprios overlays de b-roll fazem fade, sem flash preto sobre o avatar)
     fade_idx = 0
-    for s in scenes:
-        if s["transition_out"] != "fade":
-            continue
-        boundary = s["start"] + s["duration"]
-        if boundary >= duration - 0.05:
-            continue
-        half = 0.25
-        f_start = max(boundary - half, 0.0)
-        f_dur = min(2 * half, duration - f_start)
-        fade_idx += 1
-        fid = "fade-" + str(fade_idx)
-        body.append(
-            '<div id="' + fid + '" class="clip fadeov" data-start="' + ("%.3f" % f_start)
-            + '" data-duration="' + ("%.3f" % f_dur) + '" data-track-index="3"></div>'
-        )
-        tl.append(
-            'tl.fromTo("#' + fid + '", { opacity: 0 }, { opacity: 1, duration: ' + ("%.3f" % (f_dur / 2))
-            + ', ease: "power2.in" }, ' + ("%.3f" % f_start) + ");"
-        )
-        tl.append(
-            'tl.to("#' + fid + '", { opacity: 0, duration: ' + ("%.3f" % (f_dur / 2))
-            + ', ease: "power2.out" }, ' + ("%.3f" % (f_start + f_dur / 2)) + ");"
-        )
+    if avatar_mode != "base":
+        for s in scenes:
+            if s["transition_out"] != "fade":
+                continue
+            boundary = s["start"] + s["duration"]
+            if boundary >= duration - 0.05:
+                continue
+            half = 0.25
+            f_start = max(boundary - half, 0.0)
+            f_dur = min(2 * half, duration - f_start)
+            fade_idx += 1
+            fid = "fade-" + str(fade_idx)
+            body.append(
+                '<div id="' + fid + '" class="clip fadeov" data-start="' + ("%.3f" % f_start)
+                + '" data-duration="' + ("%.3f" % f_dur) + '" data-track-index="4"></div>'
+            )
+            tl.append(
+                'tl.fromTo("#' + fid + '", { opacity: 0 }, { opacity: 1, duration: ' + ("%.3f" % (f_dur / 2))
+                + ', ease: "power2.in", immediateRender: false }, ' + ("%.3f" % f_start) + ");"
+            )
+            tl.append(
+                'tl.to("#' + fid + '", { opacity: 0, duration: ' + ("%.3f" % (f_dur / 2))
+                + ', ease: "power2.out" }, ' + ("%.3f" % (f_start + f_dur / 2)) + ");"
+            )
 
-    # camada 4: narracao
+    # narracao
     if narration_name:
         plan_audio = (edit_plan or {}).get("audio") or {}
         try:
@@ -760,18 +881,23 @@ def write_hyperframes_project(base_video, project_dir, edit_plan=None, narration
         volume = min(max(volume, 0.0), 1.0)
         body.append(
             '<audio id="narration" class="clip" src="./assets/' + narration_name + '" data-start="0"'
-            + ' data-duration="' + dur_s + '" data-track-index="4" data-media-start="0"'
+            + ' data-duration="' + dur_s + '" data-track-index="5" data-media-start="0"'
             + ' data-volume="' + ("%.2f" % volume) + '" data-has-audio="true" preload="auto"></audio>'
         )
 
     (project_dir / "variables.json").write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "base_video": "assets/" + BASE_VIDEO_NAME,
                 "duration": round(duration, 3),
+                "base_duration": round(base_dur, 3),
                 "output": MASTER_VIDEO_NAME,
+                "avatar_mode": avatar_mode,
                 "scenes": len(scenes),
+                "broll_windows": [
+                    {"start": round(w["start"], 3), "end": round(w["end"], 3)} for w in windows
+                ],
                 "captions": cap_idx,
                 "fades": fade_idx,
                 "audio": bool(narration_name),
@@ -808,26 +934,54 @@ def write_hyperframes_project(base_video, project_dir, edit_plan=None, narration
     ]
     (project_dir / "index.html").write_text(NL.join(head + body + tail), encoding="utf-8")
     print(
-        "Composicao: " + str(len(scenes)) + " cenas, " + str(cap_idx) + " captions, "
+        "Composicao: modo avatar=" + avatar_mode + ", " + str(len(scenes)) + " cenas, "
+        + str(len(windows)) + " janelas de b-roll, " + str(cap_idx) + " captions, "
         + str(fade_idx) + " fades, audio=" + ("sim" if narration_name else "nao")
         + ", avatar=" + ("sim" if avatar_name else "nao")
     )
     return duration
 
 
-def apply_master_postprocess(master_out, narration=None, avatar=None, edit_plan=None):
+def has_audio_stream(path):
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=codec_type",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0 and "audio" in (result.stdout or "")
+
+
+def apply_master_postprocess(master_out, narration=None, avatar=None, edit_plan=None, avatar_mode="none"):
     # Garante narracao/avatar no MP4 final fora do browser renderer.
+    avatar_in_composition = avatar_mode in ("base", "corner")
     result = {
         "audio": False,
         "avatar": False,
-        "requested_audio": bool(narration),
+        "requested_audio": bool(narration) or (avatar_mode == "base" and bool(avatar)),
         "requested_avatar": bool(avatar),
+        "avatar_mode": avatar_mode,
         "method": [],
     }
     current = Path(master_out)
     duration = ffprobe_duration(current)
 
-    if avatar:
+    if avatar and avatar_in_composition:
+        # avatar ja renderizado dentro da composicao HyperFrames
+        result["avatar"] = True
+        result["method"].append("hyperframes_composition")
+
+    if avatar and not avatar_in_composition:
         width, _height = plan_resolution(edit_plan)
         plan_avatar = (edit_plan or {}).get("avatar") or {}
         pos = "left" if str(plan_avatar.get("position") or "right") == "left" else "right"
@@ -877,31 +1031,55 @@ def apply_master_postprocess(master_out, narration=None, avatar=None, edit_plan=
         result["avatar"] = True
         result["method"].append("ffmpeg_overlay")
 
-    if narration:
+    # Sem narracao, o audio original do avatar vira a trilha do master.
+    audio_source = narration
+    if not audio_source and avatar_mode == "base" and avatar and has_audio_stream(avatar):
+        audio_source = avatar
+        result["method"].append("avatar_audio")
+
+    if audio_source:
+        video_dur = ffprobe_duration(current)
+        audio_dur = ffprobe_duration(audio_source)
         tmp_audio = current.with_name(current.stem + "_audio.mp4")
-        run_logged(
-            [
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(current),
-                "-i",
-                str(narration),
-                "-map",
-                "0:v:0",
-                "-map",
-                "1:a:0",
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(current),
+            "-i",
+            str(audio_source),
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+        ]
+        if audio_dur > video_dur + 0.2:
+            # nunca corta o final do audio: congela o ultimo frame do video
+            # ate o audio terminar (antes o -shortest cortava o master)
+            extra = audio_dur - video_dur
+            cmd += [
+                "-vf",
+                "tpad=stop_mode=clone:stop_duration=%.3f" % extra,
                 "-c:v",
-                "copy",
-                "-c:a",
-                "aac",
-                "-shortest",
-                "-movflags",
-                "+faststart",
-                str(tmp_audio),
-            ],
-            timeout=1200,
-        )
+                "libx264",
+                "-preset",
+                "medium",
+                "-crf",
+                "18",
+                "-pix_fmt",
+                "yuv420p",
+            ]
+            result["method"].append("video_extended_to_audio")
+        else:
+            cmd += ["-c:v", "copy"]
+        cmd += [
+            "-c:a",
+            "aac",
+            "-movflags",
+            "+faststart",
+            str(tmp_audio),
+        ]
+        run_logged(cmd, timeout=1800)
         shutil.move(str(tmp_audio), str(current))
         result["audio"] = True
         result["method"].append("ffmpeg_audio_mix")
@@ -909,12 +1087,22 @@ def apply_master_postprocess(master_out, narration=None, avatar=None, edit_plan=
     return result
 
 
+def plan_avatar_mode(edit_plan, avatar):
+    if not avatar:
+        return "none"
+    plan_avatar = (edit_plan or {}).get("avatar") or {}
+    return "corner" if str(plan_avatar.get("mode") or "base") == "corner" else "base"
+
+
 def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar=None):
     project_dir = Path("/kaggle/working/hyperframes_master")
     master_out = Path("/kaggle/working") / MASTER_VIDEO_NAME
     frames_dir = Path("/kaggle/working/hyperframes_frames")
     assert_node_runtime()
-    duration = write_hyperframes_project(base_video, project_dir, edit_plan, None, None)
+    avatar_mode = plan_avatar_mode(edit_plan, avatar)
+    duration = write_hyperframes_project(
+        base_video, project_dir, edit_plan, None, avatar, avatar_mode=avatar_mode
+    )
     env = os.environ.copy()
     env["CI"] = "1"
     env["HYPERFRAMES_NO_UPDATE_CHECK"] = "1"
@@ -948,15 +1136,17 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
         render_mode = "png-sequence+ffmpeg"
     if not master_out.exists():
         raise RuntimeError("HyperFrames terminou sem gerar " + str(master_out))
-    postprocess = apply_master_postprocess(master_out, narration, avatar, edit_plan)
+    postprocess = apply_master_postprocess(master_out, narration, avatar, edit_plan, avatar_mode=avatar_mode)
     write_status(
         {
             "status": "complete",
             "output": str(master_out),
             "duration": round(duration, 3),
             "render_mode": render_mode,
+            "avatar_mode": avatar_mode,
             "png_frames": png_count,
             "scenes": len((edit_plan or {}).get("scenes") or []),
+            "broll_policy": (edit_plan or {}).get("broll_policy") or {},
             "audio": postprocess["audio"],
             "avatar": postprocess["avatar"],
             "requested_audio": postprocess["requested_audio"],
@@ -999,14 +1189,44 @@ except Exception as exc:
     print("HyperFrames falhou; tentando master fallback com FFmpeg:", exc)
     fallback_master = Path("/kaggle/working") / MASTER_VIDEO_NAME
     try:
-        shutil.copy2(out, fallback_master)
-        postprocess = apply_master_postprocess(fallback_master, narration_file, avatar_file, edit_plan)
+        fallback_mode = plan_avatar_mode(edit_plan, avatar_file)
+        if fallback_mode == "base":
+            # mesmo sem HyperFrames o avatar segue como base do video
+            fb_w, fb_h = plan_resolution(edit_plan)
+            run_logged(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    str(avatar_file),
+                    "-vf",
+                    "scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,fps=30" % (fb_w, fb_h, fb_w, fb_h),
+                    "-an",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "medium",
+                    "-crf",
+                    "18",
+                    "-pix_fmt",
+                    "yuv420p",
+                    str(fallback_master),
+                ],
+                timeout=1800,
+            )
+            postprocess = apply_master_postprocess(
+                fallback_master, narration_file, avatar_file, edit_plan, avatar_mode="base"
+            )
+        else:
+            shutil.copy2(out, fallback_master)
+            postprocess = apply_master_postprocess(fallback_master, narration_file, avatar_file, edit_plan)
         write_status(
             {
                 "status": "fallback_complete",
                 "error": str(exc),
                 "base_output": str(out),
                 "output": str(fallback_master),
+                "avatar_mode": fallback_mode,
                 "audio": postprocess["audio"],
                 "avatar": postprocess["avatar"],
                 "requested_audio": postprocess["requested_audio"],

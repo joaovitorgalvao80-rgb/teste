@@ -24,14 +24,21 @@ ALLOWED_MOTIONS = {"slow_push_in", "slow_pull_out", "drift_left", "drift_right",
 ALLOWED_TRANSITIONS = {"fade", "none"}
 MAX_CAPTION_CHARS = 80
 
-_PROMPT = """You are a senior video editor planning the final cut of a short-form video.
-The base video is already assembled: one b-roll clip per scene, in order, exact durations.
-Your job is to decide, per scene, the refinement that will be applied on top:
+_PROMPT = """You are a senior video editor orchestrating the final cut of a talking-head video.
+The presenter (avatar) video is the BASE layer, full screen, for the whole duration.
+A b-roll reel (one clip per scene, exact durations) can cover the screen on top of it.
+Your job is to decide, per scene, the edit that will be applied:
 
-- "motion": camera feel. One of: "slow_push_in" (slow zoom in, adds tension/focus),
-  "slow_pull_out" (slow zoom out, reveals context/breathes), "drift_left" or
-  "drift_right" (subtle lateral movement), "hold" or "none" (rest moment).
-  Vary motion with intent; do not alternate mechanically.
+- "broll": true to cut away to the b-roll footage covering the screen during the scene,
+  false to stay on the presenter talking on camera. HARD RULES you must respect:
+  the presenter must NEVER stay alone on screen for more than 30 seconds in a row;
+  b-roll must NEVER cover the entire video (keep the opening hook and the closing
+  on camera, plus short returns to the presenter at strong personal moments).
+  Aim for roughly 50-70% b-roll coverage, cutting away on descriptive/visual passages.
+- "motion": camera feel applied to the b-roll while it is on screen. One of:
+  "slow_push_in" (slow zoom in, adds tension/focus), "slow_pull_out" (slow zoom out,
+  reveals context/breathes), "drift_left" or "drift_right" (subtle lateral movement),
+  "hold" or "none" (rest moment). Vary motion with intent; do not alternate mechanically.
 - "transition_out": cut into the NEXT scene. One of: "fade" (soft, for topic/mood changes)
   or "none" (hard cut, for rhythm and continuity). Last scene must be "none".
 - "caption": a short on-screen text for the scene, written from the narration.
@@ -40,7 +47,7 @@ Your job is to decide, per scene, the refinement that will be applied on top:
   beats, not subtitles; aim for about one caption every 3 scenes, only on key moments.
 
 Respond ONLY with JSON in this exact shape:
-{"scenes": [{"scene_id": "...", "motion": "...", "transition_out": "...", "caption": "..."}]}
+{"scenes": [{"scene_id": "...", "broll": true, "motion": "...", "transition_out": "...", "caption": "..."}]}
 One object per input scene, same scene_id, same order.
 
 PROJECT: {project_name}
@@ -61,6 +68,19 @@ def _scenes_block(scenes: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _coerce_broll(value: object) -> Optional[bool]:
+    """true/false do LLM em qualquer formato razoavel; None quando nao opinou."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        low = value.strip().lower()
+        if low in {"true", "yes", "1", "broll", "b-roll"}:
+            return True
+        if low in {"false", "no", "0", "avatar", "presenter"}:
+            return False
+    return None
+
+
 def _validate_directive(item: dict) -> Optional[dict]:
     """Normaliza uma decisao de cena do LLM; None se nao der para aproveitar."""
     sid = str(item.get("scene_id") or "").strip()
@@ -75,7 +95,13 @@ def _validate_directive(item: dict) -> Optional[dict]:
         transition = ""
     if len(caption) > MAX_CAPTION_CHARS:
         caption = caption[:MAX_CAPTION_CHARS].rsplit(" ", 1)[0]
-    return {"scene_id": sid, "motion": motion, "transition_out": transition, "caption": caption}
+    return {
+        "scene_id": sid,
+        "motion": motion,
+        "transition_out": transition,
+        "caption": caption,
+        "broll": _coerce_broll(item.get("broll")),
+    }
 
 
 def generate_scene_directives(

@@ -8,3 +8,5 @@ kaggle_work/
 *.log
 
 .env
+.claude/
+.pytest_cache/
