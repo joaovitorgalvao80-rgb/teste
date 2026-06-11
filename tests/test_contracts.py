@@ -239,6 +239,33 @@ class DeployContractsTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(db.list_assets(scene["id"]), [])
 
+    def test_manual_curation_ui_has_explicit_auto_select_and_review_image_generation(self) -> None:
+        with TestClient(webapp.app) as client:
+            _, project_id, scene = self._project_with_scene("manual-ui")
+            db.add_assets(scene["id"], [{"source": "pexels", "download_url": "https://example.com/a.mp4"}])
+            asset = db.list_assets(scene["id"])[0]
+            db.set_project_status(project_id, "searched")
+            client.post(
+                "/login",
+                data={"username": "manual-ui", "password": "password123"},
+                follow_redirects=False,
+            )
+
+            project_page = client.get(f"/projects/{project_id}")
+            db.set_asset_state(asset["id"], "selected")
+            db.set_project_status(project_id, "reviewing")
+            review_page = client.get(f"/projects/{project_id}/review")
+
+        self.assertEqual(project_page.status_code, 200)
+        self.assertIn("Buscar assets", project_page.text)
+        self.assertNotIn("Buscar + selecionar", project_page.text)
+        self.assertIn(f'action="/projects/{project_id}/auto-select"', project_page.text)
+        self.assertIn("Seleção automática", project_page.text)
+        self.assertEqual(review_page.status_code, 200)
+        self.assertIn("toggleGenPanel", review_page.text)
+        self.assertIn(f"gen-panel-{scene['id']}", review_page.text)
+        self.assertIn(f"generateImage({scene['id']}", review_page.text)
+
     def test_packager_copies_generated_asset_from_disk(self) -> None:
         work_dir = self.root / "work" / "project_1"
         gen_dir = work_dir / "generated"
@@ -1555,6 +1582,39 @@ class HardeningAndOptimizationTest(unittest.TestCase):
         job = db.get_job(job_id, uid)
         self.assertEqual(job["status"], "error")
         self.assertIn("zero assets", job["error"])
+
+    def test_search_job_keeps_assets_pending_until_explicit_auto_select(self) -> None:
+        db.init_db()
+        uid = db.create_user("manual-search", "password123")
+        project_id = db.create_project(uid, "proj", "script", {})
+        db.replace_scenes(
+            project_id,
+            [{"scene_id": "scene_001", "idx": 1, "start_time": 0, "end_time": 4, "duration": 4, "keywords": ["x"]}],
+        )
+        job_id = db.create_job(uid, "search_assets", project_id, "buscando")
+        fake_asset = {
+            "source": "pexels",
+            "source_id": "asset-1",
+            "asset_type": "video",
+            "preview_url": "",
+            "download_url": "https://example.com/a.mp4",
+            "page_url": "",
+            "width": 1920,
+            "height": 1080,
+            "duration": 10,
+            "keyword": "x",
+            "author": "",
+            "author_url": "",
+        }
+        with patch.object(webapp.asset_search, "search_scene", return_value=[fake_asset]):
+            webapp.run_search_job(job_id, project_id, uid, "pexels", "", "groq")
+
+        self.assertEqual(db.get_project(project_id, uid)["status"], "searched")
+        self.assertEqual(db.list_assets_by_state(project_id, ["selected", "accepted"]), [])
+        self.assertEqual(len(db.list_assets_by_state(project_id, ["pending"])), 1)
+        job = db.get_job(job_id, uid)
+        self.assertEqual(job["status"], "complete")
+        self.assertEqual(job["result"]["auto_selected"], 0)
 
     def test_packager_writes_license_manifest_and_kaggle_uses_other_license(self) -> None:
         project = {"name": "Licenca"}

@@ -91,9 +91,12 @@ with client:
 
     t0 = time.time()
     r = client.post(f"/projects/{pid}/search")
-    must(r.status_code == 303, f"busca + auto-selecao (APIs reais, {time.time()-t0:.1f}s)")
+    must(r.status_code == 303, f"busca de assets (APIs reais, {time.time()-t0:.1f}s)")
     project = db.get_project(pid, 1)
-    must(project["status"] in {"reviewing", "searched"}, f"status pos-busca: {project['status']}")
+    must(project["status"] == "searched", f"status pos-busca manual: {project['status']}")
+
+    r = client.post(f"/projects/{pid}/auto-select")
+    must(r.status_code == 303, "auto-select iniciado")
     chosen = db.list_assets_by_state(pid, ["selected"])
     must(len(chosen) == 4, f"4 takes auto-selecionados (tem {len(chosen)})")
     for c in chosen:

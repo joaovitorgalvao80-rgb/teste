@@ -31,7 +31,16 @@
       <button class="step {% if project.status in ['searched','reviewing','reviewed','packaged','needs_package','packaging','package_failed'] %}is-done{% endif %}" type="submit"
               {% if not scenes or project.status in ['searching','packaging','mapping','auto_selecting','researching'] %}disabled{% endif %}>
         <span class="step-idx">02</span>
-        <span class="step-name">Buscar + selecionar</span>
+        <span class="step-name">Buscar assets</span>
+      </button>
+    </form>
+    <form method="post" action="/projects/{{ project.id }}/auto-select" style="flex:1;display:contents" data-busy-submit>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="step {% if project.status in ['reviewing','reviewed','packaged','needs_package','packaging','package_failed'] and selected_count == scenes|length and scenes|length > 0 %}is-done{% endif %}"
+              type="submit"
+              {% if asset_count == 0 or project.status not in ['searched','reviewing'] or project.status in ['searching','packaging','mapping','auto_selecting','researching'] %}disabled{% endif %}>
+        <span class="step-idx">02B</span>
+        <span class="step-name">Seleção automática</span>
       </button>
     </form>
     <a class="step {% if project.status == 'reviewed' or (scenes and accepted_count == scenes|length) %}is-done{% endif %} {% if project.status == 'reviewing' %}is-active{% endif %}"

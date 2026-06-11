@@ -919,6 +919,7 @@ def project_page(request: Request, project_id: int):
     for s in scenes:
         s["assets"] = assets_by_scene.get(s["id"], [])
         s["selected"] = next((a for a in s["assets"] if a["state"] in CHOSEN_ASSET_STATES), None)
+    asset_count = sum(len(s["assets"]) for s in scenes)
     selected_count = sum(1 for s in scenes if s.get("selected"))
     accepted_count = sum(1 for s in scenes if s.get("selected") and s["selected"]["state"] == "accepted")
     project_work = project_work_dir(project_id)
@@ -935,6 +936,7 @@ def project_page(request: Request, project_id: int):
             "project": project,
             "config": config,
             "scenes": scenes,
+            "asset_count": asset_count,
             "selected_count": selected_count,
             "accepted_count": accepted_count,
             "has_keys": bool(user["pexels_key"] or user["pixabay_key"]),
@@ -1054,7 +1056,7 @@ def generate_map(
 
 
 # ------------------------------------------------------------------
-# Buscar assets + selecao automatica
+# Buscar assets + selecao automatica opcional
 # ------------------------------------------------------------------
 def auto_select_for_project(
     project_id: int,
@@ -1149,28 +1151,15 @@ def run_search_job(
         if total_added <= 0:
             raise RuntimeError("Busca retornou zero assets. Verifique chaves, keywords ou disponibilidade das APIs.")
 
-        # selecao automatica encadeada: o sistema ja propoe o melhor take por
-        # cena e manda o usuario para a tela de revisao (aceitar/rejeitar)
-        auto_selected = 0
-        try:
-            db.set_project_status(project_id, "auto_selecting")
-            db.update_job(job_id, status="running", message="Selecionando os melhores takes")
-            auto_selected = auto_select_for_project(
-                project_id, config, groq_key, groq_model, job_id=job_id,
-                review_round=int(project.get("review_round") or 0),
-            )
-            db.set_project_status(project_id, "reviewing" if auto_selected else "searched")
-        except Exception as exc:  # noqa: BLE001 - busca foi um sucesso; degrada para curadoria manual
-            logger.warning("auto-selecao falhou; seguindo com curadoria manual: %s", exc)
-            db.set_project_status(project_id, "searched")
+        db.set_project_status(project_id, "searched")
         db.finish_job(
             job_id,
-            f"Busca concluida — {auto_selected} takes pre-selecionados" if auto_selected else "Busca concluida",
+            "Busca concluida",
             {
                 "added": total_added,
                 "empty_scenes": empty_scenes,
                 "scenes": len(scenes),
-                "auto_selected": auto_selected,
+                "auto_selected": 0,
             },
         )
     except Exception as exc:  # noqa: BLE001
@@ -1311,7 +1300,8 @@ def asset_state(
         # Outside review, invalidate any existing package as before.
         mark_project_dirty(owner["project_id"])
         curation_report_path(owner["project_id"]).unlink(missing_ok=True)
-        project_status = "needs_package"
+        fresh_project = db.get_project(owner["project_id"], user["id"])
+        project_status = (fresh_project or project).get("status", status)
     # Native form fallback sends redirect; fetch-based JS does not.
     if redirect and redirect.startswith("/") and not redirect.startswith("//"):
         return RedirectResponse(redirect, status_code=303)
@@ -1370,6 +1360,9 @@ def auto_select_route(
     scenes = db.list_scenes(project_id)
     if not scenes:
         raise HTTPException(400, "Gere o mapa visual e busque assets antes da selecao automatica.")
+    assets_by_scene = db.list_assets_for_project(project_id)
+    if not any(assets_by_scene.get(scene["id"]) for scene in scenes):
+        raise HTTPException(400, "Busque assets antes de usar a selecao automatica.")
     ensure_no_active_job(project_id, "auto_select")
     job_id = db.create_job(user["id"], "auto_select", project_id, "Selecao automatica na fila")
     db.set_project_status(project_id, "auto_selecting")
@@ -1390,6 +1383,7 @@ def review_page(request: Request, project_id: int):
     project = db.get_project(project_id, user["id"])
     if not project:
         raise HTTPException(404)
+    config = project_config(project)
     scenes = db.list_scenes(project_id)
     assets_by_scene = db.list_assets_for_project(project_id)
     review_scenes = []
@@ -1412,6 +1406,7 @@ def review_page(request: Request, project_id: int):
         {
             "user": user,
             "project": project,
+            "config": config,
             "scenes": review_scenes,
             "accepted": accepted,
             "pending_review": pending_review,

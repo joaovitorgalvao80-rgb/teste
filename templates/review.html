@@ -17,15 +17,14 @@
   <div class="empty">
     <p class="tag">Revisão</p>
     <h2>Nada para revisar ainda.</h2>
-    <p class="t-muted t-small">Gere o mapa visual e busque assets primeiro — a seleção automática roda junto com a busca.</p>
+    <p class="t-muted t-small">Gere o mapa visual, busque assets e use a seleção automática apenas se quiser uma primeira escolha pronta.</p>
     <a class="btn btn-primary" href="/projects/{{ project.id }}">Voltar ao console</a>
   </div>
 {% else %}
 
 <p class="t-muted t-small" style="margin-bottom:var(--sp-5)">
-  O sistema escolheu um take para cada cena. Confira se a imagem ilustra a frase:
-  <strong>Aceitar</strong> trava o take; <strong>Rejeitar</strong> marca a cena para uma
-  nova busca com keywords diferentes. Os aceitos nunca são trocados.
+  Confira os takes marcados para cada cena. <strong>Aceitar</strong> trava o take;
+  <strong>Rejeitar</strong> marca a cena para nova busca com keywords diferentes.
 </p>
 
 <div class="review-grid">
@@ -85,6 +84,7 @@
             <button type="submit" class="btn btn-danger btn-sm review-reject">Rejeitar</button>
           </form>
           <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}#scene-{{ scene.id }}">ver alternativas</a>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="toggleGenPanel({{ scene.id }})">✦ gerar imagem</button>
         </div>
       {% else %}
         <div class="review-media review-media-empty">
@@ -93,8 +93,20 @@
         </div>
         <div class="review-actions">
           <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}#scene-{{ scene.id }}">escolher manualmente</a>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="toggleGenPanel({{ scene.id }})">✦ gerar imagem</button>
         </div>
       {% endif %}
+      <div class="gen-panel" id="gen-panel-{{ scene.id }}" style="display:none;margin-top:var(--sp-3);padding:var(--sp-3);border:1px solid var(--line-0);border-radius:6px">
+        <p class="t-small t-faint" style="margin-bottom:var(--sp-2)">
+          O gerador externo carrega somente quando você clicar em Gerar. A imagem entra como take normal.
+        </p>
+        <textarea id="gen-prompt-{{ scene.id }}" rows="3" style="width:100%;resize:vertical"
+          >{{ (scene.visual_goal or scene.narration or '')[:160] }}{% if scene.keywords %}, {{ scene.keywords[:3]|join(', ') }}{% endif %}, {{ config.visual_style }}, photorealistic, 16:9 wide shot, no text, no watermark</textarea>
+        <div class="row" style="margin-top:var(--sp-2)">
+          <button class="btn btn-secondary btn-sm" type="button" onclick="generateImage({{ scene.id }}, this)">Gerar</button>
+          <span class="t-small t-faint" id="gen-status-{{ scene.id }}"></span>
+        </div>
+      </div>
     </section>
   {% endfor %}
 </div>
