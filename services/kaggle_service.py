@@ -1261,7 +1261,7 @@ def push_kernel(
 
         metadata = {
             "id": f"{username}/{slug}",
-            "title": f"B-rolls Render - {project_name}"[:50],
+            "title": slug,
             "code_file": "runner.py",
             "language": "python",
             "kernel_type": "script",
