@@ -85,6 +85,27 @@
     {% endif %}
   </div>
 
+  <div class="curation-switch">
+    <div class="curation-switch-copy">
+      <span class="tag">Curadoria</span>
+      <strong>Manual ou automatica</strong>
+      <span class="t-small t-faint">{{ asset_count }} assets - {{ selected_count }}/{{ scenes|length }} cenas marcadas</span>
+    </div>
+    <div class="curation-switch-actions">
+      <a class="btn btn-primary btn-sm" href="{% if scenes %}#curadoria{% else %}#{% endif %}"
+         {% if not scenes %}aria-disabled="true"{% endif %}>
+        Escolher manualmente
+      </a>
+      <form method="post" action="/projects/{{ project.id }}/auto-select" data-busy-submit>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="btn btn-secondary btn-sm" type="submit"
+                {% if asset_count == 0 or project.status not in ['searched','reviewing'] or project.status in ['searching','packaging','mapping','auto_selecting','researching'] %}disabled{% endif %}>
+          Selecao automatica
+        </button>
+      </form>
+    </div>
+  </div>
+
   {% if not has_keys %}
     <div style="padding:var(--sp-3) var(--sp-5)">
       <p class="note note-warn">Cadastre chaves de Pexels/Pixabay em <a href="/settings" style="color:var(--paper-0)">Configurações → APIs</a> para buscar assets.</p>
@@ -327,7 +348,7 @@
 <!-- Curadoria de cenas -->
 {% if scenes %}
 <hr class="rule" style="margin-bottom:var(--sp-5)">
-<div class="row-between" style="margin-bottom:var(--sp-4)">
+<div class="row-between" id="curadoria" style="margin-bottom:var(--sp-4)">
   <h2>Curadoria de takes</h2>
   <span class="t-small t-faint"><kbd>S</kbd> selecionar · <kbd>R</kbd> rejeitar</span>
 </div>
