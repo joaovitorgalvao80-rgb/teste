@@ -385,6 +385,99 @@ function startKagglePolling(projectId) {
   _kagglePolling = setInterval(tick, 20000);
 }
 
+// ------------------------------------------------------------------
+// Video longo: render por partes + concatenacao
+// ------------------------------------------------------------------
+let _partsPolling = null;
+
+async function renderParts(projectId, btn) {
+  btn.disabled = true;
+  const name = btn.querySelector(".step-name");
+  if (name) name.textContent = "Enviando...";
+  try {
+    const res = await postForm(`/projects/${projectId}/render-parts`, {});
+    notify(res.message + ` (${res.parts} parte(s)). Mantenha o servidor aberto.`, "ok");
+    if (name) name.textContent = "Renderizando...";
+    startPartsPolling(projectId);
+  } catch (e) {
+    btn.disabled = false;
+    if (name) name.textContent = "Render partes";
+    notify("Falha ao iniciar render: " + e.message, "error");
+  }
+}
+
+async function concatParts(projectId, btn) {
+  btn.disabled = true;
+  const name = btn.querySelector(".step-name");
+  if (name) name.textContent = "Concatenando...";
+  try {
+    const res = await postForm(`/projects/${projectId}/concat-parts`, {});
+    notify(res.message, "ok");
+    startPartsPolling(projectId);
+  } catch (e) {
+    btn.disabled = false;
+    if (name) name.textContent = "Concatenar final";
+    notify("Falha na concatenacao: " + e.message, "error");
+  }
+}
+
+function renderPartsTable(data) {
+  (data.parts || []).forEach((p) => {
+    const row = document.querySelector(`#parts-table tr[data-part="${p.part_idx}"]`);
+    if (!row) return;
+    const statusCell = row.querySelector(".part-status");
+    if (statusCell) {
+      statusCell.className = "part-status part-status-" + p.status;
+      statusCell.textContent = p.status + (p.error ? " — " + p.error.slice(0, 80) : "");
+    }
+    const kernelCell = row.querySelector(".part-kernel");
+    if (kernelCell && p.kernel_slug && data.kaggle_username) {
+      kernelCell.innerHTML =
+        `<a href="https://www.kaggle.com/code/${data.kaggle_username}/${p.kernel_slug}" target="_blank" rel="noopener">abrir ↗</a>`;
+    }
+  });
+  const msg = document.getElementById("parts-job-msg");
+  if (msg) {
+    msg.textContent = data.active_job
+      ? (data.active_job.message || "processando...") + " — mantenha o servidor aberto"
+      : "render sequencial; o servidor precisa ficar aberto";
+  }
+  const dlBase = document.getElementById("parts-dl-base");
+  if (dlBase) dlBase.style.display = data.has_base_video ? "" : "none";
+  const dlMaster = document.getElementById("parts-dl-master");
+  if (dlMaster) dlMaster.style.display = data.has_master_video ? "" : "none";
+}
+
+function startPartsPolling(projectId) {
+  if (_partsPolling) clearInterval(_partsPolling);
+  let failures = 0;
+  let hadJob = false;
+  const tick = async () => {
+    try {
+      const data = await getJSON(`/projects/${projectId}/parts-status`);
+      failures = 0;
+      renderPartsTable(data);
+      if (data.active_job) {
+        hadJob = true;
+      } else if (hadJob) {
+        clearInterval(_partsPolling);
+        _partsPolling = null;
+        notify("Processamento das partes terminou — recarregando...", "ok");
+        setTimeout(() => location.reload(), 800);
+      }
+    } catch (e) {
+      failures += 1;
+      if (failures >= 5) {
+        clearInterval(_partsPolling);
+        _partsPolling = null;
+        notify("Perdi contato com o monitor de partes: " + e.message, "error");
+      }
+    }
+  };
+  tick();
+  _partsPolling = setInterval(tick, 15000);
+}
+
 function renderValidation(data) {
   const status = document.getElementById("validation-status");
   const detail = document.getElementById("validation-detail");
@@ -432,6 +525,10 @@ function initBusySubmitForms() {
 // Inicia polling se já tinha kernel rodando ao carregar a página.
 document.addEventListener("DOMContentLoaded", () => {
   initBusySubmitForms();
+  const partsPanel = document.getElementById("parts-panel");
+  if (partsPanel && partsPanel.dataset.active === "1" && window.NWRCH_PROJECT_ID) {
+    startPartsPolling(window.NWRCH_PROJECT_ID);
+  }
   const bar = document.getElementById("kaggle-status-bar");
   const txt = document.getElementById("kaggle-status-text");
   if (bar && txt && bar.style.display !== "none") {

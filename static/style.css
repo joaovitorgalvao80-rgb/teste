@@ -507,6 +507,50 @@ label.check input { width: auto; accent-color: var(--paper-0); }
 @keyframes step-spin { to { transform: rotate(360deg); } }
 
 /* ==========================================================================
+   Video longo: tabela de partes + divisor na curadoria
+   ========================================================================== */
+.parts-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+}
+
+.parts-table th,
+.parts-table td {
+  text-align: left;
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--line-0);
+  color: var(--paper-1);
+}
+
+.parts-table th {
+  color: var(--paper-3);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 600;
+}
+
+.part-status-pending   { color: var(--paper-2); }
+.part-status-zipped    { color: var(--paper-1); }
+.part-status-uploading { color: var(--warn); }
+.part-status-running   { color: var(--rec); }
+.part-status-done      { color: var(--ok); }
+.part-status-error     { color: var(--err); }
+
+.part-divider {
+  margin: var(--sp-6) 0 var(--sp-4);
+  padding-bottom: var(--sp-2);
+  border-bottom: 1px solid var(--line-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--paper-2);
+}
+
+/* ==========================================================================
    Toasts (avisos nao-bloqueantes; substituem alert())
    ========================================================================== */
 #toast-host {

@@ -47,6 +47,21 @@
         <span class="step-name">Pacote ({{ selected_count }}/{{ scenes|length }})</span>
       </button>
     </form>
+    {% if config.long_mode %}
+    <button class="step {% if parts and parts | selectattr('status', 'equalto', 'done') | list | length == parts | length %}is-done{% endif %}"
+            id="btn-render-parts"
+            onclick="renderParts({{ project.id }}, this)"
+            {% if project.status != 'packaged' or parts_job_active %}disabled{% endif %}>
+      <span class="step-idx">04</span>
+      <span class="step-name">Render partes</span>
+    </button>
+    <button class="step" id="btn-concat"
+            onclick="concatParts({{ project.id }}, this)"
+            {% if parts_job_active or not parts or parts | selectattr('status', 'equalto', 'done') | list | length != parts | length %}disabled{% endif %}>
+      <span class="step-idx">05</span>
+      <span class="step-name">Concatenar final</span>
+    </button>
+    {% else %}
     <button class="step {% if project.kaggle_status and project.kaggle_status not in ['','none'] %}is-active{% endif %}"
             id="btn-kaggle"
             onclick="sendToKaggle({{ project.id }})"
@@ -58,6 +73,7 @@
       <span class="step-idx">05</span>
       <span class="step-name">Refino master</span>
     </button>
+    {% endif %}
   </div>
 
   {% if not has_keys %}
@@ -100,9 +116,51 @@
     </div>
   </div>
 
+  {% if config.long_mode and parts %}
+  <div id="parts-panel" data-active="{{ 1 if parts_job_active else 0 }}"
+       style="padding:var(--sp-3) var(--sp-5);border-top:1px solid var(--line-0)">
+    <div class="row-between" style="margin-bottom:var(--sp-3)">
+      <span class="tag">Partes do vídeo ({{ parts|length }})</span>
+      <span class="t-small t-faint" id="parts-job-msg">
+        {% if parts_job_active %}processando — mantenha o servidor aberto{% else %}render sequencial; o servidor precisa ficar aberto{% endif %}
+      </span>
+    </div>
+    <table class="parts-table" id="parts-table">
+      <thead>
+        <tr><th>parte</th><th>cenas</th><th>duração</th><th>status</th><th>kernel</th></tr>
+      </thead>
+      <tbody>
+        {% for p in parts %}
+        <tr data-part="{{ p.part_idx }}">
+          <td>{{ '%02d'|format(p.part_idx) }}</td>
+          <td>{{ p.scene_count }}</td>
+          <td>{{ '%.0f'|format(p.duration) }}s</td>
+          <td class="part-status part-status-{{ p.status }}">{{ p.status }}{% if p.error %} — {{ p.error[:80] }}{% endif %}</td>
+          <td class="part-kernel">
+            {% if p.kernel_slug and user.kaggle_username %}
+              <a href="https://www.kaggle.com/code/{{ user.kaggle_username }}/{{ p.kernel_slug }}" target="_blank" rel="noopener">abrir ↗</a>
+            {% else %}—{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="row" style="margin-top:var(--sp-3)">
+      <a class="btn btn-secondary btn-sm" href="/projects/{{ project.id }}/download-base-video" download
+         id="parts-dl-base" {% if not has_base_video %}style="display:none"{% endif %}>Baixar vídeo final</a>
+      <a class="btn btn-secondary btn-sm" href="/projects/{{ project.id }}/download-master-video" download
+         id="parts-dl-master" {% if not has_master_video %}style="display:none"{% endif %}>Baixar master (com narração)</a>
+    </div>
+  </div>
+  {% endif %}
+
   {% if project.status == 'packaged' %}
   <div style="padding:var(--sp-3) var(--sp-5);border-top:1px solid var(--line-0)">
-    <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}/download-zip">Baixar ZIP</a>
+    {% if config.long_mode %}
+      <p class="t-small t-faint" style="margin-bottom:var(--sp-2)">Pacotes por parte gerados em workdir/parts/. Use <strong>04 Render partes</strong>.</p>
+    {% else %}
+      <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}/download-zip">Baixar ZIP</a>
+    {% endif %}
   </div>
   {% endif %}
   {% if project.status == 'needs_package' %}
@@ -267,6 +325,9 @@
 {% endif %}
 
 {% for scene in scenes %}
+  {% if config.long_mode and (loop.first or scene.part != scenes[loop.index0 - 1].part) %}
+    <h3 class="part-divider" id="part-{{ scene.part }}">Parte {{ '%02d'|format(scene.part or 1) }}</h3>
+  {% endif %}
   <section class="scene scene-zone-{{ scene.zone|lower }}" id="scene-{{ scene.id }}" data-scene="{{ scene.id }}">
     <div class="scene-rail">
       <span class="tc">{{ '%.1f'|format(scene.start_time) }}s</span>

@@ -131,3 +131,24 @@ def parse_script(text: str, scene_duration: float = 4.0) -> list[dict]:
     if has_timestamps(text):
         return parse_timestamped(text)
     return parse_plain(text, scene_duration)
+
+
+def assign_parts(scenes: list[dict], target_seconds: float) -> int:
+    """Divide as cenas em partes de ~target_seconds, cortando em fronteira de cena.
+
+    Atribui scene['part'] (1-based) in-place e retorna o numero de partes.
+    Usado no modo video longo: cada parte vira um pacote + render proprio.
+    """
+    if not scenes:
+        return 0
+    target_seconds = max(30.0, float(target_seconds or 150))
+    part = 1
+    part_start = float(scenes[0].get("start_time") or 0.0)
+    for scene in scenes:
+        start = float(scene.get("start_time") or 0.0)
+        end = float(scene.get("end_time") or start)
+        if end - part_start > target_seconds and start > part_start:
+            part += 1
+            part_start = start
+        scene["part"] = part
+    return part

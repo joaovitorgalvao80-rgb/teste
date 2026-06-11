@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -26,7 +27,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 import database as db
 from services import asset_search, auto_select, diagnostics, edit_plan, groq_service, packager, kaggle_service
-from services.script_parser import parse_script
+from services.script_parser import assign_parts, parse_script
 
 ROOT = Path(__file__).resolve().parent
 
@@ -106,6 +107,8 @@ DEFAULT_CONFIG = {
     "scene_duration": 4.0,
     "per_keyword": 8,
     "max_download_mb": 90,
+    "long_mode": False,
+    "part_target_seconds": 150,
 }
 
 ALLOWED_RESOLUTIONS = {"1920x1080", "1280x720"}
@@ -165,6 +168,10 @@ def normalize_project_config(raw_config: Optional[dict] = None) -> dict:
         cfg.get("max_download_mb"), DEFAULT_CONFIG["max_download_mb"], 5, 500
     )
     cfg["image_fallback"] = _coerce_bool(cfg.get("image_fallback"))
+    cfg["long_mode"] = _coerce_bool(cfg.get("long_mode"))
+    cfg["part_target_seconds"] = _coerce_int(
+        cfg.get("part_target_seconds"), DEFAULT_CONFIG["part_target_seconds"], 60, 300
+    )
     visual_style = str(cfg.get("visual_style") or "").strip()
     cfg["visual_style"] = visual_style or DEFAULT_CONFIG["visual_style"]
     return cfg
@@ -830,6 +837,7 @@ async def new_project(
     resolution: str = Form("1920x1080"),
     scene_duration: float = Form(4.0),
     image_fallback: str = Form(""),
+    long_mode: str = Form(""),
     narration_media: Optional[UploadFile] = File(None),
     csrf_token: str = Form(""),
 ):
@@ -840,12 +848,17 @@ async def new_project(
         raw = await read_upload_limited(narration_media, MAX_TRANSCRIBE_UPLOAD_MB * 1024 * 1024, "Narração")
         if raw:
             prepared_narration = prepare_narration_media(raw, narration_media.filename)
+    is_long = _coerce_bool(long_mode)
+    if is_long and scene_duration == DEFAULT_CONFIG["scene_duration"]:
+        # video longo: cenas maiores reduzem o numero de buscas/renderizacoes
+        scene_duration = 7.0
     config = normalize_project_config({
         "avatar_safe_area": avatar_safe_area,
         "visual_style": visual_style.strip() or DEFAULT_CONFIG["visual_style"],
         "resolution": resolution,
         "scene_duration": scene_duration,
         "image_fallback": image_fallback,
+        "long_mode": is_long,
     })
     pid = db.create_project(user["id"], name.strip() or "projeto", script, config)
     if prepared_narration:
@@ -904,6 +917,11 @@ def project_page(request: Request, project_id: int):
             "diagnostics": project_diagnostics_snapshot(project_id, scenes, selected_count),
             "jobs": jobs,
             "active_jobs": active_jobs,
+            "parts": db.list_parts(project_id) if config.get("long_mode") else [],
+            "parts_job_active": any(
+                j["kind"] in {"kaggle_parts", "concat_parts"} and j["status"] in {"queued", "running"}
+                for j in jobs
+            ),
         },
     )
 
@@ -949,11 +967,29 @@ def run_generate_map_job(
                 "overlay_text": b.get("overlay_text", ""),
                 "avatar_safe_area": b.get("avatar_safe_area", config["avatar_safe_area"]),
             })
+        total_parts = 1
+        if config.get("long_mode"):
+            total_parts = assign_parts(merged, config.get("part_target_seconds") or 150)
         db.replace_scenes(project_id, merged)
+        if config.get("long_mode"):
+            summaries = []
+            for part_idx in range(1, total_parts + 1):
+                part_scenes = [s for s in merged if s.get("part") == part_idx]
+                duration = max((s["end_time"] for s in part_scenes), default=0.0) - min(
+                    (s["start_time"] for s in part_scenes), default=0.0
+                )
+                summaries.append({
+                    "part_idx": part_idx,
+                    "scene_count": len(part_scenes),
+                    "duration": round(duration, 3),
+                })
+            db.replace_parts(project_id, summaries)
+        else:
+            db.replace_parts(project_id, [])
         remove_project_artifacts(project_id, include_generated=True)
         db.set_project_status(project_id, "mapped")
         db.clear_kaggle_job(project_id)
-        db.finish_job(job_id, "Mapa visual pronto", {"scenes": len(merged)})
+        db.finish_job(job_id, "Mapa visual pronto", {"scenes": len(merged), "parts": total_parts})
     except Exception as exc:  # noqa: BLE001
         db.set_project_status(project_id, "map_failed")
         db.fail_job(job_id, "Falha ao gerar mapa visual", str(exc))
@@ -1690,6 +1726,28 @@ def remove_media(
 # ------------------------------------------------------------------
 # Gerar pacote (ZIP)
 # ------------------------------------------------------------------
+def parts_dir(project_id: int) -> Path:
+    return project_work_dir(project_id) / "parts"
+
+
+def part_dir(project_id: int, part_idx: int) -> Path:
+    return parts_dir(project_id) / f"part_{part_idx:02d}"
+
+
+def _rebase_scenes(scenes: list[dict]) -> list[dict]:
+    """Clona as cenas da parte com a timeline movida para t=0 (contrato do montador)."""
+    if not scenes:
+        return []
+    offset = min(float(s.get("start_time") or 0) for s in scenes)
+    rebased = []
+    for s in scenes:
+        clone = dict(s)
+        clone["start_time"] = round(float(s["start_time"]) - offset, 3)
+        clone["end_time"] = round(float(s["end_time"]) - offset, 3)
+        rebased.append(clone)
+    return rebased
+
+
 def run_package_job(
     job_id: int,
     project_id: int,
@@ -1711,6 +1769,56 @@ def run_package_job(
             raise RuntimeError("Selecao incompleta; escolha um asset para cada cena.")
         project_work = project_work_dir(project_id)
         remove_project_artifacts(project_id)
+        rejected_payload = [
+            {"scene_id": r["scene_code"], "source": r["source"], "url": r["download_url"], "keyword": r["keyword"]}
+            for r in rejected
+        ]
+
+        if config.get("long_mode"):
+            # um ZIP por parte; narracao/avatar entram so na concatenacao local
+            parts = db.list_parts(project_id)
+            if not parts:
+                raise RuntimeError("Projeto longo sem partes; gere o mapa visual novamente.")
+            if parts_dir(project_id).exists():
+                shutil.rmtree(parts_dir(project_id), ignore_errors=True)
+            zip_names = []
+            for part in parts:
+                idx = part["part_idx"]
+                db.update_job(
+                    job_id, status="running",
+                    message=f"Baixando assets da parte {idx}/{len(parts)}",
+                )
+                part_scenes = [s for s in scenes if int(s.get("part") or 1) == idx]
+                if not part_scenes:
+                    db.update_part(project_id, idx, status="error", error="parte sem cenas")
+                    continue
+                zip_path = packager.build_zip(
+                    project=project,
+                    config=config,
+                    scenes=_rebase_scenes(part_scenes),
+                    selected_by_scene=selected_by_scene,
+                    rejected_assets=rejected_payload,
+                    work_dir=part_dir(project_id, idx),
+                    max_download_mb=config["max_download_mb"],
+                    zip_basename=f"{project['name']}_pt{idx:02d}",
+                )
+                db.update_part(
+                    project_id, idx,
+                    zip_name=zip_path.name, status="zipped",
+                    error="", video_path="", dataset_slug="", kernel_slug="",
+                )
+                zip_names.append(zip_path.name)
+            if not zip_names:
+                raise RuntimeError("Nenhuma parte gerou pacote.")
+            db.set_project_status(project_id, "packaged")
+            db.clear_kaggle_job(project_id)
+            db.finish_job(
+                job_id,
+                f"{len(zip_names)} pacotes prontos (1 por parte)",
+                {"parts": len(zip_names), "zips": zip_names, "scenes": len(scenes)},
+            )
+            return
+
         narration_file = find_input_media(project_id, "narration")
         avatar_file = find_input_media(project_id, "avatar")
         plan = edit_plan.build_edit_plan_with_llm(
@@ -1726,10 +1834,7 @@ def run_package_job(
             config=config,
             scenes=scenes,
             selected_by_scene=selected_by_scene,
-            rejected_assets=[
-                {"scene_id": r["scene_code"], "source": r["source"], "url": r["download_url"], "keyword": r["keyword"]}
-                for r in rejected
-            ],
+            rejected_assets=rejected_payload,
             work_dir=project_work,
             max_download_mb=config["max_download_mb"],
             edit_plan=plan,
@@ -1849,6 +1954,243 @@ def send_to_kaggle(
             "message": "Envio ao Kaggle iniciado em segundo plano.",
         }
     )
+
+
+# ------------------------------------------------------------------
+# Video longo: render por partes + concatenacao final
+# ------------------------------------------------------------------
+PART_POLL_SECONDS = 30
+PART_RENDER_TIMEOUT = 45 * 60  # por parte
+
+
+def run_kaggle_parts_job(
+    job_id: int,
+    project_id: int,
+    user_id: int,
+    username: str,
+    token: str,
+) -> None:
+    try:
+        project = db.get_project(project_id, user_id)
+        if not project:
+            raise RuntimeError("Projeto nao encontrado.")
+        parts = [p for p in db.list_parts(project_id) if p["status"] != "done"]
+        total = len(db.list_parts(project_id))
+        if not parts:
+            raise RuntimeError("Todas as partes ja foram renderizadas.")
+        ok = 0
+        failed = 0
+        for part in parts:
+            idx = part["part_idx"]
+            label = f"parte {idx}/{total}"
+            try:
+                zip_path = part_dir(project_id, idx) / (part.get("zip_name") or "")
+                if not part.get("zip_name") or not zip_path.exists():
+                    raise RuntimeError("ZIP da parte nao encontrado; gere os pacotes novamente.")
+                db.update_job(job_id, status="running", message=f"Enviando {label} ao Kaggle")
+                db.update_part(project_id, idx, status="uploading", error="")
+                part_name = f"{project['name']} pt{idx:02d}"
+                ds_slug = kaggle_service.upload_dataset(zip_path, part_name, username, token, project_id=project_id)
+                k_slug, _push = kaggle_service.push_kernel(ds_slug, part_name, username, token, project_id=project_id)
+                db.update_part(project_id, idx, dataset_slug=ds_slug, kernel_slug=k_slug, status="running")
+
+                db.update_job(job_id, status="running", message=f"Renderizando {label} no Kaggle")
+                deadline = time.time() + PART_RENDER_TIMEOUT
+                final_status = "timeout"
+                error_detail = ""
+                while time.time() < deadline:
+                    time.sleep(PART_POLL_SECONDS)
+                    info = kaggle_service.get_status(k_slug, username, token)
+                    status = (info.get("status") or "").lower()
+                    if status == "complete":
+                        final_status = "complete"
+                        break
+                    if status == "error":
+                        final_status = "error"
+                        error_detail = str(info.get("error") or "")[:400]
+                        break
+                if final_status == "complete":
+                    out_dir = part_dir(project_id, idx) / "kaggle_output"
+                    video = kaggle_service.pull_output_video(k_slug, username, token, out_dir)
+                    if not video:
+                        raise RuntimeError("Render concluiu mas o MP4 nao foi encontrado no output.")
+                    db.update_part(project_id, idx, status="done", video_path=str(video), error="")
+                    ok += 1
+                elif final_status == "error":
+                    raise RuntimeError(error_detail or "kernel falhou")
+                else:
+                    raise RuntimeError(f"timeout apos {PART_RENDER_TIMEOUT // 60} min")
+            except Exception as part_exc:  # noqa: BLE001 - uma parte falhar nao derruba as demais
+                logger.warning("parte %s falhou: %s", idx, part_exc)
+                db.update_part(project_id, idx, status="error", error=str(part_exc)[:400])
+                failed += 1
+        if ok and not failed:
+            db.finish_job(job_id, f"{ok} parte(s) renderizadas", {"ok": ok, "failed": failed})
+        elif ok:
+            db.finish_job(
+                job_id,
+                f"{ok} parte(s) renderizadas, {failed} com erro — use 'Retomar render'",
+                {"ok": ok, "failed": failed},
+            )
+        else:
+            raise RuntimeError("Nenhuma parte renderizou com sucesso.")
+    except Exception as exc:  # noqa: BLE001
+        db.fail_job(job_id, "Falha no render por partes", str(exc))
+
+
+@app.post("/projects/{project_id}/render-parts")
+def render_parts(
+    request: Request,
+    project_id: int,
+    background_tasks: BackgroundTasks,
+    csrf_token: str = Form(""),
+):
+    user = require_user(request)
+    verify_csrf(request, csrf_token)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    if not user.get("kaggle_username") or not user.get("kaggle_token"):
+        raise HTTPException(400, "Configure Kaggle username e token em /settings.")
+    if project.get("status") != "packaged":
+        raise HTTPException(400, "Gere os pacotes em '03 Pacote' antes de renderizar as partes.")
+    parts = db.list_parts(project_id)
+    if not parts:
+        raise HTTPException(400, "Projeto sem partes. Ative o modo video longo e gere o mapa novamente.")
+    pending = [p for p in parts if p["status"] != "done"]
+    if not pending:
+        raise HTTPException(400, "Todas as partes ja foram renderizadas. Use 'Concatenar final'.")
+    for kind in ("kaggle_parts", "concat_parts"):
+        ensure_no_active_job(project_id, kind)
+    job_id = db.create_job(
+        user["id"], "kaggle_parts", project_id,
+        f"Render de {len(pending)} parte(s) na fila",
+    )
+    background_tasks.add_task(
+        run_kaggle_parts_job,
+        job_id,
+        project_id,
+        user["id"],
+        user["kaggle_username"],
+        user["kaggle_token"],
+    )
+    return JSONResponse({"job_id": job_id, "parts": len(pending), "message": "Render por partes iniciado."})
+
+
+def run_concat_job(job_id: int, project_id: int, user_id: int) -> None:
+    try:
+        db.update_job(job_id, status="running", message="Concatenando partes")
+        project = db.get_project(project_id, user_id)
+        if not project:
+            raise RuntimeError("Projeto nao encontrado.")
+        parts = db.list_parts(project_id)
+        if not parts:
+            raise RuntimeError("Projeto sem partes.")
+        videos: list[Path] = []
+        for part in sorted(parts, key=lambda p: p["part_idx"]):
+            video = Path(part.get("video_path") or "")
+            if part["status"] != "done" or not video.exists():
+                raise RuntimeError(f"Parte {part['part_idx']} sem video renderizado.")
+            videos.append(video)
+        if not shutil.which("ffmpeg"):
+            raise RuntimeError("FFmpeg nao encontrado no servidor; necessario para concatenar as partes.")
+
+        out_dir = project_work_dir(project_id) / "kaggle_output"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        base_out = out_dir / kaggle_service.BASE_VIDEO_NAME
+        concat_list = out_dir / "concat_list.txt"
+        concat_list.write_text(
+            "\n".join(
+                "file '{}'".format(v.resolve().as_posix().replace("'", r"'\''"))
+                for v in videos
+            ),
+            encoding="utf-8",
+        )
+
+        def _ffmpeg(args: list[str], timeout: int = 1800) -> subprocess.CompletedProcess:
+            return subprocess.run(["ffmpeg", "-y", *args], capture_output=True, timeout=timeout)
+
+        # stream copy primeiro (partes usam o mesmo preset do montador); re-encode como fallback
+        result = _ffmpeg(["-f", "concat", "-safe", "0", "-i", str(concat_list), "-c", "copy", str(base_out)])
+        if result.returncode != 0 or not base_out.exists() or base_out.stat().st_size == 0:
+            db.update_job(job_id, status="running", message="Stream copy falhou; re-encodando")
+            result = _ffmpeg(
+                ["-f", "concat", "-safe", "0", "-i", str(concat_list),
+                 "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-an", str(base_out)],
+                timeout=3600,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"FFmpeg concat falhou: {result.stderr.decode(errors='replace')[:400]}")
+
+        master_name = ""
+        narration = find_input_media(project_id, "narration")
+        if narration:
+            db.update_job(job_id, status="running", message="Adicionando narracao ao master")
+            master_out = out_dir / kaggle_service.MASTER_VIDEO_NAME
+            result = _ffmpeg(
+                ["-i", str(base_out), "-i", str(narration),
+                 "-c:v", "copy", "-c:a", "aac", "-map", "0:v:0", "-map", "1:a:0",
+                 "-shortest", str(master_out)],
+            )
+            if result.returncode == 0 and master_out.exists() and master_out.stat().st_size > 0:
+                master_name = master_out.name
+            else:
+                logger.warning("mux de narracao falhou: %s", result.stderr.decode(errors="replace")[:300])
+
+        concat_list.unlink(missing_ok=True)
+        db.finish_job(
+            job_id,
+            "Video final concatenado" + (" com narracao" if master_name else ""),
+            {"base": base_out.name, "master": master_name, "parts": len(videos)},
+        )
+    except Exception as exc:  # noqa: BLE001
+        db.fail_job(job_id, "Falha na concatenacao", str(exc))
+
+
+@app.post("/projects/{project_id}/concat-parts")
+def concat_parts(
+    request: Request,
+    project_id: int,
+    background_tasks: BackgroundTasks,
+    csrf_token: str = Form(""),
+):
+    user = require_user(request)
+    verify_csrf(request, csrf_token)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    parts = db.list_parts(project_id)
+    if not parts:
+        raise HTTPException(400, "Projeto sem partes.")
+    not_done = [str(p["part_idx"]) for p in parts if p["status"] != "done"]
+    if not_done:
+        raise HTTPException(400, f"Renderize todas as partes antes de concatenar. Faltam: {', '.join(not_done)}")
+    for kind in ("kaggle_parts", "concat_parts"):
+        ensure_no_active_job(project_id, kind)
+    job_id = db.create_job(user["id"], "concat_parts", project_id, "Concatenacao na fila")
+    background_tasks.add_task(run_concat_job, job_id, project_id, user["id"])
+    return JSONResponse({"job_id": job_id, "message": "Concatenacao iniciada."})
+
+
+@app.get("/projects/{project_id}/parts-status")
+def parts_status(request: Request, project_id: int):
+    user = require_user(request)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    jobs = db.list_project_jobs(project_id, user["id"])
+    active = next(
+        (j for j in jobs if j["kind"] in {"kaggle_parts", "concat_parts"} and j["status"] in {"queued", "running"}),
+        None,
+    )
+    outputs = local_output_videos(project_work_dir(project_id))
+    return JSONResponse({
+        "parts": db.list_parts(project_id),
+        "active_job": {"id": active["id"], "kind": active["kind"], "message": active.get("message", "")} if active else None,
+        "kaggle_username": user.get("kaggle_username", ""),
+        "has_base_video": outputs["base"] is not None,
+        "has_master_video": outputs["master"] is not None,
+    })
 
 
 @app.get("/jobs/{job_id}")
