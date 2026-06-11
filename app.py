@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import hmac
+import logging
 import os
 import re
 import secrets
@@ -63,6 +64,11 @@ ALLOW_REGISTRATION = os.getenv("ALLOW_REGISTRATION", "1" if APP_ENV != "producti
 }
 ALLOW_FIRST_USER = os.getenv("ALLOW_FIRST_USER", "1").strip().lower() in {"1", "true", "yes", "on"}
 INVITE_CODE = os.getenv("INVITE_CODE", "").strip()
+STATIC_VERSION = (
+    os.getenv("STATIC_VERSION")
+    or os.getenv("RAILWAY_GIT_COMMIT_SHA", "")[:12]
+    or "20260611-curation-fix"
+)
 
 
 def _require_secret() -> str:
@@ -164,8 +170,15 @@ def normalize_project_config(raw_config: Optional[dict] = None) -> dict:
 # ------------------------------------------------------------------
 # App
 # ------------------------------------------------------------------
+logger = logging.getLogger("nwrch.app")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
     # garante pastas e banco antes de servir qualquer request
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     WORK_DIR.mkdir(parents=True, exist_ok=True)
@@ -174,7 +187,7 @@ async def lifespan(_app: FastAPI):
     db.init_db()
     stale = db.fail_stale_jobs()
     if stale:
-        print(f"[startup] {stale} job(s) pendentes de processo anterior marcados como erro")
+        logger.warning("%s job(s) pendentes de processo anterior marcados como erro", stale)
     yield
 
 
@@ -204,6 +217,32 @@ _static_dir.mkdir(exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 templates = Jinja2Templates(directory=str(ROOT / "templates"))
+
+# Labels de status em PT-BR para a UI (o valor cru segue nas classes CSS/data-attrs)
+STATUS_LABELS = {
+    "created": "Criado",
+    "mapping": "Mapeando roteiro...",
+    "mapped": "Mapa visual pronto",
+    "map_failed": "Falha no mapa visual",
+    "searching": "Buscando assets...",
+    "searched": "Assets buscados",
+    "search_failed": "Falha na busca",
+    "auto_selecting": "Selecionando takes...",
+    "reviewing": "Em revisão",
+    "researching": "Buscando melhores...",
+    "reviewed": "Revisão concluída",
+    "packaging": "Gerando pacote...",
+    "packaged": "Pacote pronto",
+    "package_failed": "Falha no pacote",
+    "needs_package": "Repacotar",
+}
+
+
+def status_label(status: str) -> str:
+    return STATUS_LABELS.get(status or "", status or "—")
+
+
+templates.env.globals["status_label"] = status_label
 
 
 def csrf_token_for(request: Request) -> str:
@@ -244,6 +283,7 @@ def render_template(
     payload = dict(context or {})
     payload.setdefault("csrf_token", csrf_token_for(request))
     payload.setdefault("registration", registration_state())
+    payload.setdefault("static_version", STATIC_VERSION)
     return templates.TemplateResponse(request, template_name, payload, status_code=status_code)
 
 
@@ -263,7 +303,7 @@ def secret_from_form(current: str, submitted: str, clear: str = "") -> str:
     return submitted if submitted else (current or "")
 
 
-async def read_upload_limited(upload: UploadFile, max_bytes: int, label: str = "arquivo") -> bytes:
+async def read_upload_limited(upload: UploadFile, max_bytes: int, what: str = "Arquivo") -> bytes:
     chunks: list[bytes] = []
     total = 0
     while True:
@@ -272,8 +312,7 @@ async def read_upload_limited(upload: UploadFile, max_bytes: int, label: str = "
             break
         total += len(chunk)
         if total > max_bytes:
-            detail = label if "maximo" in label.lower() or "máximo" in label.lower() else f"{label} muito grande."
-            raise HTTPException(400, detail)
+            raise HTTPException(400, f"{what} muito grande — máximo {max_bytes // (1024 * 1024)} MB.")
         chunks.append(chunk)
     return b"".join(chunks)
 
@@ -378,6 +417,14 @@ def mark_project_dirty(project_id: int, include_generated: bool = False) -> None
 def ensure_project_not_busy(project: dict) -> None:
     if project.get("status") in BUSY_PROJECT_STATUSES:
         raise HTTPException(409, "Aguarde o job atual terminar antes de alterar este projeto.")
+    if project.get("kaggle_status") == "uploading":
+        raise HTTPException(409, "Upload ao Kaggle em andamento; aguarde terminar antes de alterar o projeto.")
+
+
+def ensure_no_active_job(project_id: int, kind: str) -> None:
+    """Evita jobs duplicados quando dois POSTs chegam quase juntos (duplo clique)."""
+    if db.has_active_job(project_id, kind):
+        raise HTTPException(409, "Esse passo ja esta em execucao. Aguarde o job atual terminar.")
 
 
 def expected_duration_from_scenes(scenes: list[dict]) -> float:
@@ -519,10 +566,14 @@ def run_kaggle_send_job(
     token: str,
     zip_path_str: str,
 ) -> None:
-    zip_path = Path(zip_path_str)
     try:
         db.update_job(job_id, status="running", message="Enviando dataset para o Kaggle")
-        ds_slug = kaggle_service.upload_dataset(zip_path, project_name, username, token, project_id=project_id)
+        # copia o ZIP antes do upload: mark_project_dirty pode apagar o original
+        # se o usuario alterar o projeto enquanto o envio roda em background
+        with tempfile.TemporaryDirectory(prefix="nwrch_kaggle_") as tmp:
+            zip_path = Path(tmp) / Path(zip_path_str).name
+            shutil.copy2(zip_path_str, zip_path)
+            ds_slug = kaggle_service.upload_dataset(zip_path, project_name, username, token, project_id=project_id)
         db.update_job(
             job_id,
             status="running",
@@ -740,13 +791,7 @@ async def transcribe_audio(
     verify_csrf(request, csrf_token)
     if not user.get("groq_key"):
         raise HTTPException(400, "Configure a chave Groq em /settings para usar transcrição.")
-    raw = await read_upload_limited(
-        audio,
-        MAX_TRANSCRIBE_UPLOAD_MB * 1024 * 1024,
-        f"Arquivo muito grande (maximo {MAX_TRANSCRIBE_UPLOAD_MB} MB para upload)",
-    )
-    if len(raw) > MAX_TRANSCRIBE_UPLOAD_MB * 1024 * 1024:
-        raise HTTPException(400, f"Arquivo muito grande (máximo {MAX_TRANSCRIBE_UPLOAD_MB} MB para upload).")
+    raw = await read_upload_limited(audio, MAX_TRANSCRIBE_UPLOAD_MB * 1024 * 1024)
     try:
         data, fname = _extract_audio_bytes(raw, audio.filename or "audio.mp4")
         transcript = groq_service.transcribe_audio(data, fname, user["groq_key"])
@@ -790,11 +835,7 @@ async def new_project(
     verify_csrf(request, csrf_token)
     prepared_narration: Optional[tuple[bytes, str]] = None
     if narration_media and narration_media.filename:
-        raw = await read_upload_limited(
-            narration_media,
-            MAX_TRANSCRIBE_UPLOAD_MB * 1024 * 1024,
-            f"Arquivo muito grande (maximo {MAX_TRANSCRIBE_UPLOAD_MB} MB para upload)",
-        )
+        raw = await read_upload_limited(narration_media, MAX_TRANSCRIBE_UPLOAD_MB * 1024 * 1024, "Narração")
         if raw:
             prepared_narration = prepare_narration_media(raw, narration_media.filename)
     config = normalize_project_config({
@@ -929,6 +970,7 @@ def generate_map(
     ensure_project_not_busy(project)
     if not (project.get("script") or "").strip():
         raise HTTPException(400, "Roteiro vazio ou invalido.")
+    ensure_no_active_job(project_id, "generate_map")
     job_id = db.create_job(user["id"], "generate_map", project_id, "Mapa visual na fila")
     db.set_project_status(project_id, "mapping")
     background_tasks.add_task(
@@ -1011,6 +1053,7 @@ def search_all(
     scenes = db.list_scenes(project_id)
     if not scenes:
         raise HTTPException(400, "Gere o mapa visual antes de buscar assets.")
+    ensure_no_active_job(project_id, "search_assets")
     job_id = db.create_job(user["id"], "search_assets", project_id, "Busca de assets na fila")
     db.set_project_status(project_id, "searching")
     background_tasks.add_task(
@@ -1189,15 +1232,9 @@ async def save_generated_image(
     if not project:
         raise HTTPException(404)
     ensure_project_not_busy(project)
-    data = await read_upload_limited(
-        image,
-        MAX_GENERATED_UPLOAD_MB * 1024 * 1024,
-        f"Imagem muito grande (maximo {MAX_GENERATED_UPLOAD_MB} MB)",
-    )
+    data = await read_upload_limited(image, MAX_GENERATED_UPLOAD_MB * 1024 * 1024, "Imagem")
     if not data:
         raise HTTPException(400, "Imagem vazia.")
-    if len(data) > MAX_GENERATED_UPLOAD_MB * 1024 * 1024:
-        raise HTTPException(400, f"Imagem muito grande (maximo {MAX_GENERATED_UPLOAD_MB} MB).")
     try:
         ext, parsed_w, parsed_h = _image_kind_and_size(data)
     except ValueError as exc:
@@ -1279,11 +1316,7 @@ async def upload_media(
     suffix = Path(media.filename or "").suffix.lower()
     if suffix not in exts:
         raise HTTPException(400, f"Extensao nao suportada para {kind}: use {', '.join(sorted(exts))}.")
-    data = await read_upload_limited(
-        media,
-        MAX_MEDIA_UPLOAD_MB * 1024 * 1024,
-        f"Arquivo muito grande (maximo {MAX_MEDIA_UPLOAD_MB} MB)",
-    )
+    data = await read_upload_limited(media, MAX_MEDIA_UPLOAD_MB * 1024 * 1024)
     save_input_media_bytes(project_id, kind, data, suffix)
     mark_project_dirty(project_id)
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
@@ -1398,6 +1431,7 @@ def package(
             400,
             f"Selecione um asset para todas as cenas antes de gerar o pacote. Faltando: {preview}{suffix}",
         )
+    ensure_no_active_job(project_id, "package")
     job_id = db.create_job(user["id"], "package", project_id, "Preparando pacote ZIP")
     db.set_project_status(project_id, "packaging")
     background_tasks.add_task(
@@ -1487,7 +1521,7 @@ def project_jobs(request: Request, project_id: int):
     project = db.get_project(project_id, user["id"])
     if not project:
         raise HTTPException(404)
-    return JSONResponse({"jobs": db.list_project_jobs(project_id, user["id"])})
+    return JSONResponse({"project_status": project.get("status", ""), "jobs": db.list_project_jobs(project_id, user["id"])})
 
 
 @app.get("/projects/{project_id}/diagnostics.json")

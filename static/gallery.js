@@ -1,5 +1,40 @@
 // Galeria interativa do NWRCH Studio.
 
+// ------------------------------------------------------------------
+// Toasts (substituem alert(): nao bloqueiam e somem sozinhos)
+// ------------------------------------------------------------------
+function notify(message, type) {
+  let host = document.getElementById("toast-host");
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "toast-host";
+    document.body.appendChild(host);
+  }
+  const toast = document.createElement("div");
+  toast.className = "toast toast-" + (type || "info");
+  toast.textContent = message;
+  host.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add("is-visible"));
+  setTimeout(() => {
+    toast.classList.remove("is-visible");
+    setTimeout(() => toast.remove(), 400);
+  }, 5000);
+}
+
+async function getJSON(url) {
+  const res = await fetch(url, { headers: { accept: "application/json" } });
+  if (res.status === 401) {
+    location.href = "/login?next=" + encodeURIComponent(location.pathname);
+    throw new Error("sessao expirada");
+  }
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try { const j = await res.json(); msg = j.detail || j.error || msg; } catch (_) {}
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
 async function postForm(url, data) {
   const body = new URLSearchParams(data || {});
   const token = csrfToken();
@@ -45,7 +80,7 @@ async function setState(assetId, state) {
       updateSelectedCount();
     }
   } catch (e) {
-    alert("Falha ao atualizar: " + e.message);
+    notify("Falha ao atualizar: " + e.message, "error");
   }
 }
 
@@ -58,8 +93,8 @@ function updateSelectedCount() {
     if (sec.querySelector(".take.is-selected")) selected++;
   });
   const statusBadge = document.querySelector(".head-status .badge");
-  const status = statusBadge ? statusBadge.textContent.trim().toLowerCase() : "";
-  const busy = ["mapping", "searching", "packaging"].includes(status);
+  const status = statusBadge ? (statusBadge.dataset.status || statusBadge.textContent).trim().toLowerCase() : "";
+  const busy = BUSY_PROJECT_STATUSES.includes(status);
   // atualiza o texto do step no pipeline
   const nameSpan = btn.querySelector(".step-name");
   if (nameSpan) nameSpan.textContent = `Pacote (${selected}/${total})`;
@@ -73,12 +108,17 @@ async function searchMore(sceneId, btn, media) {
   try {
     const res = await postForm(`/scenes/${sceneId}/search-more`, { media: media || "all" });
     btn.textContent = `+${res.added} novos`;
-    if (res.added > 0) setTimeout(() => location.reload(), 600);
-    else setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 1200);
+    if (res.added > 0) {
+      notify(`+${res.added} takes adicionados — recarregando...`, "ok");
+      setTimeout(() => location.reload(), 600);
+    } else {
+      notify("Nenhum take novo encontrado. Tente outras keywords.", "info");
+      setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 1200);
+    }
   } catch (e) {
     btn.textContent = original;
     btn.disabled = false;
-    alert("Falha na busca: " + e.message);
+    notify("Falha na busca: " + e.message, "error");
   }
 }
 
@@ -138,7 +178,7 @@ async function generateImage(sceneId, btn) {
   const status = document.getElementById("gen-status-" + sceneId);
   const prompt = (promptEl ? promptEl.value : "").trim();
   if (!prompt) {
-    alert("Escreva um prompt antes de gerar.");
+    notify("Escreva um prompt antes de gerar.", "info");
     return;
   }
   if (btn.disabled) return; // protege contra clique duplo
@@ -188,7 +228,7 @@ async function generateImage(sceneId, btn) {
     if (/popup|blocked|window/i.test(msg)) {
       msg += " — permita popups neste site para o login do Puter.";
     }
-    alert("Falha ao gerar imagem: " + msg);
+    notify("Falha ao gerar imagem: " + msg, "error");
   }
 }
 
@@ -291,8 +331,7 @@ function startJobPolling(jobId, projectId, btn) {
   let failures = 0;
   const tick = async () => {
     try {
-      const res = await fetch(`/jobs/${jobId}`);
-      const job = await res.json();
+      const job = await getJSON(`/jobs/${jobId}`);
       failures = 0;
       renderJob(job);
       if (job.status === "complete") {
@@ -322,16 +361,24 @@ function startJobPolling(jobId, projectId, btn) {
 
 function startKagglePolling(projectId) {
   if (_kagglePolling) clearInterval(_kagglePolling);
+  let failures = 0;
   const tick = async () => {
     try {
-      const res = await fetch(`/projects/${projectId}/kaggle-status`);
-      const data = await res.json();
+      const data = await getJSON(`/projects/${projectId}/kaggle-status`);
+      failures = 0;
       renderKaggleState(data);
       if (["complete", "error", "cancelacknowledged"].includes((data.status || "").toLowerCase())) {
         clearInterval(_kagglePolling);
         _kagglePolling = null;
       }
-    } catch (_) {}
+    } catch (e) {
+      failures += 1;
+      if (failures >= 5) {
+        renderKaggleState({ status: "error", error: "monitor falhou: " + e.message });
+        clearInterval(_kagglePolling);
+        _kagglePolling = null;
+      }
+    }
   };
   tick();
   _kagglePolling = setInterval(tick, 20000);
@@ -357,14 +404,33 @@ async function validateOutput(projectId, btn) {
     const data = await postForm(`/projects/${projectId}/validate-output`, {});
     renderValidation(data);
   } catch (e) {
-    alert("Falha na validacao: " + e.message);
+    notify("Falha na validação: " + e.message, "error");
   } finally {
     if (btn) { btn.textContent = old; btn.disabled = false; }
   }
 }
 
+// Evita duplo submit nos forms do pipeline (data-busy-submit).
+function initBusySubmitForms() {
+  document.querySelectorAll("form[data-busy-submit]").forEach((form) => {
+    form.addEventListener("submit", (e) => {
+      if (form.dataset.busy) { e.preventDefault(); return; }
+      form.dataset.busy = "1";
+      const btn = form.querySelector('button[type="submit"]');
+      if (btn) {
+        btn.classList.add("is-busy");
+        const name = btn.querySelector(".step-name");
+        if (name) name.textContent = "Processando...";
+        // desabilitar sincronamente cancelaria o submit em alguns browsers
+        setTimeout(() => { btn.disabled = true; }, 0);
+      }
+    });
+  });
+}
+
 // Inicia polling se já tinha kernel rodando ao carregar a página.
 document.addEventListener("DOMContentLoaded", () => {
+  initBusySubmitForms();
   const bar = document.getElementById("kaggle-status-bar");
   const txt = document.getElementById("kaggle-status-text");
   if (bar && txt && bar.style.display !== "none") {
@@ -377,23 +443,33 @@ document.addEventListener("DOMContentLoaded", () => {
   startProjectJobRefresh();
 });
 
+const BUSY_PROJECT_STATUSES = ["mapping", "searching", "packaging", "auto_selecting", "researching"];
+
 function startProjectJobRefresh() {
   const projectId = window.NWRCH_PROJECT_ID;
   if (!projectId) return;
   const statusBadge = document.querySelector(".head-status .badge");
-  const current = statusBadge ? statusBadge.textContent.trim().toLowerCase() : "";
-  if (!["mapping", "searching", "packaging"].includes(current)) return;
+  const current = statusBadge ? (statusBadge.dataset.status || statusBadge.textContent).trim().toLowerCase() : "";
+  if (!BUSY_PROJECT_STATUSES.includes(current)) return;
   let ticks = 0;
+  let failures = 0;
   const poll = async () => {
     ticks += 1;
     try {
-      const res = await fetch(`/projects/${projectId}/jobs`);
-      const data = await res.json();
-      const active = (data.jobs || []).some((job) => ["queued", "running"].includes(job.status));
-      if (!active || ticks > 240) location.reload();
+      const data = await getJSON(`/projects/${projectId}/jobs`);
+      failures = 0;
+      const status = (data.project_status || "").toLowerCase();
+      const activeJob = (data.jobs || []).find((job) => ["queued", "running"].includes(job.status));
+      if (statusBadge && activeJob && activeJob.message) {
+        statusBadge.textContent = activeJob.message;
+      }
+      const busy = BUSY_PROJECT_STATUSES.includes(status);
+      if (!busy || ticks > 240) location.reload();
       else setTimeout(poll, 2500);
-    } catch (_) {
-      if (ticks < 8) setTimeout(poll, 4000);
+    } catch (e) {
+      failures += 1;
+      if (failures < 5) setTimeout(poll, 4000);
+      else notify("Perdi contato com o servidor durante o processamento: " + e.message, "error");
     }
   };
   setTimeout(poll, 1200);
@@ -425,6 +501,6 @@ async function regenKeywords(sceneId) {
     }
   } catch (e) {
     metaKws.forEach((el, i) => { el.textContent = old.split(", ")[i] || el.textContent; });
-    alert("Falha ao gerar keywords: " + e.message);
+    notify("Falha ao gerar keywords: " + e.message, "error");
   }
 }

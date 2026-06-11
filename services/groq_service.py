@@ -9,6 +9,7 @@ fallback heuristico (PT->EN) para nao travar o fluxo no MVP.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Optional
 
@@ -16,9 +17,12 @@ import requests
 
 from .script_parser import remove_accents
 
+logger = logging.getLogger("nwrch.groq")
+
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 DEFAULT_MODEL = "llama-3.3-70b-versatile"
+BRIEF_BATCH_SIZE = 40  # cenas por chamada; roteiros longos estouram o contexto num prompt unico
 GROQ_MODELS = [
     ("llama-3.3-70b-versatile", "Llama 3.3 70B — melhor qualidade (padrão)"),
     ("llama-3.1-8b-instant",    "Llama 3.1 8B Instant — mais rápido"),
@@ -147,31 +151,34 @@ def generate_briefs(
     by_id: dict[str, dict] = {}
 
     if groq_key:
-        try:
-            resp = requests.post(
-                GROQ_URL,
-                headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
-                json={
-                    "model": resolve_model(model),
-                    "messages": [
-                        {"role": "user", "content": _build_prompt(scenes, style, avatar_safe_area, safe_ratio)}
-                    ],
-                    "temperature": 0.3,
-                    "response_format": {"type": "json_object"},
-                },
-                timeout=180,
-            )
-            if resp.status_code < 400:
-                content = resp.json()["choices"][0]["message"]["content"]
-                data = json.loads(content)
-                for item in data.get("scenes", []):
-                    sid = item.get("scene_id")
-                    if sid:
-                        by_id[sid] = item
-            else:
-                print(f"[Groq] HTTP {resp.status_code}: {resp.text[:300]}")
-        except Exception as exc:  # noqa: BLE001 - fallback intencional
-            print(f"[Groq] erro, usando fallback: {exc}")
+        # em lotes: roteiros longos (100+ cenas) nao cabem numa unica resposta JSON
+        for start in range(0, len(scenes), BRIEF_BATCH_SIZE):
+            chunk = scenes[start:start + BRIEF_BATCH_SIZE]
+            try:
+                resp = requests.post(
+                    GROQ_URL,
+                    headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
+                    json={
+                        "model": resolve_model(model),
+                        "messages": [
+                            {"role": "user", "content": _build_prompt(chunk, style, avatar_safe_area, safe_ratio)}
+                        ],
+                        "temperature": 0.3,
+                        "response_format": {"type": "json_object"},
+                    },
+                    timeout=180,
+                )
+                if resp.status_code < 400:
+                    content = resp.json()["choices"][0]["message"]["content"]
+                    data = json.loads(content)
+                    for item in data.get("scenes", []):
+                        sid = item.get("scene_id")
+                        if sid:
+                            by_id[sid] = item
+                else:
+                    logger.warning("Groq HTTP %s: %s", resp.status_code, resp.text[:300])
+            except Exception as exc:  # noqa: BLE001 - fallback intencional
+                logger.warning("Groq erro, usando fallback para o lote %s+: %s", start, exc)
 
     briefs: list[dict] = []
     for scene in scenes:
@@ -277,5 +284,5 @@ def regenerate_keywords(
                 if kws:
                     return kws[:3]
         except Exception as exc:  # noqa: BLE001
-            print(f"[Groq] regenerate erro: {exc}")
+            logger.warning("Groq regenerate erro: %s", exc)
     return fallback_scene_brief({"scene_id": "x", "narration": narration}, style, "right")["keywords"]

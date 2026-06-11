@@ -18,6 +18,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
 import re
 import shutil
 import unicodedata
@@ -28,6 +29,8 @@ from typing import Optional
 from urllib.parse import urlparse
 
 import requests
+
+logger = logging.getLogger("nwrch.packager")
 
 DOWNLOAD_WORKERS = 4
 
@@ -58,21 +61,21 @@ def _copy_generated(asset: dict, work_dir: Path, dest: Path, max_bytes: int) -> 
     """
     name = Path(urlparse(asset.get("download_url", "")).path).name
     if not name or "/" in name or "\\" in name or ".." in name:
-        print(f"  [skip] nome de imagem gerada invalido: {name!r}")
+        logger.warning("skip: nome de imagem gerada invalido: %r", name)
         return False
     src = work_dir / "generated" / name
     try:
         if not src.is_file():
-            print(f"  [skip] imagem gerada nao encontrada no disco: {name}")
+            logger.warning("skip: imagem gerada nao encontrada no disco: %s", name)
             return False
         size = src.stat().st_size
         if size == 0 or size > max_bytes:
-            print(f"  [skip] imagem gerada vazia ou acima do limite: {name}")
+            logger.warning("skip: imagem gerada vazia ou acima do limite: %s", name)
             return False
         shutil.copyfile(src, dest)
         return dest.exists() and dest.stat().st_size > 0
     except Exception as exc:  # noqa: BLE001
-        print(f"  [copia gerada erro] {exc}")
+        logger.warning("copia de imagem gerada falhou: %s", exc)
         dest.unlink(missing_ok=True)
         return False
 
@@ -83,7 +86,7 @@ def _download(url: str, dest: Path, max_bytes: int) -> bool:
             resp.raise_for_status()
             total = int(resp.headers.get("content-length", 0) or 0)
             if total and total > max_bytes:
-                print(f"  [skip] {total/1024/1024:.0f}MB > limite")
+                logger.warning("skip: %.0fMB > limite", total / 1024 / 1024)
                 return False
             got = 0
             with open(dest, "wb") as f:
@@ -92,14 +95,14 @@ def _download(url: str, dest: Path, max_bytes: int) -> bool:
                         continue
                     got += len(chunk)
                     if got > max_bytes:
-                        print("  [skip] passou do limite no meio do download")
+                        logger.warning("skip: passou do limite no meio do download")
                         f.close()
                         dest.unlink(missing_ok=True)
                         return False
                     f.write(chunk)
         return dest.exists() and dest.stat().st_size > 0
     except Exception as exc:  # noqa: BLE001
-        print(f"  [download erro] {exc}")
+        logger.warning("download falhou: %s", exc)
         dest.unlink(missing_ok=True)
         return False
 
@@ -227,6 +230,7 @@ def build_zip(
     max_download_mb: int = 90,
     edit_plan: Optional[dict] = None,
     extra_files: Optional[list[Path]] = None,
+    zip_basename: str = "",
 ) -> Path:
     """Baixa assets selecionados, renomeia e monta o ZIP final. Retorna o caminho."""
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -247,7 +251,7 @@ def build_zip(
             continue
         filename = Path(gscene["selected_asset"]).name
         dest = tmp / filename
-        print(f"[zip] baixando {scene['scene_id']} <- {asset['source']} {asset.get('width')}x{asset.get('height')}")
+        logger.info("zip: baixando %s <- %s %sx%s", scene["scene_id"], asset["source"], asset.get("width"), asset.get("height"))
         jobs.append((scene, gscene, asset, filename, dest))
 
     def _fetch(job):
@@ -295,7 +299,7 @@ def build_zip(
             f"Faltando: {preview}{suffix}"
         )
 
-    safe_name = _slug(project["name"]) or "asset_pack"
+    safe_name = _slug(zip_basename or project["name"]) or "asset_pack"
     zip_path = work_dir / f"asset_pack_{safe_name}.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for scene_code, src in file_by_scene.items():

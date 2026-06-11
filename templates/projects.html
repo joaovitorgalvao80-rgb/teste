@@ -26,7 +26,7 @@
           <span class="project-name">{{ p.name }}</span>
         </a>
         <div class="project-meta">
-          <span class="badge status-{{ p.status }}">{{ p.status }}</span>
+          <span class="badge status-{{ p.status }}">{{ status_label(p.status) }}</span>
           {% if p.kaggle_status and p.kaggle_status not in ['', 'none'] %}
             <span class="tally tally-rec">kaggle · {{ p.kaggle_status }}</span>
           {% endif %}

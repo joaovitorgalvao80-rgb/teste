@@ -6,11 +6,14 @@ usuario vai rejeitar.
 """
 from __future__ import annotations
 
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import requests
+
+logger = logging.getLogger("nwrch.assets")
 
 PEXELS_VIDEO_URL = "https://api.pexels.com/v1/videos/search"
 PEXELS_IMAGE_URL = "https://api.pexels.com/v1/search"
@@ -56,10 +59,10 @@ def search_pexels_videos(keyword: str, key: str, max_w: int, per_page: int = 8) 
             timeout=REQUEST_TIMEOUT,
         )
     except Exception as exc:  # noqa: BLE001
-        print(f"[Pexels video] erro: {exc}")
+        logger.warning("Pexels video erro: %s", exc)
         return []
     if resp.status_code >= 400:
-        print(f"[Pexels video] HTTP {resp.status_code}: {resp.text[:160]}")
+        logger.warning("Pexels video HTTP %s: %s", resp.status_code, resp.text[:160])
         return []
     out = []
     for v in resp.json().get("videos", []):
@@ -97,10 +100,10 @@ def search_pixabay_videos(keyword: str, key: str, max_w: int, per_page: int = 8)
             timeout=REQUEST_TIMEOUT,
         )
     except Exception as exc:  # noqa: BLE001
-        print(f"[Pixabay video] erro: {exc}")
+        logger.warning("Pixabay video erro: %s", exc)
         return []
     if resp.status_code >= 400:
-        print(f"[Pixabay video] HTTP {resp.status_code}: {resp.text[:160]}")
+        logger.warning("Pixabay video HTTP %s: %s", resp.status_code, resp.text[:160])
         return []
     out = []
     for hit in resp.json().get("hits", []):
@@ -144,7 +147,7 @@ def search_pexels_images(keyword: str, key: str, per_page: int = 6) -> list[dict
             timeout=REQUEST_TIMEOUT,
         )
     except Exception as exc:  # noqa: BLE001
-        print(f"[Pexels image] erro: {exc}")
+        logger.warning("Pexels image erro: %s", exc)
         return []
     if resp.status_code >= 400:
         return []
@@ -182,7 +185,7 @@ def search_pixabay_images(keyword: str, key: str, per_page: int = 6) -> list[dic
             timeout=REQUEST_TIMEOUT,
         )
     except Exception as exc:  # noqa: BLE001
-        print(f"[Pixabay image] erro: {exc}")
+        logger.warning("Pixabay image erro: %s", exc)
         return []
     if resp.status_code >= 400:
         return []

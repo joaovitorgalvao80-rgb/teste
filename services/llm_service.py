@@ -9,9 +9,12 @@ segue funcionando sem IA.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Optional
 
 import requests
+
+logger = logging.getLogger("nwrch.llm")
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "openai/gpt-4o-mini"
@@ -107,12 +110,12 @@ def generate_scene_directives(
             timeout=120,
         )
         if resp.status_code >= 400:
-            print(f"[OpenRouter] HTTP {resp.status_code}: {resp.text[:300]}")
+            logger.warning("OpenRouter HTTP %s: %s", resp.status_code, resp.text[:300])
             return None
         content = resp.json()["choices"][0]["message"]["content"]
         data = json.loads(content)
     except Exception as exc:  # noqa: BLE001 - fallback intencional
-        print(f"[OpenRouter] erro, usando plano deterministico: {exc}")
+        logger.warning("OpenRouter erro, usando plano deterministico: %s", exc)
         return None
 
     directives: dict[str, dict] = {}

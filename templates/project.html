@@ -10,7 +10,7 @@
     <h1>{{ project.name }}</h1>
   </div>
   <div class="head-status">
-    <span class="badge status-{{ project.status }}">{{ project.status }}</span>
+    <span class="badge status-{{ project.status }}" data-status="{{ project.status }}">{{ status_label(project.status) }}</span>
     <span class="mini-stat"><strong>{{ scenes|length }}</strong>&nbsp;cenas</span>
     <span class="mini-stat"><strong>{{ selected_count }}</strong>&nbsp;selecionadas</span>
   </div>
@@ -19,14 +19,14 @@
 <!-- Pipeline -->
 <div class="panel" style="margin-bottom:var(--sp-5)">
   <div class="pipeline">
-    <form method="post" action="/projects/{{ project.id }}/generate-map" style="flex:1;display:contents">
+    <form method="post" action="/projects/{{ project.id }}/generate-map" style="flex:1;display:contents" data-busy-submit>
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button class="step {% if scenes %}is-done{% endif %}" type="submit">
         <span class="step-idx">01</span>
         <span class="step-name">Mapa visual</span>
       </button>
     </form>
-    <form method="post" action="/projects/{{ project.id }}/search" style="flex:1;display:contents">
+    <form method="post" action="/projects/{{ project.id }}/search" style="flex:1;display:contents" data-busy-submit>
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button class="step {% if project.status in ['searched','packaged','needs_package','packaging','package_failed'] %}is-done{% endif %}" type="submit"
               {% if not scenes or project.status in ['searching','packaging','mapping'] %}disabled{% endif %}>
@@ -34,7 +34,7 @@
         <span class="step-name">Buscar assets</span>
       </button>
     </form>
-    <form method="post" action="/projects/{{ project.id }}/package" style="flex:1;display:contents">
+    <form method="post" action="/projects/{{ project.id }}/package" style="flex:1;display:contents" data-busy-submit>
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button class="step {% if project.status == 'packaged' %}is-done{% endif %}" id="btn-package" type="submit"
               {% if scenes|length == 0 or selected_count != scenes|length or project.status in ['mapping','searching','packaging'] %}disabled{% endif %}>

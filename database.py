@@ -446,6 +446,24 @@ def fail_stale_jobs() -> int:
         conn.close()
 
 
+def has_active_job(project_id: int, kind: Optional[str] = None) -> bool:
+    """True se o projeto tem job 'queued'/'running' (opcionalmente do mesmo kind).
+
+    Protege contra duplo clique: dois POSTs podem chegar antes de o status
+    do projeto virar busy.
+    """
+    conn = _connect()
+    try:
+        sql = "SELECT 1 FROM jobs WHERE project_id = ? AND status IN ('queued','running')"
+        params: list[Any] = [project_id]
+        if kind:
+            sql += " AND kind = ?"
+            params.append(kind)
+        return conn.execute(sql + " LIMIT 1", params).fetchone() is not None
+    finally:
+        conn.close()
+
+
 def get_job(job_id: int, user_id: int) -> Optional[dict]:
     conn = _connect()
     try:
