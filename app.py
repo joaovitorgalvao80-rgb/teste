@@ -1295,7 +1295,9 @@ def asset_state(
     updated = db.set_asset_state(asset_id, state)
     if not updated:
         raise HTTPException(404)
-    mark_project_dirty(owner["project_id"])
+    # durante revisão não há pacote para invalidar; evita remover artefatos desnecessariamente
+    if project.get("status") not in {"reviewing", "reviewed"}:
+        mark_project_dirty(owner["project_id"])
     return JSONResponse({"id": asset_id, "state": updated["state"]})
 
 

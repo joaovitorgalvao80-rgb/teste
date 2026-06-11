@@ -66,11 +66,11 @@
           <p class="review-reason">IA: {{ a.auto_reason }}</p>
         {% endif %}
         <div class="review-actions">
-          <button class="btn btn-primary btn-sm review-accept" onclick="reviewDecision({{ scene.id }}, {{ a.id }}, 'accepted', this)"
+          <button type="button" class="btn btn-primary btn-sm review-accept" onclick="reviewDecision({{ scene.id }}, {{ a.id }}, 'accepted', this)"
                   {% if a.state == 'accepted' %}disabled{% endif %}>
             {% if a.state == 'accepted' %}✓ Aceito{% else %}Aceitar{% endif %}
           </button>
-          <button class="btn btn-danger btn-sm review-reject" onclick="reviewDecision({{ scene.id }}, {{ a.id }}, 'rejected', this)">
+          <button type="button" class="btn btn-danger btn-sm review-reject" onclick="reviewDecision({{ scene.id }}, {{ a.id }}, 'rejected', this)">
             Rejeitar
           </button>
           <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}#scene-{{ scene.id }}">ver alternativas</a>
