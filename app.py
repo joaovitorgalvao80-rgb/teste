@@ -185,7 +185,18 @@ app.add_middleware(
     secret_key=_require_secret(),
     max_age=60 * 60 * 24 * 7,
     https_only=APP_ENV == "production",
+    same_site="lax",
 )
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    return response
 
 # static/ e criada antes do mount para evitar crash na inicializacao
 _static_dir = ROOT / "static"

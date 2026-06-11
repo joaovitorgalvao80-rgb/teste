@@ -1148,6 +1148,15 @@ class HardeningAndOptimizationTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 303)
         self.assertTrue(resp.headers["location"].startswith("/login"))
 
+    def test_security_headers_are_set(self) -> None:
+        with TestClient(webapp.app) as client:
+            resp = client.get("/login")
+
+        self.assertEqual(resp.headers["x-content-type-options"], "nosniff")
+        self.assertEqual(resp.headers["referrer-policy"], "same-origin")
+        self.assertEqual(resp.headers["x-frame-options"], "DENY")
+        self.assertIn("camera=()", resp.headers["permissions-policy"])
+
     def test_verify_password_handles_corrupted_hash(self) -> None:
         self.assertFalse(db.verify_password("x", "sem-separador"))
         self.assertFalse(db.verify_password("x", "nao-hex$abc"))
