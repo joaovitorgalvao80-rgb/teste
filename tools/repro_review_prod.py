@@ -163,6 +163,7 @@ with client:
     token = meta_csrf(r.text)
     r = client.post(f"/projects/{pid}/finish-review", data={"csrf_token": token})
     must(r.status_code == 303, f"concluir revisao com 3 aceitos (HTTP {r.status_code})")
+    must(r.headers["location"] == f"/projects/{pid}", "concluir revisao leva ao console do projeto")
     report_path = app_module.curation_report_path(pid)
     must(db.get_project(pid, 1)["status"] == "reviewed", "status reviewed apos concluir")
     must(report_path.exists(), "relatorio criado apos concluir")
@@ -170,6 +171,8 @@ with client:
     r = client.get(f"/projects/{pid}/review")
     token = meta_csrf(r.text)
     must("curation-report" in r.text, "relatorio aparece somente quando revisao esta concluida")
+    must("Gerar pacote" in r.text and "/package" in r.text, "revisao concluida mostra o proximo passo: gerar pacote")
+    must(f"/projects/{pid}/finish-review" not in r.text, "revisao concluida nao repete o botao concluir")
     r = client.post(
         f"/assets/{aid3}/state",
         data={

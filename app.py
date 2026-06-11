@@ -1301,18 +1301,21 @@ def asset_state(
     if not updated:
         raise HTTPException(404)
     status = project.get("status")
+    project_status = status
     if status == "reviewed":
         # Changing a take after finishing makes the review report stale.
         db.set_project_status(owner["project_id"], "reviewing")
         curation_report_path(owner["project_id"]).unlink(missing_ok=True)
+        project_status = "reviewing"
     elif status != "reviewing":
         # Outside review, invalidate any existing package as before.
         mark_project_dirty(owner["project_id"])
         curation_report_path(owner["project_id"]).unlink(missing_ok=True)
+        project_status = "needs_package"
     # Native form fallback sends redirect; fetch-based JS does not.
     if redirect and redirect.startswith("/") and not redirect.startswith("//"):
         return RedirectResponse(redirect, status_code=303)
-    return JSONResponse({"id": asset_id, "state": updated["state"]})
+    return JSONResponse({"id": asset_id, "state": updated["state"], "project_status": project_status})
 
 
 # ------------------------------------------------------------------
@@ -1532,6 +1535,8 @@ def finish_review(request: Request, project_id: int, csrf_token: str = Form(""))
     if not project:
         raise HTTPException(404)
     ensure_project_not_busy(project)
+    if project.get("status") == "reviewed" and curation_report_path(project_id).exists():
+        return RedirectResponse(f"/projects/{project_id}", status_code=303)
     scenes = db.list_scenes(project_id)
     if not scenes:
         raise HTTPException(400, "Projeto sem cenas.")
@@ -1565,7 +1570,7 @@ def finish_review(request: Request, project_id: int, csrf_token: str = Form(""))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(report, encoding="utf-8")
     db.set_project_status(project_id, "reviewed")
-    return RedirectResponse(f"/projects/{project_id}/review", status_code=303)
+    return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
 @app.get("/projects/{project_id}/curation-report")

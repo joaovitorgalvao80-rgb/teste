@@ -1447,6 +1447,32 @@ class HardeningAndOptimizationTest(unittest.TestCase):
         self.assertFalse(stale_zip.exists())
         self.assertFalse(out_dir.exists())
 
+    def test_finished_review_advances_to_package_step(self) -> None:
+        with TestClient(webapp.app) as client:
+            uid, project_id, scene = self._project_with_scene("review-next")
+            db.add_assets(scene["id"], [{"source": "pexels", "download_url": "https://example.com/a.mp4"}])
+            asset = db.list_assets(scene["id"])[0]
+            db.set_asset_state(asset["id"], "accepted")
+            client.post(
+                "/login",
+                data={"username": "review-next", "password": "password123"},
+                follow_redirects=False,
+            )
+
+            resp = client.post(f"/projects/{project_id}/finish-review", follow_redirects=False)
+            review = client.get(f"/projects/{project_id}/review")
+            repeat = client.post(f"/projects/{project_id}/finish-review", follow_redirects=False)
+
+        self.assertEqual(resp.status_code, 303)
+        self.assertEqual(resp.headers["location"], f"/projects/{project_id}")
+        self.assertEqual(db.get_project(project_id, uid)["status"], "reviewed")
+        self.assertTrue(webapp.curation_report_path(project_id).exists())
+        self.assertIn(f'action="/projects/{project_id}/package"', review.text)
+        self.assertIn("Gerar pacote", review.text)
+        self.assertNotIn(f'action="/projects/{project_id}/finish-review"', review.text)
+        self.assertEqual(repeat.status_code, 303)
+        self.assertEqual(repeat.headers["location"], f"/projects/{project_id}")
+
     def test_reviewed_asset_change_reopens_review_and_invalidates_report(self) -> None:
         with TestClient(webapp.app) as client:
             uid, project_id, scene = self._project_with_scene("review-dirty")

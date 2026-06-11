@@ -100,7 +100,7 @@
 </div>
 
 <!-- Barra fixa de progresso da revisão -->
-<div class="review-bar" id="review-bar">
+<div class="review-bar" id="review-bar" data-project-status="{{ project.status }}">
   <div class="review-bar-stats">
     <span class="tally tally-ok"><span id="rv-accepted">{{ accepted }}</span>&nbsp;aceitas</span>
     <span class="tally tally-warn"><span id="rv-pending">{{ pending_review }}</span>&nbsp;a revisar</span>
@@ -118,13 +118,27 @@
         Buscar melhores para as rejeitadas
       </button>
     </form>
-    <form method="post" action="/projects/{{ project.id }}/finish-review" data-busy-submit style="display:inline">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button class="btn btn-primary btn-sm" id="btn-finish-review" type="submit"
-              {% if accepted != total %}disabled{% endif %}>
-        Concluir revisão{% if accepted != total %} ({{ accepted }}/{{ total }}){% endif %}
-      </button>
-    </form>
+    {% if project.status in ['reviewed', 'needs_package', 'package_failed'] %}
+      <form method="post" action="/projects/{{ project.id }}/package" data-busy-submit style="display:inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="btn btn-primary btn-sm" id="btn-package-review" type="submit"
+                {% if accepted != total %}disabled{% endif %}>
+          Gerar pacote
+        </button>
+      </form>
+    {% elif project.status == 'packaging' %}
+      <a class="btn btn-primary btn-sm" href="/projects/{{ project.id }}">Ver pacote em andamento</a>
+    {% elif project.status == 'packaged' %}
+      <a class="btn btn-primary btn-sm" href="/projects/{{ project.id }}">Ir para render</a>
+    {% else %}
+      <form method="post" action="/projects/{{ project.id }}/finish-review" data-busy-submit style="display:inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="btn btn-primary btn-sm" id="btn-finish-review" type="submit"
+                {% if accepted != total %}disabled{% endif %}>
+          Concluir revisão{% if accepted != total %} ({{ accepted }}/{{ total }}){% endif %}
+        </button>
+      </form>
+    {% endif %}
   </div>
 </div>
 
@@ -154,7 +168,12 @@ async function reviewDecision(sceneId, assetId, state, btn) {
   const card = document.getElementById("review-" + sceneId);
   if (btn) btn.disabled = true;
   try {
-    await postForm(`/assets/${assetId}/state`, { state });
+    const res = await postForm(`/assets/${assetId}/state`, { state });
+    const bar = document.getElementById("review-bar");
+    if (bar && res.project_status && res.project_status !== bar.dataset.projectStatus) {
+      location.reload();
+      return;
+    }
     const stateEl = document.getElementById("review-state-" + sceneId);
     const acceptBtn = card.querySelector(".review-accept");
     const rejectBtn = card.querySelector(".review-reject");
