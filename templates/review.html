@@ -66,13 +66,24 @@
           <p class="review-reason">IA: {{ a.auto_reason }}</p>
         {% endif %}
         <div class="review-actions">
-          <button type="button" class="btn btn-primary btn-sm review-accept" onclick="reviewDecision({{ scene.id }}, {{ a.id }}, 'accepted', this)"
-                  {% if a.state == 'accepted' %}disabled{% endif %}>
-            {% if a.state == 'accepted' %}✓ Aceito{% else %}Aceitar{% endif %}
-          </button>
-          <button type="button" class="btn btn-danger btn-sm review-reject" onclick="reviewDecision({{ scene.id }}, {{ a.id }}, 'rejected', this)">
-            Rejeitar
-          </button>
+          {# Real forms work without JS; JS intercepts them and uses fetch. #}
+          <form method="post" action="/assets/{{ a.id }}/state" class="review-decision"
+                data-scene="{{ scene.id }}" data-asset="{{ a.id }}" data-state="accepted" style="display:contents">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="state" value="accepted">
+            <input type="hidden" name="redirect" value="/projects/{{ project.id }}/review">
+            <button type="submit" class="btn btn-primary btn-sm review-accept"
+                    {% if a.state == 'accepted' %}disabled{% endif %}>
+              {% if a.state == 'accepted' %}✓ Aceito{% else %}Aceitar{% endif %}
+            </button>
+          </form>
+          <form method="post" action="/assets/{{ a.id }}/state" class="review-decision"
+                data-scene="{{ scene.id }}" data-asset="{{ a.id }}" data-state="rejected" style="display:contents">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="state" value="rejected">
+            <input type="hidden" name="redirect" value="/projects/{{ project.id }}/review">
+            <button type="submit" class="btn btn-danger btn-sm review-reject">Rejeitar</button>
+          </form>
           <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}#scene-{{ scene.id }}">ver alternativas</a>
         </div>
       {% else %}
@@ -123,34 +134,50 @@
 {% block scripts %}
 <script>window.NWRCH_PROJECT_ID = {{ project.id }};</script>
 <script>
+// With JS, decision forms become fetch requests; without JS, they POST and 303 back.
+document.addEventListener("DOMContentLoaded", () => {
+  document.querySelectorAll("form.review-decision").forEach((form) => {
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const btn = form.querySelector("button");
+      reviewDecision(
+        parseInt(form.dataset.scene, 10),
+        parseInt(form.dataset.asset, 10),
+        form.dataset.state,
+        btn
+      );
+    });
+  });
+});
+
 async function reviewDecision(sceneId, assetId, state, btn) {
   const card = document.getElementById("review-" + sceneId);
-  btn.disabled = true;
+  if (btn) btn.disabled = true;
   try {
     await postForm(`/assets/${assetId}/state`, { state });
+    const stateEl = document.getElementById("review-state-" + sceneId);
+    const acceptBtn = card.querySelector(".review-accept");
+    const rejectBtn = card.querySelector(".review-reject");
+    const media = card.querySelector(".review-media");
     if (state === "accepted") {
       card.classList.add("is-accepted");
       card.classList.remove("is-waiting");
-      const stateEl = document.getElementById("review-state-" + sceneId);
       if (stateEl) stateEl.innerHTML = '<span class="tally tally-ok">aceito</span>';
-      const acceptBtn = card.querySelector(".review-accept");
       if (acceptBtn) { acceptBtn.textContent = "✓ Aceito"; acceptBtn.disabled = true; }
-      const rejectBtn = card.querySelector(".review-reject");
       if (rejectBtn) rejectBtn.disabled = false;
+      if (media) media.classList.remove("is-rejected-media");
     } else {
-      // rejeitado: a cena fica aguardando nova busca
+      // Rejected scenes wait for a new search; Accept stays active as undo.
       card.classList.remove("is-accepted");
       card.classList.add("is-waiting");
-      const stateEl = document.getElementById("review-state-" + sceneId);
       if (stateEl) stateEl.innerHTML = '<span class="tally tally-err">rejeitado — aguardando nova busca</span>';
-      const media = card.querySelector(".review-media");
       if (media) media.classList.add("is-rejected-media");
-      const actions = card.querySelector(".review-actions");
-      if (actions) actions.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+      if (acceptBtn) { acceptBtn.textContent = "Aceitar"; acceptBtn.disabled = false; }
+      if (rejectBtn) rejectBtn.disabled = true;
     }
     updateReviewBar();
   } catch (e) {
-    btn.disabled = false;
+    if (btn) btn.disabled = false;
     notify("Falha ao atualizar: " + e.message, "error");
   }
 }

@@ -1447,6 +1447,39 @@ class HardeningAndOptimizationTest(unittest.TestCase):
         self.assertFalse(stale_zip.exists())
         self.assertFalse(out_dir.exists())
 
+    def test_reviewed_asset_change_reopens_review_and_invalidates_report(self) -> None:
+        with TestClient(webapp.app) as client:
+            uid, project_id, scene = self._project_with_scene("review-dirty")
+            db.add_assets(scene["id"], [{"source": "pexels", "download_url": "https://example.com/a.mp4"}])
+            asset = db.list_assets(scene["id"])[0]
+            db.set_asset_state(asset["id"], "accepted")
+            report_path = webapp.curation_report_path(project_id)
+            report_path.parent.mkdir(parents=True)
+            report_path.write_text("stale report", encoding="utf-8")
+            db.set_project_status(project_id, "reviewed")
+            client.post(
+                "/login",
+                data={"username": "review-dirty", "password": "password123"},
+                follow_redirects=False,
+            )
+
+            page = client.get(f"/projects/{project_id}/review")
+            resp = client.post(
+                f"/assets/{asset['id']}/state",
+                data={"state": "rejected", "redirect": f"/projects/{project_id}/review"},
+                follow_redirects=False,
+            )
+            reopened = client.get(f"/projects/{project_id}/review")
+
+        self.assertEqual(page.status_code, 200)
+        self.assertEqual(page.headers.get("cache-control"), "no-store")
+        self.assertIn("curation-report", page.text)
+        self.assertEqual(resp.status_code, 303)
+        self.assertEqual(resp.headers["location"], f"/projects/{project_id}/review")
+        self.assertEqual(db.get_project(project_id, uid)["status"], "reviewing")
+        self.assertFalse(report_path.exists())
+        self.assertNotIn("curation-report", reopened.text)
+
     def test_asset_change_is_rejected_while_project_job_is_busy(self) -> None:
         with TestClient(webapp.app) as client:
             _, project_id, scene = self._project_with_scene("busy-change")

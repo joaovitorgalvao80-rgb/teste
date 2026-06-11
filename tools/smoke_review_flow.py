@@ -127,4 +127,15 @@ with client:  # dispara lifespan (init_db etc.)
     r = client.get(f"/projects/{pid}")
     must(r.status_code == 200 and "Revisão (3/3)" in r.text, "pipeline mostra revisão 3/3")
 
+    # editar depois de concluir reabre revisao e remove relatorio obsoleto
+    report_path = app_module.curation_report_path(pid)
+    must(report_path.exists(), "relatorio existe apos concluir")
+    r = client.post(
+        f"/assets/{others[0]['id']}/state",
+        data={"state": "rejected", "redirect": f"/projects/{pid}/review"},
+    )
+    must(r.status_code == 303, "fallback nativo redireciona apos editar revisao concluida")
+    must(db.get_project(pid, 1)["status"] == "reviewing", "editar take reabre a revisao")
+    must(not report_path.exists(), "relatorio obsoleto removido")
+
 print("\nSMOKE REVIEW FLOW: tudo passou.")

@@ -235,6 +235,10 @@ async def security_headers(request: Request, call_next):
     response.headers.setdefault("Referrer-Policy", "same-origin")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    # HTML pages show live pipeline state, while static assets use versioned URLs.
+    content_type = response.headers.get("content-type", "")
+    if not request.url.path.startswith("/static") and "text/html" in content_type:
+        response.headers["Cache-Control"] = "no-store"
     return response
 
 # static/ e criada antes do mount para evitar crash na inicializacao
@@ -1280,6 +1284,7 @@ def asset_state(
     asset_id: int,
     state: str = Form(...),
     csrf_token: str = Form(""),
+    redirect: str = Form(""),
 ):
     user = require_user(request)
     verify_csrf(request, csrf_token)
@@ -1295,9 +1300,18 @@ def asset_state(
     updated = db.set_asset_state(asset_id, state)
     if not updated:
         raise HTTPException(404)
-    # durante revisão não há pacote para invalidar; evita remover artefatos desnecessariamente
-    if project.get("status") not in {"reviewing", "reviewed"}:
+    status = project.get("status")
+    if status == "reviewed":
+        # Changing a take after finishing makes the review report stale.
+        db.set_project_status(owner["project_id"], "reviewing")
+        curation_report_path(owner["project_id"]).unlink(missing_ok=True)
+    elif status != "reviewing":
+        # Outside review, invalidate any existing package as before.
         mark_project_dirty(owner["project_id"])
+        curation_report_path(owner["project_id"]).unlink(missing_ok=True)
+    # Native form fallback sends redirect; fetch-based JS does not.
+    if redirect and redirect.startswith("/") and not redirect.startswith("//"):
+        return RedirectResponse(redirect, status_code=303)
     return JSONResponse({"id": asset_id, "state": updated["state"]})
 
 
@@ -1401,7 +1415,8 @@ def review_page(request: Request, project_id: int):
             "rejected_waiting": rejected_waiting,
             "total": len(review_scenes),
             "review_round": int(project.get("review_round") or 0),
-            "has_report": curation_report_path(project_id).exists(),
+            "has_report": project.get("status") in {"reviewed", "packaging", "packaged", "package_failed"}
+            and curation_report_path(project_id).exists(),
         },
     )
 

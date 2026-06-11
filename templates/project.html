@@ -48,28 +48,28 @@
       </button>
     </form>
     {% if config.long_mode %}
-    <button class="step {% if parts and parts | selectattr('status', 'equalto', 'done') | list | length == parts | length %}is-done{% endif %}"
+    <button type="button" class="step {% if parts and parts | selectattr('status', 'equalto', 'done') | list | length == parts | length %}is-done{% endif %}"
             id="btn-render-parts"
             onclick="renderParts({{ project.id }}, this)"
             {% if project.status != 'packaged' or parts_job_active %}disabled{% endif %}>
       <span class="step-idx">04</span>
       <span class="step-name">Render partes</span>
     </button>
-    <button class="step" id="btn-concat"
+    <button type="button" class="step" id="btn-concat"
             onclick="concatParts({{ project.id }}, this)"
             {% if parts_job_active or not parts or parts | selectattr('status', 'equalto', 'done') | list | length != parts | length %}disabled{% endif %}>
       <span class="step-idx">05</span>
       <span class="step-name">Concatenar final</span>
     </button>
     {% else %}
-    <button class="step {% if project.kaggle_status and project.kaggle_status not in ['','none'] %}is-active{% endif %}"
+    <button type="button" class="step {% if project.kaggle_status and project.kaggle_status not in ['','none'] %}is-active{% endif %}"
             id="btn-kaggle"
             onclick="sendToKaggle({{ project.id }})"
             {% if project.status not in ['packaged'] %}disabled{% endif %}>
       <span class="step-idx">04</span>
       <span class="step-name">Render Kaggle</span>
     </button>
-    <button class="step" disabled>
+    <button type="button" class="step" disabled>
       <span class="step-idx">05</span>
       <span class="step-name">Refino master</span>
     </button>
@@ -374,11 +374,11 @@
               </div>
             {% endif %}
             <div class="take-actions">
-              <button class="btn btn-ghost btn-sm sel" onclick="setState({{ a.id }}, 'selected')">
+              <button type="button" class="btn btn-ghost btn-sm sel" onclick="setState({{ a.id }}, 'selected')">
                 {% if a.state in ['selected', 'accepted'] %}Selecionado{% else %}Selecionar{% endif %}
               </button>
-              <button class="btn btn-ghost btn-sm" onclick="setState({{ a.id }}, 'favorite')" aria-label="Favoritar">★</button>
-              <button class="btn btn-ghost btn-sm" onclick="setState({{ a.id }}, 'rejected')">Rejeitar</button>
+              <button type="button" class="btn btn-ghost btn-sm" onclick="setState({{ a.id }}, 'favorite')" aria-label="Favoritar">★</button>
+              <button type="button" class="btn btn-ghost btn-sm" onclick="setState({{ a.id }}, 'rejected')">Rejeitar</button>
             </div>
           </article>
         {% endfor %}
@@ -389,10 +389,10 @@
       {% endif %}
 
       <div class="row">
-        <button class="btn btn-secondary btn-sm" onclick="searchMore({{ scene.id }}, this, 'video')">+ vídeos</button>
-        <button class="btn btn-secondary btn-sm" onclick="searchMore({{ scene.id }}, this, 'image')">+ imagens</button>
-        <button class="btn btn-secondary btn-sm" type="button" onclick="toggleGenPanel({{ scene.id }})">✦ gerar imagem</button>
-        <button class="btn btn-ghost btn-sm" onclick="regenKeywords({{ scene.id }})">
+        <button type="button" class="btn btn-secondary btn-sm" onclick="searchMore({{ scene.id }}, this, 'video')">+ vídeos</button>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="searchMore({{ scene.id }}, this, 'image')">+ imagens</button>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="toggleGenPanel({{ scene.id }})">✦ gerar imagem</button>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="regenKeywords({{ scene.id }})">
           novas keywords
           <span id="kw-{{ scene.id }}" style="display:none">{{ scene.keywords|join(', ') }}</span>
         </button>
