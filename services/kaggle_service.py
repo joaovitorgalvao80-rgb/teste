@@ -206,7 +206,7 @@ def upload_dataset(
         metadata = {
             "title": f"B-rolls {project_name}"[:50],
             "id": f"{username}/{slug}",
-            "subtitle": "Private render pack; review LICENSES.md and metadata/*.json for asset-specific licenses.",
+            "subtitle": "Private render pack — see LICENSES.md for asset licenses.",
             "licenses": [{"name": "other"}],
         }
         (tmp / "dataset-metadata.json").write_text(
