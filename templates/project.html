@@ -28,12 +28,17 @@
     </form>
     <form method="post" action="/projects/{{ project.id }}/search" style="flex:1;display:contents" data-busy-submit>
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button class="step {% if project.status in ['searched','packaged','needs_package','packaging','package_failed'] %}is-done{% endif %}" type="submit"
-              {% if not scenes or project.status in ['searching','packaging','mapping'] %}disabled{% endif %}>
+      <button class="step {% if project.status in ['searched','reviewing','reviewed','packaged','needs_package','packaging','package_failed'] %}is-done{% endif %}" type="submit"
+              {% if not scenes or project.status in ['searching','packaging','mapping','auto_selecting','researching'] %}disabled{% endif %}>
         <span class="step-idx">02</span>
-        <span class="step-name">Buscar assets</span>
+        <span class="step-name">Buscar + selecionar</span>
       </button>
     </form>
+    <a class="step {% if project.status == 'reviewed' or (scenes and accepted_count == scenes|length) %}is-done{% endif %} {% if project.status == 'reviewing' %}is-active{% endif %}"
+       href="/projects/{{ project.id }}/review">
+      <span class="step-idx">2B</span>
+      <span class="step-name">Revisão ({{ accepted_count }}/{{ scenes|length }})</span>
+    </a>
     <form method="post" action="/projects/{{ project.id }}/package" style="flex:1;display:contents" data-busy-submit>
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button class="step {% if project.status == 'packaged' %}is-done{% endif %}" id="btn-package" type="submit"
@@ -103,6 +108,19 @@
   {% if project.status == 'needs_package' %}
   <div style="padding:var(--sp-3) var(--sp-5);border-top:1px solid var(--line-0)">
     <p class="note note-warn">O projeto mudou depois do último pacote. Gere a etapa 03 novamente antes de enviar ao Kaggle.</p>
+  </div>
+  {% endif %}
+  {% if project.status == 'reviewing' %}
+  <div style="padding:var(--sp-3) var(--sp-5);border-top:1px solid var(--line-0)">
+    <p class="note note-warn">Takes pré-selecionados automaticamente.
+      <a href="/projects/{{ project.id }}/review" style="color:var(--paper-0)">Revisar agora →</a></p>
+  </div>
+  {% endif %}
+  {% if project.status == 'reviewed' %}
+  <div style="padding:var(--sp-3) var(--sp-5);border-top:1px solid var(--line-0)">
+    <p class="note">Revisão concluída — todos os takes aceitos.
+      <a href="/projects/{{ project.id }}/curation-report" style="color:var(--paper-0)">Baixar relatório de curadoria</a>
+      ou gere a etapa <strong>03 Pacote</strong>.</p>
   </div>
   {% endif %}
 </div>
@@ -262,7 +280,9 @@
         {% for kw in scene.keywords %}
           <span class="kw">{{ kw }}</span>
         {% endfor %}
-        {% if scene.assets | selectattr('state', 'equalto', 'selected') | list %}
+        {% if scene.assets | selectattr('state', 'equalto', 'accepted') | list %}
+          <span class="tally tally-ok" style="margin-left:auto">take aceito</span>
+        {% elif scene.assets | selectattr('state', 'equalto', 'selected') | list %}
           <span class="tally tally-ok" style="margin-left:auto">take marcado</span>
         {% else %}
           <span class="tally tally-warn" style="margin-left:auto">sem take marcado</span>
@@ -294,7 +314,7 @@
             {% endif %}
             <div class="take-actions">
               <button class="btn btn-ghost btn-sm sel" onclick="setState({{ a.id }}, 'selected')">
-                {% if a.state == 'selected' %}Selecionado{% else %}Selecionar{% endif %}
+                {% if a.state in ['selected', 'accepted'] %}Selecionado{% else %}Selecionar{% endif %}
               </button>
               <button class="btn btn-ghost btn-sm" onclick="setState({{ a.id }}, 'favorite')" aria-label="Favoritar">★</button>
               <button class="btn btn-ghost btn-sm" onclick="setState({{ a.id }}, 'rejected')">Rejeitar</button>

@@ -58,27 +58,28 @@ async function setState(assetId, state) {
   const card = document.getElementById("asset-" + assetId);
   try {
     const res = await postForm(`/assets/${assetId}/state`, { state });
-    card.classList.remove("is-pending", "is-selected", "is-rejected", "is-favorite");
+    card.classList.remove("is-pending", "is-selected", "is-rejected", "is-favorite", "is-accepted");
     card.classList.add("is-" + res.state);
     const selectButton = card.querySelector(".sel");
-    if (selectButton) selectButton.textContent = res.state === "selected" ? "Selecionado" : "Selecionar";
+    if (selectButton) {
+      selectButton.textContent = ["selected", "accepted"].includes(res.state) ? "Selecionado" : "Selecionar";
+    }
 
-    if (res.state === "selected") {
+    if (["selected", "accepted"].includes(res.state)) {
       // rebaixa irmãos da mesma cena
       const grid = card.closest(".takes");
       if (grid) {
-        grid.querySelectorAll(".take.is-selected").forEach((el) => {
+        grid.querySelectorAll(".take.is-selected, .take.is-accepted").forEach((el) => {
           if (el !== card) {
-            el.classList.remove("is-selected");
+            el.classList.remove("is-selected", "is-accepted");
+            el.classList.add("is-pending");
             const siblingButton = el.querySelector(".sel");
             if (siblingButton) siblingButton.textContent = "Selecionar";
           }
         });
       }
-      updateSelectedCount();
-    } else {
-      updateSelectedCount();
     }
+    updateSelectedCount();
   } catch (e) {
     notify("Falha ao atualizar: " + e.message, "error");
   }
@@ -90,7 +91,7 @@ function updateSelectedCount() {
   const total = document.querySelectorAll("section.scene").length;
   let selected = 0;
   document.querySelectorAll("section.scene").forEach((sec) => {
-    if (sec.querySelector(".take.is-selected")) selected++;
+    if (sec.querySelector(".take.is-selected, .take.is-accepted")) selected++;
   });
   const statusBadge = document.querySelector(".head-status .badge");
   const status = statusBadge ? (statusBadge.dataset.status || statusBadge.textContent).trim().toLowerCase() : "";

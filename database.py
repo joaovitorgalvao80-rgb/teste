@@ -116,6 +116,7 @@ CREATE TABLE IF NOT EXISTS projects (
     kaggle_dataset_slug  TEXT DEFAULT '',
     kaggle_kernel_slug   TEXT DEFAULT '',
     kaggle_status        TEXT DEFAULT '',
+    review_round         INTEGER DEFAULT 0,
     created_at           REAL NOT NULL,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -137,6 +138,7 @@ CREATE TABLE IF NOT EXISTS scenes (
     asset_type      TEXT DEFAULT 'video',
     overlay_text    TEXT DEFAULT '',
     avatar_safe_area TEXT DEFAULT 'right',
+    part            INTEGER DEFAULT 1,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
 
@@ -156,7 +158,27 @@ CREATE TABLE IF NOT EXISTS assets (
     author        TEXT DEFAULT '',
     author_url    TEXT DEFAULT '',
     state         TEXT DEFAULT 'pending',
+    auto_score    REAL DEFAULT 0,
+    auto_reason   TEXT DEFAULT '',
+    review_round  INTEGER DEFAULT 0,
     FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS render_parts (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id   INTEGER NOT NULL,
+    part_idx     INTEGER NOT NULL,
+    scene_count  INTEGER DEFAULT 0,
+    duration     REAL DEFAULT 0,
+    zip_name     TEXT DEFAULT '',
+    dataset_slug TEXT DEFAULT '',
+    kernel_slug  TEXT DEFAULT '',
+    status       TEXT DEFAULT 'pending',
+    video_path   TEXT DEFAULT '',
+    error        TEXT DEFAULT '',
+    updated_at   REAL DEFAULT 0,
+    UNIQUE (project_id, part_idx),
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS jobs (
@@ -187,6 +209,11 @@ _MIGRATIONS = [
     "ALTER TABLE projects ADD COLUMN kaggle_status TEXT DEFAULT ''",
     "ALTER TABLE users ADD COLUMN groq_model TEXT DEFAULT 'llama-3.3-70b-versatile'",
     "ALTER TABLE users ADD COLUMN openrouter_key TEXT DEFAULT ''",
+    "ALTER TABLE projects ADD COLUMN review_round INTEGER DEFAULT 0",
+    "ALTER TABLE scenes ADD COLUMN part INTEGER DEFAULT 1",
+    "ALTER TABLE assets ADD COLUMN auto_score REAL DEFAULT 0",
+    "ALTER TABLE assets ADD COLUMN auto_reason TEXT DEFAULT ''",
+    "ALTER TABLE assets ADD COLUMN review_round INTEGER DEFAULT 0",
 ]
 
 
@@ -545,7 +572,9 @@ def mark_project_needs_package(project_id: int) -> None:
         row = conn.execute("SELECT status FROM projects WHERE id = ?", (project_id,)).fetchone()
         if not row:
             return
-        if row["status"] in {"created", "mapped", "searching", "mapping"}:
+        # 'needs_package' so faz sentido quando ja existe um pacote para invalidar;
+        # antes disso (curadoria, revisao etc.) mudar assets nao deve mexer no status.
+        if row["status"] not in {"packaged", "needs_package", "package_failed"}:
             return
         conn.execute(
             """UPDATE projects
@@ -582,8 +611,8 @@ def replace_scenes(project_id: int, scenes: list[dict]) -> None:
                 """INSERT INTO scenes
                 (project_id, scene_id, idx, zone, start_time, end_time, duration,
                  narration, visual_goal, keywords_json, must_show_json, must_not_show_json,
-                 asset_type, overlay_text, avatar_safe_area)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 asset_type, overlay_text, avatar_safe_area, part)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     project_id,
                     s["scene_id"],
@@ -600,6 +629,7 @@ def replace_scenes(project_id: int, scenes: list[dict]) -> None:
                     s.get("asset_type", "video"),
                     s.get("overlay_text", ""),
                     s.get("avatar_safe_area", "right"),
+                    int(s.get("part", 1) or 1),
                 ),
             )
         conn.commit()
@@ -774,23 +804,110 @@ def get_asset_project(asset_id: int) -> Optional[dict]:
         conn.close()
 
 
-def set_asset_state(asset_id: int, state: str) -> Optional[dict]:
+def set_asset_state(
+    asset_id: int,
+    state: str,
+    auto_score: Optional[float] = None,
+    auto_reason: Optional[str] = None,
+    review_round: Optional[int] = None,
+) -> Optional[dict]:
     conn = _connect()
     try:
         row = conn.execute("SELECT scene_id FROM assets WHERE id = ?", (asset_id,)).fetchone()
         if not row:
             return None
         scene_id = row["scene_id"]
-        # Uma cena tem apenas 1 asset 'selected'; ao selecionar, rebaixa os outros.
-        if state == "selected":
+        # Uma cena tem apenas 1 take escolhido ('selected' ou 'accepted');
+        # ao promover um, rebaixa os irmaos.
+        if state in {"selected", "accepted"}:
             conn.execute(
-                "UPDATE assets SET state = 'pending' WHERE scene_id = ? AND state = 'selected'",
-                (scene_id,),
+                "UPDATE assets SET state = 'pending' "
+                "WHERE scene_id = ? AND state IN ('selected', 'accepted') AND id != ?",
+                (scene_id, asset_id),
             )
-        conn.execute("UPDATE assets SET state = ? WHERE id = ?", (state, asset_id))
+        fields = ["state = ?"]
+        values: list[Any] = [state]
+        if auto_score is not None:
+            fields.append("auto_score = ?")
+            values.append(auto_score)
+        if auto_reason is not None:
+            fields.append("auto_reason = ?")
+            values.append(auto_reason)
+        if review_round is not None:
+            fields.append("review_round = ?")
+            values.append(review_round)
+        values.append(asset_id)
+        conn.execute(f"UPDATE assets SET {', '.join(fields)} WHERE id = ?", values)
         conn.commit()
         updated = conn.execute("SELECT * FROM assets WHERE id = ?", (asset_id,)).fetchone()
         return dict(updated) if updated else None
+    finally:
+        conn.close()
+
+
+def set_project_review_round(project_id: int, review_round: int) -> None:
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE projects SET review_round = ? WHERE id = ?", (review_round, project_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ----------------------------------------------------------------------------
+# Render parts (modo video longo: 1 pacote + 1 kernel Kaggle por parte)
+# ----------------------------------------------------------------------------
+def replace_parts(project_id: int, parts: list[dict]) -> None:
+    conn = _connect()
+    try:
+        conn.execute("DELETE FROM render_parts WHERE project_id = ?", (project_id,))
+        now = time.time()
+        for p in parts:
+            conn.execute(
+                """INSERT INTO render_parts
+                   (project_id, part_idx, scene_count, duration, status, updated_at)
+                   VALUES (?, ?, ?, ?, 'pending', ?)""",
+                (project_id, p["part_idx"], p.get("scene_count", 0), p.get("duration", 0), now),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_parts(project_id: int) -> list[dict]:
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM render_parts WHERE project_id = ? ORDER BY part_idx",
+            (project_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def update_part(project_id: int, part_idx: int, **fields: Any) -> None:
+    allowed = {"scene_count", "duration", "zip_name", "dataset_slug", "kernel_slug",
+               "status", "video_path", "error"}
+    sets = []
+    values: list[Any] = []
+    for key, value in fields.items():
+        if key not in allowed:
+            raise ValueError(f"campo invalido para render_parts: {key}")
+        sets.append(f"{key} = ?")
+        values.append(value)
+    sets.append("updated_at = ?")
+    values.append(time.time())
+    values.extend([project_id, part_idx])
+    conn = _connect()
+    try:
+        conn.execute(
+            f"UPDATE render_parts SET {', '.join(sets)} WHERE project_id = ? AND part_idx = ?",
+            values,
+        )
+        conn.commit()
     finally:
         conn.close()
 

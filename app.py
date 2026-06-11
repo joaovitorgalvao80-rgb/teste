@@ -25,7 +25,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
 import database as db
-from services import asset_search, diagnostics, edit_plan, groq_service, packager, kaggle_service
+from services import asset_search, auto_select, diagnostics, edit_plan, groq_service, packager, kaggle_service
 from services.script_parser import parse_script
 
 ROOT = Path(__file__).resolve().parent
@@ -89,7 +89,9 @@ def _require_secret() -> str:
 
 DATA_DIR = Path(os.getenv("DATA_DIR", str(ROOT / "data")))
 WORK_DIR = DATA_DIR / "work"
-BUSY_PROJECT_STATUSES = {"mapping", "searching", "packaging"}
+BUSY_PROJECT_STATUSES = {"mapping", "searching", "packaging", "auto_selecting", "researching"}
+# estados de take que contam como "escolhido" para pacote/diagnostico
+CHOSEN_ASSET_STATES = ["selected", "accepted"]
 
 DEFAULT_CONFIG = {
     "format": "16:9",
@@ -874,8 +876,9 @@ def project_page(request: Request, project_id: int):
     assets_by_scene = db.list_assets_for_project(project_id)
     for s in scenes:
         s["assets"] = assets_by_scene.get(s["id"], [])
-        s["selected"] = next((a for a in s["assets"] if a["state"] == "selected"), None)
+        s["selected"] = next((a for a in s["assets"] if a["state"] in CHOSEN_ASSET_STATES), None)
     selected_count = sum(1 for s in scenes if s.get("selected"))
+    accepted_count = sum(1 for s in scenes if s.get("selected") and s["selected"]["state"] == "accepted")
     project_work = project_work_dir(project_id)
     narration_file = find_input_media(project_id, "narration")
     avatar_file = find_input_media(project_id, "avatar")
@@ -891,6 +894,7 @@ def project_page(request: Request, project_id: int):
             "config": config,
             "scenes": scenes,
             "selected_count": selected_count,
+            "accepted_count": accepted_count,
             "has_keys": bool(user["pexels_key"] or user["pixabay_key"]),
             "narration_name": narration_file.name if narration_file else "",
             "avatar_name": avatar_file.name if avatar_file else "",
@@ -985,14 +989,69 @@ def generate_map(
 
 
 # ------------------------------------------------------------------
-# Buscar assets
+# Buscar assets + selecao automatica
 # ------------------------------------------------------------------
+def auto_select_for_project(
+    project_id: int,
+    config: dict,
+    groq_key: str,
+    groq_model: str,
+    job_id: Optional[int] = None,
+    review_round: int = 0,
+) -> int:
+    """Escolhe o melhor take pendente para cada cena sem take aceito.
+
+    Cenas com asset 'accepted' (aprovado na revisao) nunca sao tocadas.
+    Retorna o numero de cenas com take selecionado automaticamente.
+    """
+    scenes = db.list_scenes(project_id)
+    assets_by_scene = db.list_assets_for_project(project_id)
+    target_scenes = []
+    candidates_by_scene: dict[int, list[dict]] = {}
+    for scene in scenes:
+        assets = assets_by_scene.get(scene["id"], [])
+        if any(a["state"] == "accepted" for a in assets):
+            continue
+        pending = [a for a in assets if a["state"] in {"pending", "selected", "favorite"}]
+        if not pending:
+            continue
+        target_scenes.append(scene)
+        candidates_by_scene[scene["id"]] = pending
+
+    if not target_scenes:
+        return 0
+
+    def progress(done: int, total: int) -> None:
+        if job_id:
+            db.update_job(job_id, status="running", message=f"Selecionando takes ({done}/{total} cenas)")
+
+    choices = auto_select.choose_best_takes(
+        target_scenes,
+        candidates_by_scene,
+        config,
+        groq_key=groq_key,
+        model=groq_model or groq_service.DEFAULT_MODEL,
+        progress=progress,
+    )
+    for scene_db_id, (asset_id, score, reason) in choices.items():
+        db.set_asset_state(
+            asset_id,
+            "selected",
+            auto_score=score,
+            auto_reason=reason,
+            review_round=review_round,
+        )
+    return len(choices)
+
+
 def run_search_job(
     job_id: int,
     project_id: int,
     user_id: int,
     pexels_key: str,
     pixabay_key: str,
+    groq_key: str = "",
+    groq_model: str = "",
 ) -> None:
     try:
         db.update_job(job_id, status="running", message="Buscando assets")
@@ -1024,11 +1083,30 @@ def run_search_job(
                 empty_scenes.append(scene["scene_id"])
         if total_added <= 0:
             raise RuntimeError("Busca retornou zero assets. Verifique chaves, keywords ou disponibilidade das APIs.")
-        db.set_project_status(project_id, "searched")
+
+        # selecao automatica encadeada: o sistema ja propoe o melhor take por
+        # cena e manda o usuario para a tela de revisao (aceitar/rejeitar)
+        auto_selected = 0
+        try:
+            db.set_project_status(project_id, "auto_selecting")
+            db.update_job(job_id, status="running", message="Selecionando os melhores takes")
+            auto_selected = auto_select_for_project(
+                project_id, config, groq_key, groq_model, job_id=job_id,
+                review_round=int(project.get("review_round") or 0),
+            )
+            db.set_project_status(project_id, "reviewing" if auto_selected else "searched")
+        except Exception as exc:  # noqa: BLE001 - busca foi um sucesso; degrada para curadoria manual
+            logger.warning("auto-selecao falhou; seguindo com curadoria manual: %s", exc)
+            db.set_project_status(project_id, "searched")
         db.finish_job(
             job_id,
-            "Busca concluida",
-            {"added": total_added, "empty_scenes": empty_scenes, "scenes": len(scenes)},
+            f"Busca concluida — {auto_selected} takes pre-selecionados" if auto_selected else "Busca concluida",
+            {
+                "added": total_added,
+                "empty_scenes": empty_scenes,
+                "scenes": len(scenes),
+                "auto_selected": auto_selected,
+            },
         )
     except Exception as exc:  # noqa: BLE001
         db.set_project_status(project_id, "search_failed")
@@ -1063,6 +1141,8 @@ def search_all(
         user["id"],
         user.get("pexels_key", ""),
         user.get("pixabay_key", ""),
+        user.get("groq_key", ""),
+        user.get("groq_model") or groq_service.DEFAULT_MODEL,
     )
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
@@ -1142,7 +1222,7 @@ def asset_state(
 ):
     user = require_user(request)
     verify_csrf(request, csrf_token)
-    if state not in {"pending", "selected", "rejected", "favorite"}:
+    if state not in {"pending", "selected", "rejected", "favorite", "accepted"}:
         raise HTTPException(400, "Estado invalido.")
     owner = db.get_asset_project(asset_id)
     if not owner or owner["user_id"] != user["id"]:
@@ -1156,6 +1236,269 @@ def asset_state(
         raise HTTPException(404)
     mark_project_dirty(owner["project_id"])
     return JSONResponse({"id": asset_id, "state": updated["state"]})
+
+
+# ------------------------------------------------------------------
+# Revisao: auto-selecao, tela de revisao, re-busca e relatorio
+# ------------------------------------------------------------------
+CURATION_REPORT_NAME = "curation_report.md"
+
+
+def curation_report_path(project_id: int) -> Path:
+    return project_work_dir(project_id) / CURATION_REPORT_NAME
+
+
+def run_auto_select_job(
+    job_id: int,
+    project_id: int,
+    user_id: int,
+    groq_key: str,
+    groq_model: str,
+) -> None:
+    try:
+        db.update_job(job_id, status="running", message="Selecionando os melhores takes")
+        project = db.get_project(project_id, user_id)
+        if not project:
+            raise RuntimeError("Projeto nao encontrado.")
+        config = project_config(project)
+        chosen = auto_select_for_project(
+            project_id, config, groq_key, groq_model, job_id=job_id,
+            review_round=int(project.get("review_round") or 0),
+        )
+        if chosen <= 0:
+            raise RuntimeError("Nenhuma cena com candidatos pendentes para selecionar.")
+        db.set_project_status(project_id, "reviewing")
+        db.finish_job(job_id, f"{chosen} takes selecionados", {"auto_selected": chosen})
+    except Exception as exc:  # noqa: BLE001
+        db.set_project_status(project_id, "searched")
+        db.fail_job(job_id, "Falha na selecao automatica", str(exc))
+
+
+@app.post("/projects/{project_id}/auto-select")
+def auto_select_route(
+    request: Request,
+    project_id: int,
+    background_tasks: BackgroundTasks,
+    csrf_token: str = Form(""),
+):
+    user = require_user(request)
+    verify_csrf(request, csrf_token)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    ensure_project_not_busy(project)
+    scenes = db.list_scenes(project_id)
+    if not scenes:
+        raise HTTPException(400, "Gere o mapa visual e busque assets antes da selecao automatica.")
+    ensure_no_active_job(project_id, "auto_select")
+    job_id = db.create_job(user["id"], "auto_select", project_id, "Selecao automatica na fila")
+    db.set_project_status(project_id, "auto_selecting")
+    background_tasks.add_task(
+        run_auto_select_job,
+        job_id,
+        project_id,
+        user["id"],
+        user.get("groq_key", ""),
+        user.get("groq_model") or groq_service.DEFAULT_MODEL,
+    )
+    return RedirectResponse(f"/projects/{project_id}/review", status_code=303)
+
+
+@app.get("/projects/{project_id}/review", response_class=HTMLResponse)
+def review_page(request: Request, project_id: int):
+    user = require_user(request)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    scenes = db.list_scenes(project_id)
+    assets_by_scene = db.list_assets_for_project(project_id)
+    review_scenes = []
+    accepted = rejected_waiting = pending_review = 0
+    for scene in scenes:
+        assets = assets_by_scene.get(scene["id"], [])
+        chosen = next((a for a in assets if a["state"] in CHOSEN_ASSET_STATES), None)
+        scene["chosen"] = chosen
+        scene["rejected_count"] = sum(1 for a in assets if a["state"] == "rejected")
+        if chosen and chosen["state"] == "accepted":
+            accepted += 1
+        elif chosen:
+            pending_review += 1
+        else:
+            rejected_waiting += 1
+        review_scenes.append(scene)
+    return render_template(
+        request,
+        "review.html",
+        {
+            "user": user,
+            "project": project,
+            "scenes": review_scenes,
+            "accepted": accepted,
+            "pending_review": pending_review,
+            "rejected_waiting": rejected_waiting,
+            "total": len(review_scenes),
+            "review_round": int(project.get("review_round") or 0),
+            "has_report": curation_report_path(project_id).exists(),
+        },
+    )
+
+
+def run_research_job(
+    job_id: int,
+    project_id: int,
+    user_id: int,
+    pexels_key: str,
+    pixabay_key: str,
+    groq_key: str,
+    groq_model: str,
+) -> None:
+    try:
+        db.update_job(job_id, status="running", message="Buscando takes melhores para as cenas rejeitadas")
+        project = db.get_project(project_id, user_id)
+        if not project:
+            raise RuntimeError("Projeto nao encontrado.")
+        config = project_config(project)
+        max_w = resolution_width(config)
+        new_round = int(project.get("review_round") or 0) + 1
+        db.set_project_review_round(project_id, new_round)
+
+        scenes = db.list_scenes(project_id)
+        assets_by_scene = db.list_assets_for_project(project_id)
+        targets = [
+            s for s in scenes
+            if not any(a["state"] in CHOSEN_ASSET_STATES for a in assets_by_scene.get(s["id"], []))
+        ]
+        if not targets:
+            raise RuntimeError("Nenhuma cena rejeitada aguardando nova busca.")
+
+        added_total = 0
+        for i, scene in enumerate(targets, 1):
+            db.update_job(
+                job_id, status="running",
+                message=f"Nova busca {i}/{len(targets)}: {scene['scene_id']}",
+            )
+            # keywords novas para fugir dos resultados que o usuario rejeitou
+            kws = groq_service.regenerate_keywords(
+                scene.get("narration", ""),
+                scene.get("visual_goal", ""),
+                groq_key,
+                config["visual_style"],
+                model=groq_model or groq_service.DEFAULT_MODEL,
+            )
+            if kws:
+                db.update_scene_keywords(scene["id"], kws)
+                scene["keywords"] = kws
+            existing = {a["download_url"] for a in assets_by_scene.get(scene["id"], [])}
+            results = asset_search.search_scene(
+                scene["keywords"],
+                pexels_key,
+                pixabay_key,
+                max_w=max_w,
+                per_keyword=config["per_keyword"] + 4,
+                allow_images=True,
+                seen_urls=existing,
+            )
+            added_total += db.add_assets(scene["id"], results)
+
+        db.update_job(job_id, status="running", message="Selecionando os melhores takes novos")
+        chosen = auto_select_for_project(
+            project_id, config, groq_key, groq_model, job_id=job_id, review_round=new_round,
+        )
+        db.set_project_status(project_id, "reviewing")
+        db.finish_job(
+            job_id,
+            f"Rodada {new_round}: {added_total} takes novos, {chosen} selecionados",
+            {"round": new_round, "added": added_total, "selected": chosen, "scenes": len(targets)},
+        )
+    except Exception as exc:  # noqa: BLE001
+        db.set_project_status(project_id, "reviewing")
+        db.fail_job(job_id, "Falha na nova busca", str(exc))
+
+
+@app.post("/projects/{project_id}/research-rejected")
+def research_rejected(
+    request: Request,
+    project_id: int,
+    background_tasks: BackgroundTasks,
+    csrf_token: str = Form(""),
+):
+    user = require_user(request)
+    verify_csrf(request, csrf_token)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    ensure_project_not_busy(project)
+    if not user["pexels_key"] and not user["pixabay_key"]:
+        raise HTTPException(400, "Cadastre ao menos uma chave de API em /settings.")
+    ensure_no_active_job(project_id, "research_rejected")
+    job_id = db.create_job(user["id"], "research_rejected", project_id, "Nova busca na fila")
+    db.set_project_status(project_id, "researching")
+    background_tasks.add_task(
+        run_research_job,
+        job_id,
+        project_id,
+        user["id"],
+        user.get("pexels_key", ""),
+        user.get("pixabay_key", ""),
+        user.get("groq_key", ""),
+        user.get("groq_model") or groq_service.DEFAULT_MODEL,
+    )
+    return RedirectResponse(f"/projects/{project_id}/review", status_code=303)
+
+
+@app.post("/projects/{project_id}/finish-review")
+def finish_review(request: Request, project_id: int, csrf_token: str = Form("")):
+    user = require_user(request)
+    verify_csrf(request, csrf_token)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    ensure_project_not_busy(project)
+    scenes = db.list_scenes(project_id)
+    if not scenes:
+        raise HTTPException(400, "Projeto sem cenas.")
+    assets_by_scene = db.list_assets_for_project(project_id)
+    chosen_by_scene: dict[int, dict] = {}
+    not_accepted: list[str] = []
+    for scene in scenes:
+        assets = assets_by_scene.get(scene["id"], [])
+        accepted = next((a for a in assets if a["state"] == "accepted"), None)
+        if accepted:
+            chosen_by_scene[scene["id"]] = accepted
+        else:
+            not_accepted.append(scene["scene_id"])
+    if not_accepted:
+        preview = ", ".join(not_accepted[:8])
+        suffix = "..." if len(not_accepted) > 8 else ""
+        raise HTTPException(400, f"Aceite um take para todas as cenas antes de concluir. Faltando: {preview}{suffix}")
+
+    rejected_by_scene = {
+        scene["id"]: [a for a in assets_by_scene.get(scene["id"], []) if a["state"] == "rejected"]
+        for scene in scenes
+    }
+    report = packager.build_curation_report(
+        project,
+        scenes,
+        chosen_by_scene,
+        rejected_by_scene,
+        review_round=int(project.get("review_round") or 0),
+    )
+    path = curation_report_path(project_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(report, encoding="utf-8")
+    db.set_project_status(project_id, "reviewed")
+    return RedirectResponse(f"/projects/{project_id}/review", status_code=303)
+
+
+@app.get("/projects/{project_id}/curation-report")
+def download_curation_report(request: Request, project_id: int):
+    user = require_user(request)
+    if not db.get_project(project_id, user["id"]):
+        raise HTTPException(404)
+    path = curation_report_path(project_id)
+    if not path.exists():
+        raise HTTPException(404, "Relatorio de curadoria ainda nao gerado. Conclua a revisao primeiro.")
+    return FileResponse(path, filename=path.name, media_type="text/markdown")
 
 
 # ------------------------------------------------------------------
@@ -1360,7 +1703,7 @@ def run_package_job(
             raise RuntimeError("Projeto nao encontrado.")
         config = project_config(project)
         scenes = db.list_scenes(project_id)
-        selected_rows = db.list_assets_by_state(project_id, ["selected"])
+        selected_rows = db.list_assets_by_state(project_id, CHOSEN_ASSET_STATES)
         selected_by_scene = {row["scene_id"]: row for row in selected_rows}
         rejected = db.list_assets_by_state(project_id, ["rejected"])
         missing = missing_selected_scene_ids(scenes, selected_by_scene)
@@ -1390,7 +1733,9 @@ def run_package_job(
             work_dir=project_work,
             max_download_mb=config["max_download_mb"],
             edit_plan=plan,
-            extra_files=[f for f in (narration_file, avatar_file) if f],
+            extra_files=[
+                f for f in (narration_file, avatar_file, curation_report_path(project_id)) if f and f.exists()
+            ],
         )
         db.set_project_status(project_id, "packaged")
         db.clear_kaggle_job(project_id)
@@ -1418,7 +1763,7 @@ def package(
         raise HTTPException(404)
     ensure_project_not_busy(project)
     scenes = db.list_scenes(project_id)
-    selected_rows = db.list_assets_by_state(project_id, ["selected"])
+    selected_rows = db.list_assets_by_state(project_id, CHOSEN_ASSET_STATES)
     selected_by_scene = {row["scene_id"]: row for row in selected_rows}
 
     if not selected_by_scene:
@@ -1531,7 +1876,7 @@ def project_diagnostics_json(request: Request, project_id: int, refresh: str = "
     if not project:
         raise HTTPException(404)
     scenes = db.list_scenes(project_id)
-    selected = {row["scene_id"] for row in db.list_assets_by_state(project_id, ["selected"])}
+    selected = {row["scene_id"] for row in db.list_assets_by_state(project_id, CHOSEN_ASSET_STATES)}
     project_work = project_work_dir(project_id)
     validation = None
     if refresh:

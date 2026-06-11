@@ -711,6 +711,135 @@ label.check input { width: auto; accent-color: var(--paper-0); }
 .take.is-rejected { opacity: 0.32; }
 .take.is-rejected:hover { opacity: 0.7; }
 
+/* take aprovado na revisao */
+.take.is-accepted {
+  border-color: var(--ok);
+  box-shadow: 0 0 0 1px var(--ok);
+}
+
+.take.is-accepted .take-thumb { filter: none; }
+
+.take.is-accepted::after {
+  content: "ACEITO ✓";
+  position: absolute;
+  top: var(--sp-2);
+  left: var(--sp-2);
+  padding: 2px 7px;
+  background: var(--ok);
+  color: var(--ink-0);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  border-radius: var(--radius);
+}
+
+/* ==========================================================================
+   Tela de revisao (aceitar/rejeitar takes selecionados)
+   ========================================================================== */
+.review-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: var(--sp-4);
+  margin-bottom: 96px; /* espaco para a barra fixa */
+}
+
+.review-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  background: var(--ink-1);
+  border: 1px solid var(--line-1);
+  border-radius: var(--radius);
+  transition: border-color var(--speed) var(--ease);
+}
+
+.review-card.is-accepted { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok); }
+.review-card.is-waiting  { border-color: rgba(222, 91, 98, 0.5); }
+
+.review-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.review-phrase {
+  font-size: var(--fs-lead);
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--paper-0);
+}
+
+.review-media {
+  border: 1px solid var(--line-0);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--ink-3);
+}
+
+.review-media.is-rejected-media { opacity: 0.35; }
+
+.review-media-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 16 / 9;
+  padding: var(--sp-4);
+  text-align: center;
+}
+
+.review-thumb {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+}
+
+.review-reason {
+  font-size: var(--fs-small);
+  color: var(--paper-2);
+  font-style: italic;
+}
+
+.review-actions {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: auto;
+}
+
+.review-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 900;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  padding: var(--sp-3) var(--sp-6);
+  background: rgba(10, 10, 11, 0.96);
+  border-top: 1px solid var(--line-1);
+  backdrop-filter: blur(6px);
+}
+
+.review-bar-stats {
+  display: flex;
+  gap: var(--sp-4);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.review-bar-actions {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
 /* ==========================================================================
    Log / jobs
    ========================================================================== */

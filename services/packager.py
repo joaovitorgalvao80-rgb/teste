@@ -202,6 +202,65 @@ def _guide_to_md(project: dict, guide: dict) -> str:
     return "\n".join(lines)
 
 
+def build_curation_report(
+    project: dict,
+    scenes: list[dict],
+    chosen_by_scene: dict[int, dict],
+    rejected_by_scene: dict[int, list[dict]],
+    review_round: int = 0,
+) -> str:
+    """Relatorio em Markdown da curadoria revisada (cena, frase, take aceito, rejeitados)."""
+    total = len(scenes)
+    accepted = len(chosen_by_scene)
+    rejected_total = sum(len(v) for v in rejected_by_scene.values())
+    lines = [
+        f"# Relatório de curadoria — {project['name']}",
+        "",
+        f"- Cenas: {total}",
+        f"- Takes aceitos: {accepted}",
+        f"- Takes rejeitados ao longo da curadoria: {rejected_total}",
+        f"- Rodadas de re-busca: {review_round}",
+        "",
+        "---",
+        "",
+    ]
+    for scene in scenes:
+        lines.append(
+            f"## {scene['scene_id']} | {scene['start_time']:.1f}s–{scene['end_time']:.1f}s | {scene.get('zone') or 'cena'}"
+        )
+        lines.append("")
+        lines.append(f"> {scene.get('narration', '')}")
+        lines.append("")
+        asset = chosen_by_scene.get(scene["id"])
+        if asset:
+            kind = asset.get("asset_type", "video")
+            dur = f", {asset.get('duration')}s" if asset.get("duration") else ""
+            lines.append(
+                f"**Take aceito:** {asset.get('source')} {kind} "
+                f"{asset.get('width')}x{asset.get('height')}{dur}"
+            )
+            if asset.get("author"):
+                lines.append(f"**Autor:** [{asset['author']}]({asset.get('author_url') or asset.get('page_url') or ''})")
+            if asset.get("page_url"):
+                lines.append(f"**Fonte:** {asset['page_url']}")
+            if asset.get("auto_reason"):
+                lines.append(f"**Motivo da seleção:** {asset['auto_reason']}")
+        else:
+            lines.append("**Take aceito:** — nenhum —")
+        rejected = rejected_by_scene.get(scene["id"]) or []
+        if rejected:
+            lines.append("")
+            lines.append(f"Rejeitados ({len(rejected)}):")
+            for r in rejected:
+                rnd = f" (rodada {r.get('review_round')})" if r.get("review_round") else ""
+                lines.append(
+                    f"- {r.get('source')} {r.get('asset_type', 'video')} "
+                    f"{r.get('width')}x{r.get('height')} — {r.get('page_url') or r.get('download_url')}{rnd}"
+                )
+        lines.append("")
+    return "\n".join(lines)
+
+
 def _licenses_md() -> str:
     return "\n".join(
         [
