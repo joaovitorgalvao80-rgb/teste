@@ -152,9 +152,110 @@ class DeployContractsTest(unittest.TestCase):
             resp = client.get(f"/projects/{project_id}")
 
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("Saude do projeto", resp.text)
+        self.assertIn("Saúde do projeto", resp.text)
         self.assertIn("Jobs recentes", resp.text)
         self.assertIn("package", resp.text)
+
+    @staticmethod
+    def _tiny_png(width: int = 1024, height: int = 576) -> bytes:
+        """PNG minimo com assinatura + IHDR suficiente para o validador."""
+        return (
+            b"\x89PNG\r\n\x1a\n"
+            + b"\x00\x00\x00\rIHDR"
+            + width.to_bytes(4, "big")
+            + height.to_bytes(4, "big")
+            + b"\x08\x02\x00\x00\x00" + b"\x00" * 16
+        )
+
+    def _project_with_scene(self, username: str) -> tuple[int, int, dict]:
+        user_id = db.create_user(username, "password123")
+        project_id = db.create_project(user_id, f"{username} project", "script", {})
+        db.replace_scenes(
+            project_id,
+            [
+                {
+                    "scene_id": "scene_001",
+                    "idx": 1,
+                    "zone": "GANCHO",
+                    "start_time": 0,
+                    "end_time": 4,
+                    "duration": 4,
+                    "narration": "teste",
+                }
+            ],
+        )
+        return user_id, project_id, db.list_scenes(project_id)[0]
+
+    def test_generated_image_upload_serves_and_blocks_other_users(self) -> None:
+        with TestClient(webapp.app) as client:
+            _, project_id, scene = self._project_with_scene("genowner")
+            db.create_user("genother", "password123")
+            client.post(
+                "/login",
+                data={"username": "genowner", "password": "password123"},
+                follow_redirects=False,
+            )
+            resp = client.post(
+                f"/scenes/{scene['id']}/generated-image",
+                files={"image": ("generated.png", self._tiny_png(), "image/png")},
+                data={"prompt": "peixe tropical", "width": "0", "height": "0"},
+            )
+            self.assertEqual(resp.status_code, 200)
+            asset = db.list_assets(scene["id"])[0]
+            self.assertEqual(asset["source"], "generated")
+            self.assertEqual(asset["asset_type"], "image")
+            self.assertEqual(asset["width"], 1024)
+            self.assertEqual(asset["height"], 576)
+            self.assertEqual(asset["keyword"], "peixe tropical")
+
+            served = client.get(asset["download_url"])
+            self.assertEqual(served.status_code, 200)
+            self.assertEqual(served.headers["content-type"], "image/png")
+
+            traversal = client.get(f"/projects/{project_id}/generated/..%2F..%2Fplataforma.db")
+            self.assertNotEqual(traversal.status_code, 200)
+
+            client.post(
+                "/login",
+                data={"username": "genother", "password": "password123"},
+                follow_redirects=False,
+            )
+            stolen = client.get(asset["download_url"])
+        self.assertEqual(stolen.status_code, 404)
+
+    def test_generated_image_rejects_non_image_payload(self) -> None:
+        with TestClient(webapp.app) as client:
+            _, _, scene = self._project_with_scene("genbad")
+            client.post(
+                "/login",
+                data={"username": "genbad", "password": "password123"},
+                follow_redirects=False,
+            )
+            resp = client.post(
+                f"/scenes/{scene['id']}/generated-image",
+                files={"image": ("fake.png", b"<html>not an image</html>", "image/png")},
+                data={"prompt": "x"},
+            )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(db.list_assets(scene["id"]), [])
+
+    def test_packager_copies_generated_asset_from_disk(self) -> None:
+        work_dir = self.root / "work" / "project_1"
+        gen_dir = work_dir / "generated"
+        gen_dir.mkdir(parents=True)
+        name = "gen_" + "a" * 32 + ".png"
+        (gen_dir / name).write_bytes(self._tiny_png())
+        dest = self.root / "copied.png"
+        asset = {"source": "generated", "download_url": f"/projects/1/generated/{name}"}
+
+        ok = packager._copy_generated(asset, work_dir, dest, max_bytes=10 * 1024 * 1024)
+        self.assertTrue(ok)
+        self.assertTrue(dest.is_file())
+
+        missing = {"source": "generated", "download_url": "/projects/1/generated/gen_nao_existe.png"}
+        self.assertFalse(
+            packager._copy_generated(missing, work_dir, self.root / "nope.png", max_bytes=1024)
+        )
 
     def test_diagnostics_json_route_reports_project_snapshot(self) -> None:
         with TestClient(webapp.app) as client:

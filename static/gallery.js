@@ -73,6 +73,93 @@ async function searchMore(sceneId, btn, media) {
 }
 
 // ------------------------------------------------------------------
+// Geração de imagem por IA (Puter.js no browser)
+// ------------------------------------------------------------------
+const GEN_TIMEOUT_MS = 180000; // 3 min: geração + possível popup de login
+const GEN_MAX_BYTES = 15 * 1024 * 1024;
+
+function toggleGenPanel(sceneId) {
+  const panel = document.getElementById("gen-panel-" + sceneId);
+  if (!panel) return;
+  const show = panel.style.display === "none";
+  panel.style.display = show ? "" : "none";
+  if (show) {
+    const ta = document.getElementById("gen-prompt-" + sceneId);
+    if (ta) ta.focus();
+  }
+}
+
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(label || "tempo esgotado — tente de novo")), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+function genErrorMessage(e) {
+  // Puter pode rejeitar com Error, string ou objeto {error:{message}} / {message}
+  if (!e) return "erro desconhecido";
+  if (typeof e === "string") return e;
+  if (e.message) return e.message;
+  if (e.error && e.error.message) return e.error.message;
+  try { return JSON.stringify(e).slice(0, 200); } catch (_) { return String(e); }
+}
+
+async function generateImage(sceneId, btn) {
+  const promptEl = document.getElementById("gen-prompt-" + sceneId);
+  const status = document.getElementById("gen-status-" + sceneId);
+  const prompt = (promptEl ? promptEl.value : "").trim();
+  if (!prompt) {
+    alert("Escreva um prompt antes de gerar.");
+    return;
+  }
+  if (typeof puter === "undefined" || !puter.ai || typeof puter.ai.txt2img !== "function") {
+    alert("Puter.js não carregou. Verifique a conexão ou desative o bloqueador de anúncios nesta página e recarregue.");
+    return;
+  }
+  if (btn.disabled) return; // protege contra clique duplo
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "gerando...";
+  if (status) status.textContent = "gerando imagem (pode levar até 1 min; na primeira vez o Puter pede login)...";
+  try {
+    const img = await withTimeout(puter.ai.txt2img(prompt), GEN_TIMEOUT_MS, "geração demorou demais — tente de novo");
+    const src = img && img.src;
+    if (!src) throw new Error("o gerador não retornou imagem");
+    // garante naturalWidth/Height preenchidos antes de ler
+    if (img.decode) { try { await img.decode(); } catch (_) {} }
+    const blob = await (await fetch(src)).blob();
+    if (!blob || blob.size === 0) throw new Error("imagem retornou vazia");
+    if (blob.size > GEN_MAX_BYTES) throw new Error("imagem gerada grande demais (>15 MB)");
+
+    if (status) status.textContent = "salvando no projeto...";
+    const fd = new FormData();
+    fd.append("image", blob, "generated.png");
+    fd.append("prompt", prompt);
+    fd.append("width", String(img.naturalWidth || 0));
+    fd.append("height", String(img.naturalHeight || 0));
+    const resp = await fetch(`/scenes/${sceneId}/generated-image`, { method: "POST", body: fd });
+    if (!resp.ok) {
+      let msg = `HTTP ${resp.status}`;
+      try { const j = await resp.json(); msg = j.detail || j.error || msg; } catch (_) {}
+      throw new Error(msg);
+    }
+    if (status) status.textContent = "imagem adicionada — recarregando...";
+    setTimeout(() => location.reload(), 600);
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = original;
+    if (status) status.textContent = "";
+    let msg = genErrorMessage(e);
+    if (/popup|blocked|window/i.test(msg)) {
+      msg += " — permita popups neste site para o login do Puter.";
+    }
+    alert("Falha ao gerar imagem: " + msg);
+  }
+}
+
+// ------------------------------------------------------------------
 // Kaggle
 // ------------------------------------------------------------------
 let _kagglePolling = null;

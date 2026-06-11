@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -796,6 +798,139 @@ def asset_state(request: Request, asset_id: int, state: str = Form(...)):
     if not updated:
         raise HTTPException(404)
     return JSONResponse({"id": asset_id, "state": updated["state"]})
+
+
+# ------------------------------------------------------------------
+# Imagens geradas por IA (Puter.js no browser -> salvas como asset)
+# ------------------------------------------------------------------
+GENERATED_DIR_NAME = "generated"
+MAX_GENERATED_UPLOAD_MB = 15
+_GENERATED_NAME_RE = re.compile(r"^gen_[0-9a-f]{32}\.(png|jpg|webp)$")
+_GENERATED_MEDIA_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}
+
+
+def project_generated_dir(project_id: int) -> Path:
+    return project_work_dir(project_id) / GENERATED_DIR_NAME
+
+
+def _jpeg_size(data: bytes) -> tuple[int, int]:
+    """Extrai (width, height) dos marcadores SOF de um JPEG; (0,0) se falhar."""
+    i = 2
+    try:
+        while i + 9 < len(data):
+            if data[i] != 0xFF:
+                i += 1
+                continue
+            marker = data[i + 1]
+            if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+                return (
+                    int.from_bytes(data[i + 7:i + 9], "big"),
+                    int.from_bytes(data[i + 5:i + 7], "big"),
+                )
+            seg_len = int.from_bytes(data[i + 2:i + 4], "big")
+            i += 2 + max(seg_len, 2)
+    except Exception:  # noqa: BLE001 - dimensao e best-effort, nunca bloqueia o upload
+        pass
+    return 0, 0
+
+
+def _image_kind_and_size(data: bytes) -> tuple[str, int, int]:
+    """Detecta o formato por magic bytes e le as dimensoes quando possivel.
+
+    Retorna (extensao, width, height); width/height = 0 quando nao deu para ler.
+    Levanta ValueError para formatos nao suportados (nao confiamos no mimetype
+    enviado pelo browser).
+    """
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        w = h = 0
+        if len(data) >= 24:
+            w = int.from_bytes(data[16:20], "big")
+            h = int.from_bytes(data[20:24], "big")
+        return ".png", w, h
+    if data.startswith(b"\xff\xd8\xff"):
+        w, h = _jpeg_size(data)
+        return ".jpg", w, h
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp", 0, 0
+    raise ValueError("Arquivo nao e PNG, JPEG ou WebP.")
+
+
+@app.post("/scenes/{scene_db_id}/generated-image")
+async def save_generated_image(
+    request: Request,
+    scene_db_id: int,
+    image: UploadFile = File(...),
+    prompt: str = Form(""),
+    width: str = Form("0"),
+    height: str = Form("0"),
+):
+    user = require_user(request)
+    scene = db.get_scene(scene_db_id)
+    if not scene:
+        raise HTTPException(404)
+    project = db.get_project(scene["project_id"], user["id"])
+    if not project:
+        raise HTTPException(404)
+    data = await image.read()
+    if not data:
+        raise HTTPException(400, "Imagem vazia.")
+    if len(data) > MAX_GENERATED_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(400, f"Imagem muito grande (maximo {MAX_GENERATED_UPLOAD_MB} MB).")
+    try:
+        ext, parsed_w, parsed_h = _image_kind_and_size(data)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    # dimensoes do header tem prioridade; as do browser sao fallback
+    w = parsed_w or _coerce_int(width, 0, 0, 16384)
+    h = parsed_h or _coerce_int(height, 0, 0, 16384)
+    prompt = (prompt or "").strip()[:500]
+
+    folder = project_generated_dir(project["id"])
+    folder.mkdir(parents=True, exist_ok=True)
+    filename = f"gen_{uuid.uuid4().hex}{ext}"
+    dest = folder / filename
+    try:
+        dest.write_bytes(data)
+        url = f"/projects/{project['id']}/generated/{filename}"
+        added = db.add_assets(scene_db_id, [{
+            "source": "generated",
+            "source_id": filename,
+            "asset_type": "image",
+            "preview_url": url,
+            "download_url": url,
+            "page_url": "",
+            "width": w,
+            "height": h,
+            "duration": 0,
+            "keyword": prompt[:60] or "imagem gerada",
+            "author": "",
+            "author_url": "",
+        }])
+    except Exception:
+        # nao deixa arquivo orfao se o INSERT falhar
+        dest.unlink(missing_ok=True)
+        raise
+    if added != 1:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(500, "Falha ao registrar a imagem gerada.")
+    return JSONResponse({"added": added, "url": url})
+
+
+@app.get("/projects/{project_id}/generated/{filename}")
+def serve_generated_image(request: Request, project_id: int, filename: str):
+    user = require_user(request)
+    if not db.get_project(project_id, user["id"]):
+        raise HTTPException(404)
+    # regex estrito impede path traversal e acesso a outros arquivos do work dir
+    if not _GENERATED_NAME_RE.fullmatch(filename):
+        raise HTTPException(404)
+    path = project_generated_dir(project_id) / filename
+    if not path.is_file():
+        raise HTTPException(404, "Imagem gerada nao encontrada.")
+    return FileResponse(
+        path,
+        media_type=_GENERATED_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream"),
+    )
 
 
 # ------------------------------------------------------------------

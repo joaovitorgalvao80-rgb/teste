@@ -298,13 +298,30 @@
       <div class="row">
         <button class="btn btn-secondary btn-sm" onclick="searchMore({{ scene.id }}, this, 'video')">+ vídeos</button>
         <button class="btn btn-secondary btn-sm" onclick="searchMore({{ scene.id }}, this, 'image')">+ imagens</button>
+        <button class="btn btn-secondary btn-sm" type="button" onclick="toggleGenPanel({{ scene.id }})">✦ gerar imagem</button>
         <button class="btn btn-ghost btn-sm" onclick="regenKeywords({{ scene.id }})">
           novas keywords
           <span id="kw-{{ scene.id }}" style="display:none">{{ scene.keywords|join(', ') }}</span>
         </button>
         <span class="t-small t-faint" style="margin-left:auto">avatar: {{ scene.avatar_safe_area }}</span>
       </div>
+
+      <div class="gen-panel" id="gen-panel-{{ scene.id }}" style="display:none;margin-top:var(--sp-3);padding:var(--sp-3);border:1px solid var(--line-0);border-radius:6px">
+        <p class="t-small t-faint" style="margin-bottom:var(--sp-2)">
+          Gera via Puter.js no seu navegador (login gratuito na primeira vez). A imagem entra como take normal.
+        </p>
+        <textarea id="gen-prompt-{{ scene.id }}" rows="3" style="width:100%;resize:vertical"
+          >{{ (scene.visual_goal or scene.narration or '')[:160] }}{% if scene.keywords %}, {{ scene.keywords[:3]|join(', ') }}{% endif %}, {{ config.visual_style }}, photorealistic, 16:9 wide shot, no text, no watermark</textarea>
+        <div class="row" style="margin-top:var(--sp-2)">
+          <button class="btn btn-secondary btn-sm" type="button" onclick="generateImage({{ scene.id }}, this)">Gerar</button>
+          <span class="t-small t-faint" id="gen-status-{{ scene.id }}"></span>
+        </div>
+      </div>
     </div>
   </section>
 {% endfor %}
+{% endblock %}
+
+{% block scripts %}
+{% if scenes %}<script src="https://js.puter.com/v2/"></script>{% endif %}
 {% endblock %}

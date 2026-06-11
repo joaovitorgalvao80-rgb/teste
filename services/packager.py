@@ -19,6 +19,7 @@ import csv
 import io
 import json
 import re
+import shutil
 import unicodedata
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -47,6 +48,33 @@ def _ext_for(asset: dict) -> str:
 
 def _stamp(seconds: float) -> str:
     return f"{int(seconds // 60):02d}-{int(seconds % 60):02d}"
+
+
+def _copy_generated(asset: dict, work_dir: Path, dest: Path, max_bytes: int) -> bool:
+    """Copia imagem gerada por IA (arquivo local no work dir) em vez de baixar.
+
+    O download_url desses assets e uma rota interna (/projects/X/generated/...),
+    nao um endpoint publico; requests.get falharia sem sessao autenticada.
+    """
+    name = Path(urlparse(asset.get("download_url", "")).path).name
+    if not name or "/" in name or "\\" in name or ".." in name:
+        print(f"  [skip] nome de imagem gerada invalido: {name!r}")
+        return False
+    src = work_dir / "generated" / name
+    try:
+        if not src.is_file():
+            print(f"  [skip] imagem gerada nao encontrada no disco: {name}")
+            return False
+        size = src.stat().st_size
+        if size == 0 or size > max_bytes:
+            print(f"  [skip] imagem gerada vazia ou acima do limite: {name}")
+            return False
+        shutil.copyfile(src, dest)
+        return dest.exists() and dest.stat().st_size > 0
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [copia gerada erro] {exc}")
+        dest.unlink(missing_ok=True)
+        return False
 
 
 def _download(url: str, dest: Path, max_bytes: int) -> bool:
@@ -191,7 +219,7 @@ def build_zip(
     tmp = work_dir / "assets_tmp"
     tmp.mkdir(parents=True, exist_ok=True)
     file_by_scene: dict[str, Path] = {}
-    pexels_sources, pixabay_sources = [], []
+    pexels_sources, pixabay_sources, generated_sources = [], [], []
 
     # baixa em paralelo (I/O bound); resultados processados na ordem das cenas
     jobs = []
@@ -204,11 +232,15 @@ def build_zip(
         print(f"[zip] baixando {scene['scene_id']} <- {asset['source']} {asset.get('width')}x{asset.get('height')}")
         jobs.append((scene, gscene, asset, filename, dest))
 
+    def _fetch(job):
+        _scene, _gscene, asset, _filename, dest = job
+        if asset.get("source") == "generated":
+            return _copy_generated(asset, work_dir, dest, max_bytes)
+        return _download(asset["download_url"], dest, max_bytes)
+
     if jobs:
         with ThreadPoolExecutor(max_workers=min(DOWNLOAD_WORKERS, len(jobs))) as pool:
-            ok_flags = list(
-                pool.map(lambda j: _download(j[2]["download_url"], j[4], max_bytes), jobs)
-            )
+            ok_flags = list(pool.map(_fetch, jobs))
     else:
         ok_flags = []
 
@@ -220,7 +252,12 @@ def build_zip(
                 "file": f"assets/{filename}",
                 **(gscene.get("source_metadata") or {}),
             }
-            (pexels_sources if asset["source"] == "pexels" else pixabay_sources).append(record)
+            if asset["source"] == "pexels":
+                pexels_sources.append(record)
+            elif asset["source"] == "generated":
+                generated_sources.append(record)
+            else:
+                pixabay_sources.append(record)
         else:
             # falhou o download: remove a selecao do guia para nao apontar para arquivo inexistente
             gscene["selected_asset"] = None
@@ -250,6 +287,7 @@ def build_zip(
         zf.writestr("roteiro_com_brolls.md", _guide_to_md(project, guide))
         zf.writestr("metadata/pexels_sources.json", json.dumps(pexels_sources, ensure_ascii=False, indent=2))
         zf.writestr("metadata/pixabay_sources.json", json.dumps(pixabay_sources, ensure_ascii=False, indent=2))
+        zf.writestr("metadata/generated_sources.json", json.dumps(generated_sources, ensure_ascii=False, indent=2))
         zf.writestr("metadata/rejected_assets.json", json.dumps(rejected_assets, ensure_ascii=False, indent=2))
         if edit_plan:
             zf.writestr("edit_plan.json", json.dumps(edit_plan, ensure_ascii=False, indent=2))
