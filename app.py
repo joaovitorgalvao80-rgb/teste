@@ -181,6 +181,22 @@ def normalize_project_config(raw_config: Optional[dict] = None) -> dict:
 # ------------------------------------------------------------------
 logger = logging.getLogger("nwrch.app")
 
+_DEFAULT_DATA_DIR = str(ROOT / "data")
+
+
+def _log_startup_config():
+    using_default = str(DATA_DIR) == _DEFAULT_DATA_DIR
+    logger.info("DATA_DIR: %s", DATA_DIR)
+    if APP_ENV == "production" and using_default:
+        logger.warning(
+            "ATENCAO: DATA_DIR nao configurado — usando pasta local '%s'. "
+            "No Railway, crie um Volume e defina DATA_DIR=/data nas variaveis de ambiente; "
+            "sem isso os dados sao apagados a cada redeploy.",
+            DATA_DIR,
+        )
+    if not os.getenv("APP_SECRET_KEY"):
+        logger.warning("APP_SECRET_KEY nao definida — sessoes nao persistem entre restarts.")
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -197,6 +213,7 @@ async def lifespan(_app: FastAPI):
     stale = db.fail_stale_jobs()
     if stale:
         logger.warning("%s job(s) pendentes de processo anterior marcados como erro", stale)
+    _log_startup_config()
     yield
 
 
@@ -605,6 +622,14 @@ def run_kaggle_send_job(
     except Exception as exc:  # noqa: BLE001 - registra falha operacional para a UI
         db.update_kaggle_status(project_id, "error")
         db.fail_job(job_id, "Falha ao enviar para o Kaggle", str(exc))
+
+
+# ------------------------------------------------------------------
+# Health check (Railway / load balancer)
+# ------------------------------------------------------------------
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 
 # ------------------------------------------------------------------
