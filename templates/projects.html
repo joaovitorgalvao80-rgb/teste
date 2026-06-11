@@ -34,6 +34,7 @@
         <div class="project-actions">
           <a class="btn btn-ghost btn-sm" href="/projects/{{ p.id }}">Abrir</a>
           <form method="post" action="/projects/{{ p.id }}/delete" onsubmit="return confirm('Apagar este projeto?')">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn btn-danger btn-sm" type="submit">Apagar</button>
           </form>
         </div>

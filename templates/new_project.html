@@ -11,6 +11,7 @@
 
 <div class="panel panel-pad">
   <form method="post" action="/projects/new" id="new-project-form" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
     <label>Nome do projeto
       <input name="name" required placeholder="video_dengue_bti">
@@ -84,6 +85,7 @@ document.getElementById("audio-upload").addEventListener("change", async functio
   try {
     const fd = new FormData();
     fd.append("audio", file);
+    fd.append("csrf_token", document.querySelector('meta[name="csrf-token"]').content || "");
     const res = await fetch("/transcribe-audio", { method: "POST", body: fd });
     if (!res.ok) {
       let msg = `HTTP ${res.status}`;

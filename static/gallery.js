@@ -2,7 +2,9 @@
 
 async function postForm(url, data) {
   const body = new URLSearchParams(data || {});
-  const resp = await fetch(url, { method: "POST", body });
+  const token = csrfToken();
+  if (token && !body.has("csrf_token")) body.set("csrf_token", token);
+  const resp = await fetch(url, { method: "POST", body, headers: token ? { "x-csrf-token": token } : {} });
   if (!resp.ok) {
     let msg = `HTTP ${resp.status}`;
     try { const j = await resp.json(); msg = j.detail || j.error || msg; }
@@ -10,6 +12,11 @@ async function postForm(url, data) {
     throw new Error(msg);
   }
   return resp.json();
+}
+
+function csrfToken() {
+  const meta = document.querySelector('meta[name="csrf-token"]');
+  return meta ? meta.content : "";
 }
 
 async function setState(assetId, state) {
@@ -50,10 +57,13 @@ function updateSelectedCount() {
   document.querySelectorAll("section.scene").forEach((sec) => {
     if (sec.querySelector(".take.is-selected")) selected++;
   });
+  const statusBadge = document.querySelector(".head-status .badge");
+  const status = statusBadge ? statusBadge.textContent.trim().toLowerCase() : "";
+  const busy = ["mapping", "searching", "packaging"].includes(status);
   // atualiza o texto do step no pipeline
   const nameSpan = btn.querySelector(".step-name");
   if (nameSpan) nameSpan.textContent = `Pacote (${selected}/${total})`;
-  btn.disabled = total === 0 || selected !== total;
+  btn.disabled = busy || total === 0 || selected !== total;
 }
 
 async function searchMore(sceneId, btn, media) {
@@ -77,6 +87,7 @@ async function searchMore(sceneId, btn, media) {
 // ------------------------------------------------------------------
 const GEN_TIMEOUT_MS = 180000; // 3 min: geração + possível popup de login
 const GEN_MAX_BYTES = 15 * 1024 * 1024;
+let _puterLoadPromise = null;
 
 function toggleGenPanel(sceneId) {
   const panel = document.getElementById("gen-panel-" + sceneId);
@@ -97,6 +108,22 @@ function withTimeout(promise, ms, label) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+function ensurePuterLoaded() {
+  if (typeof puter !== "undefined" && puter.ai && typeof puter.ai.txt2img === "function") {
+    return Promise.resolve();
+  }
+  if (_puterLoadPromise) return _puterLoadPromise;
+  _puterLoadPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://js.puter.com/v2/";
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("Puter.js não carregou"));
+    document.head.appendChild(script);
+  });
+  return _puterLoadPromise;
+}
+
 function genErrorMessage(e) {
   // Puter pode rejeitar com Error, string ou objeto {error:{message}} / {message}
   if (!e) return "erro desconhecido";
@@ -114,16 +141,17 @@ async function generateImage(sceneId, btn) {
     alert("Escreva um prompt antes de gerar.");
     return;
   }
-  if (typeof puter === "undefined" || !puter.ai || typeof puter.ai.txt2img !== "function") {
-    alert("Puter.js não carregou. Verifique a conexão ou desative o bloqueador de anúncios nesta página e recarregue.");
-    return;
-  }
   if (btn.disabled) return; // protege contra clique duplo
   const original = btn.textContent;
   btn.disabled = true;
   btn.textContent = "gerando...";
-  if (status) status.textContent = "gerando imagem (pode levar até 1 min; na primeira vez o Puter pede login)...";
+  if (status) status.textContent = "carregando gerador externo...";
   try {
+    await ensurePuterLoaded();
+    if (typeof puter === "undefined" || !puter.ai || typeof puter.ai.txt2img !== "function") {
+      throw new Error("Puter.js não inicializou");
+    }
+    if (status) status.textContent = "gerando imagem (pode levar até 1 min; na primeira vez o Puter pede login)...";
     const img = await withTimeout(puter.ai.txt2img(prompt), GEN_TIMEOUT_MS, "geração demorou demais — tente de novo");
     const src = img && img.src;
     if (!src) throw new Error("o gerador não retornou imagem");
@@ -139,7 +167,12 @@ async function generateImage(sceneId, btn) {
     fd.append("prompt", prompt);
     fd.append("width", String(img.naturalWidth || 0));
     fd.append("height", String(img.naturalHeight || 0));
-    const resp = await fetch(`/scenes/${sceneId}/generated-image`, { method: "POST", body: fd });
+    const token = csrfToken();
+    if (token) fd.append("csrf_token", token);
+    const resp = await fetch(
+      `/scenes/${sceneId}/generated-image`,
+      { method: "POST", body: fd, headers: token ? { "x-csrf-token": token } : {} }
+    );
     if (!resp.ok) {
       let msg = `HTTP ${resp.status}`;
       try { const j = await resp.json(); msg = j.detail || j.error || msg; } catch (_) {}
@@ -341,7 +374,30 @@ document.addEventListener("DOMContentLoaded", () => {
       startKagglePolling(pid);
     }
   }
+  startProjectJobRefresh();
 });
+
+function startProjectJobRefresh() {
+  const projectId = window.NWRCH_PROJECT_ID;
+  if (!projectId) return;
+  const statusBadge = document.querySelector(".head-status .badge");
+  const current = statusBadge ? statusBadge.textContent.trim().toLowerCase() : "";
+  if (!["mapping", "searching", "packaging"].includes(current)) return;
+  let ticks = 0;
+  const poll = async () => {
+    ticks += 1;
+    try {
+      const res = await fetch(`/projects/${projectId}/jobs`);
+      const data = await res.json();
+      const active = (data.jobs || []).some((job) => ["queued", "running"].includes(job.status));
+      if (!active || ticks > 240) location.reload();
+      else setTimeout(poll, 2500);
+    } catch (_) {
+      if (ticks < 8) setTimeout(poll, 4000);
+    }
+  };
+  setTimeout(poll, 1200);
+}
 
 async function regenKeywords(sceneId) {
   // hidden span armazena os keywords atuais para restaurar em caso de erro

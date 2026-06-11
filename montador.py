@@ -205,6 +205,23 @@ def load_guide(pack_dir: Path) -> dict:
     return json.loads(guide_path.read_text(encoding="utf-8"))
 
 
+def resolve_selected_asset(pack_dir: Path, selected: str) -> Path:
+    selected = str(selected or "").replace("\\", "/").strip()
+    if not selected:
+        raise RuntimeError("Cena sem selected_asset.")
+    if selected.startswith("/") or selected.startswith("../") or "/../" in selected:
+        raise RuntimeError(f"selected_asset inseguro fora de assets/: {selected}")
+    if not selected.startswith("assets/"):
+        raise RuntimeError(f"selected_asset deve ficar dentro de assets/: {selected}")
+    assets_root = (pack_dir / "assets").resolve()
+    src = (pack_dir / selected).resolve()
+    try:
+        src.relative_to(assets_root)
+    except ValueError as exc:
+        raise RuntimeError(f"selected_asset fora de assets/: {selected}") from exc
+    return src
+
+
 # ----------------------------------------------------------------------------
 # Render de uma cena (clipe normalizado para a timeline)
 # ----------------------------------------------------------------------------
@@ -224,12 +241,10 @@ def build_clip(
 ) -> Optional[Path]:
     selected = scene.get("selected_asset")
     if not selected:
-        log(f"  [skip] {scene['id']} sem selected_asset")
-        return None
-    src = (pack_dir / selected).resolve()
+        raise RuntimeError(f"{scene['id']} sem selected_asset")
+    src = resolve_selected_asset(pack_dir, selected)
     if not src.exists():
-        log(f"  [skip] {scene['id']} arquivo nao encontrado: {selected}")
-        return None
+        raise RuntimeError(f"{scene['id']} arquivo nao encontrado: {selected}")
 
     duration = float(scene.get("duration") or 0)
     if duration <= 0:
@@ -292,7 +307,7 @@ def build_clip(
     result = run(cmd, timeout=1200, cwd=render_cwd)
     if result.returncode != 0:
         log(f"  [ERRO ffmpeg] {scene['id']}:\n{result.stderr[-800:]}")
-        return None
+        raise RuntimeError(f"FFmpeg falhou em {scene['id']}")
     return out
 
 
@@ -390,8 +405,6 @@ def montar(
                 overlay_enabled=overlay_enabled, log=log, crf=crf, preset=preset,
                 font_file=font_file, render_cwd=workdir,
             )
-            if clip is None:
-                continue
             clips.append(clip)
             execution["scenes"].append({
                 "id": scene["id"],

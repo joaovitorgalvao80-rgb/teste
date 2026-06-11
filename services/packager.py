@@ -199,6 +199,24 @@ def _guide_to_md(project: dict, guide: dict) -> str:
     return "\n".join(lines)
 
 
+def _licenses_md() -> str:
+    return "\n".join(
+        [
+            "# Licencas e fontes",
+            "",
+            "Este pacote pode conter assets de Pexels, Pixabay e imagens geradas pelo usuario.",
+            "A licenca final depende da origem de cada arquivo.",
+            "",
+            "- Consulte `metadata/pexels_sources.json` para URLs, autores e paginas Pexels.",
+            "- Consulte `metadata/pixabay_sources.json` para URLs, autores e paginas Pixabay.",
+            "- Consulte `metadata/generated_sources.json` para imagens adicionadas pelo usuario.",
+            "- Consulte `metadata/rejected_assets.json` para auditoria de curadoria.",
+            "",
+            "Nao redistribua este pacote como CC0 sem revisar as licencas dos provedores.",
+        ]
+    )
+
+
 def build_zip(
     project: dict,
     config: dict,
@@ -285,6 +303,7 @@ def build_zip(
         zf.writestr("guia_visual.json", json.dumps(guide, ensure_ascii=False, indent=2))
         zf.writestr("guia_visual.csv", _guide_to_csv(guide))
         zf.writestr("roteiro_com_brolls.md", _guide_to_md(project, guide))
+        zf.writestr("LICENSES.md", _licenses_md())
         zf.writestr("metadata/pexels_sources.json", json.dumps(pexels_sources, ensure_ascii=False, indent=2))
         zf.writestr("metadata/pixabay_sources.json", json.dumps(pixabay_sources, ensure_ascii=False, indent=2))
         zf.writestr("metadata/generated_sources.json", json.dumps(generated_sources, ensure_ascii=False, indent=2))

@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import hmac
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -47,6 +49,20 @@ def _load_env_file(path: Path = ROOT / ".env") -> None:
 
 _load_env_file()
 APP_ENV = os.getenv("APP_ENV", "dev").strip().lower()
+ENFORCE_CSRF = os.getenv("ENFORCE_CSRF", "1" if APP_ENV == "production" else "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+ALLOW_REGISTRATION = os.getenv("ALLOW_REGISTRATION", "1" if APP_ENV != "production" else "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+ALLOW_FIRST_USER = os.getenv("ALLOW_FIRST_USER", "1").strip().lower() in {"1", "true", "yes", "on"}
+INVITE_CODE = os.getenv("INVITE_CODE", "").strip()
 
 
 def _require_secret() -> str:
@@ -67,6 +83,7 @@ def _require_secret() -> str:
 
 DATA_DIR = Path(os.getenv("DATA_DIR", str(ROOT / "data")))
 WORK_DIR = DATA_DIR / "work"
+BUSY_PROJECT_STATUSES = {"mapping", "searching", "packaging"}
 
 DEFAULT_CONFIG = {
     "format": "16:9",
@@ -177,6 +194,78 @@ app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 templates = Jinja2Templates(directory=str(ROOT / "templates"))
 
+
+def csrf_token_for(request: Request) -> str:
+    token = request.session.get("_csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        request.session["_csrf_token"] = token
+    return token
+
+
+def verify_csrf(request: Request, token: str = "") -> None:
+    if not ENFORCE_CSRF:
+        return
+    expected = request.session.get("_csrf_token", "")
+    supplied = token or request.headers.get("x-csrf-token", "")
+    if not expected or not supplied or not hmac.compare_digest(expected, supplied):
+        raise HTTPException(403, "CSRF token invalido. Recarregue a pagina e tente novamente.")
+
+
+def registration_state() -> dict:
+    user_count = db.count_users()
+    first_user_allowed = ALLOW_FIRST_USER and user_count == 0
+    invite_required = bool(INVITE_CODE) and not first_user_allowed
+    enabled = first_user_allowed or ALLOW_REGISTRATION or bool(INVITE_CODE)
+    return {
+        "enabled": enabled,
+        "invite_required": invite_required,
+        "first_user_allowed": first_user_allowed,
+    }
+
+
+def render_template(
+    request: Request,
+    template_name: str,
+    context: Optional[dict] = None,
+    status_code: int = 200,
+):
+    payload = dict(context or {})
+    payload.setdefault("csrf_token", csrf_token_for(request))
+    payload.setdefault("registration", registration_state())
+    return templates.TemplateResponse(request, template_name, payload, status_code=status_code)
+
+
+def mask_secret(value: str) -> str:
+    value = value or ""
+    if not value:
+        return ""
+    if len(value) <= 8:
+        return "configurada"
+    return f"{value[:4]}...{value[-4:]}"
+
+
+def secret_from_form(current: str, submitted: str, clear: str = "") -> str:
+    if _coerce_bool(clear):
+        return ""
+    submitted = (submitted or "").strip()
+    return submitted if submitted else (current or "")
+
+
+async def read_upload_limited(upload: UploadFile, max_bytes: int, label: str = "arquivo") -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await upload.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            detail = label if "maximo" in label.lower() or "máximo" in label.lower() else f"{label} muito grande."
+            raise HTTPException(400, detail)
+        chunks.append(chunk)
+    return b"".join(chunks)
+
 # ------------------------------------------------------------------
 # Error handlers (mostra pagina HTML em vez de JSON cru)
 # ------------------------------------------------------------------
@@ -196,7 +285,7 @@ async def html_error_handler(request: Request, exc: StarletteHTTPException):
     if exc.status_code == 401:
         return RedirectResponse(f"/login?next={request.url.path}", status_code=303)
     user = current_user(request)
-    return templates.TemplateResponse(
+    return render_template(
         request,
         "error.html",
         {"user": user, "status_code": exc.status_code, "detail": exc.detail},
@@ -236,6 +325,48 @@ def missing_selected_scene_ids(scenes: list[dict], selected_by_scene: dict[int, 
 
 def project_work_dir(project_id: int) -> Path:
     return WORK_DIR / f"project_{project_id}"
+
+
+def _safe_child_dir(root: Path, child: Path) -> Optional[Path]:
+    root_resolved = root.resolve()
+    child_resolved = child.resolve()
+    try:
+        child_resolved.relative_to(root_resolved)
+    except ValueError:
+        return None
+    return child_resolved
+
+
+def remove_project_artifacts(project_id: int, include_generated: bool = False) -> None:
+    project_work = _safe_child_dir(WORK_DIR, project_work_dir(project_id))
+    if not project_work or not project_work.exists():
+        return
+    for zip_file in project_work.glob("*.zip"):
+        zip_file.unlink(missing_ok=True)
+    for folder_name in ["assets_tmp", "kaggle_output"]:
+        folder = _safe_child_dir(project_work, project_work / folder_name)
+        if folder and folder.exists():
+            shutil.rmtree(folder, ignore_errors=True)
+    if include_generated:
+        generated = _safe_child_dir(project_work, project_work / GENERATED_DIR_NAME)
+        if generated and generated.exists():
+            shutil.rmtree(generated, ignore_errors=True)
+
+
+def remove_project_workspace(project_id: int) -> None:
+    project_work = _safe_child_dir(WORK_DIR, project_work_dir(project_id))
+    if project_work and project_work.exists():
+        shutil.rmtree(project_work, ignore_errors=True)
+
+
+def mark_project_dirty(project_id: int, include_generated: bool = False) -> None:
+    db.mark_project_needs_package(project_id)
+    remove_project_artifacts(project_id, include_generated=include_generated)
+
+
+def ensure_project_not_busy(project: dict) -> None:
+    if project.get("status") in BUSY_PROJECT_STATUSES:
+        raise HTTPException(409, "Aguarde o job atual terminar antes de alterar este projeto.")
 
 
 def expected_duration_from_scenes(scenes: list[dict]) -> float:
@@ -417,7 +548,7 @@ def home(request: Request):
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request, error: str = "", next: str = ""):
-    return templates.TemplateResponse(request, "login.html", {"error": error, "next": next})
+    return render_template(request, "login.html", {"error": error, "next": next})
 
 
 @app.post("/login")
@@ -436,9 +567,19 @@ def login(
 
 
 @app.post("/register")
-def register(request: Request, username: str = Form(...), password: str = Form(...)):
+def register(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    invite_code: str = Form(""),
+):
+    state = registration_state()
+    if not state["enabled"]:
+        return RedirectResponse("/login?error=Cadastro+desativado", status_code=303)
+    if state["invite_required"] and not hmac.compare_digest(invite_code.strip(), INVITE_CODE):
+        return RedirectResponse("/login?error=Convite+invalido", status_code=303)
     username = username.strip()
-    if not username or len(password) < 4:
+    if not username or len(password) < 8:
         return RedirectResponse("/login?error=Usuario+ou+senha+invalidos", status_code=303)
     if db.get_user_by_name(username):
         return RedirectResponse("/login?error=Usuario+ja+existe", status_code=303)
@@ -460,11 +601,23 @@ def logout(request: Request):
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request, saved: str = ""):
     user = require_user(request)
-    return templates.TemplateResponse(request, "settings.html", {
-        "user": user,
-        "saved": saved,
-        "groq_models": groq_service.GROQ_MODELS,
-    })
+    secret_masks = {
+        "pexels": mask_secret(user.get("pexels_key", "")),
+        "pixabay": mask_secret(user.get("pixabay_key", "")),
+        "groq": mask_secret(user.get("groq_key", "")),
+        "openrouter": mask_secret(user.get("openrouter_key", "")),
+        "kaggle_token": mask_secret(user.get("kaggle_token", "")),
+    }
+    return render_template(
+        request,
+        "settings.html",
+        {
+            "user": user,
+            "saved": saved,
+            "groq_models": groq_service.GROQ_MODELS,
+            "secret_masks": secret_masks,
+        },
+    )
 
 
 @app.get("/settings/test-kaggle")
@@ -500,13 +653,28 @@ def settings_save(
     openrouter: str = Form(""),
     kaggle_username: str = Form(""),
     kaggle_token: str = Form(""),
+    clear_pexels: str = Form(""),
+    clear_pixabay: str = Form(""),
+    clear_groq: str = Form(""),
+    clear_openrouter: str = Form(""),
+    clear_kaggle_token: str = Form(""),
+    csrf_token: str = Form(""),
 ):
     user = require_user(request)
+    verify_csrf(request, csrf_token)
     db.update_api_keys(
-        user["id"], pexels.strip(), pixabay.strip(), groq.strip(), groq_model.strip(),
-        openrouter=openrouter.strip(),
+        user["id"],
+        secret_from_form(user.get("pexels_key", ""), pexels, clear_pexels),
+        secret_from_form(user.get("pixabay_key", ""), pixabay, clear_pixabay),
+        secret_from_form(user.get("groq_key", ""), groq, clear_groq),
+        groq_model.strip(),
+        openrouter=secret_from_form(user.get("openrouter_key", ""), openrouter, clear_openrouter),
     )
-    db.update_kaggle_keys(user["id"], kaggle_username.strip(), kaggle_token.strip())
+    db.update_kaggle_keys(
+        user["id"],
+        kaggle_username.strip(),
+        secret_from_form(user.get("kaggle_token", ""), kaggle_token, clear_kaggle_token),
+    )
     return RedirectResponse("/settings?saved=1", status_code=303)
 
 
@@ -552,11 +720,20 @@ def _extract_audio_bytes(raw: bytes, filename: str) -> tuple[bytes, str]:
 
 
 @app.post("/transcribe-audio")
-async def transcribe_audio(request: Request, audio: UploadFile = File(...)):
+async def transcribe_audio(
+    request: Request,
+    audio: UploadFile = File(...),
+    csrf_token: str = Form(""),
+):
     user = require_user(request)
+    verify_csrf(request, csrf_token)
     if not user.get("groq_key"):
         raise HTTPException(400, "Configure a chave Groq em /settings para usar transcrição.")
-    raw = await audio.read()
+    raw = await read_upload_limited(
+        audio,
+        MAX_TRANSCRIBE_UPLOAD_MB * 1024 * 1024,
+        f"Arquivo muito grande (maximo {MAX_TRANSCRIBE_UPLOAD_MB} MB para upload)",
+    )
     if len(raw) > MAX_TRANSCRIBE_UPLOAD_MB * 1024 * 1024:
         raise HTTPException(400, f"Arquivo muito grande (máximo {MAX_TRANSCRIBE_UPLOAD_MB} MB para upload).")
     try:
@@ -576,13 +753,13 @@ async def transcribe_audio(request: Request, audio: UploadFile = File(...)):
 def projects_page(request: Request):
     user = require_user(request)
     projects = db.list_projects(user["id"])
-    return templates.TemplateResponse(request, "projects.html", {"user": user, "projects": projects})
+    return render_template(request, "projects.html", {"user": user, "projects": projects})
 
 
 @app.get("/projects/new", response_class=HTMLResponse)
 def new_project_page(request: Request):
     user = require_user(request)
-    return templates.TemplateResponse(request, "new_project.html", {"user": user, "config": DEFAULT_CONFIG})
+    return render_template(request, "new_project.html", {"user": user, "config": DEFAULT_CONFIG})
 
 
 @app.post("/projects/new")
@@ -596,11 +773,17 @@ async def new_project(
     scene_duration: float = Form(4.0),
     image_fallback: str = Form(""),
     narration_media: Optional[UploadFile] = File(None),
+    csrf_token: str = Form(""),
 ):
     user = require_user(request)
+    verify_csrf(request, csrf_token)
     prepared_narration: Optional[tuple[bytes, str]] = None
     if narration_media and narration_media.filename:
-        raw = await narration_media.read()
+        raw = await read_upload_limited(
+            narration_media,
+            MAX_TRANSCRIBE_UPLOAD_MB * 1024 * 1024,
+            f"Arquivo muito grande (maximo {MAX_TRANSCRIBE_UPLOAD_MB} MB para upload)",
+        )
         if raw:
             prepared_narration = prepare_narration_media(raw, narration_media.filename)
     config = normalize_project_config({
@@ -617,9 +800,14 @@ async def new_project(
 
 
 @app.post("/projects/{project_id}/delete")
-def delete_project(request: Request, project_id: int):
+def delete_project(request: Request, project_id: int, csrf_token: str = Form("")):
     user = require_user(request)
-    db.delete_project(project_id, user["id"])
+    verify_csrf(request, csrf_token)
+    project = db.get_project(project_id, user["id"])
+    if project:
+        ensure_project_not_busy(project)
+        db.delete_project(project_id, user["id"])
+        remove_project_workspace(project_id)
     return RedirectResponse("/projects", status_code=303)
 
 
@@ -641,7 +829,8 @@ def project_page(request: Request, project_id: int):
     avatar_file = find_input_media(project_id, "avatar")
     outputs = local_output_videos(project_work)
     jobs = db.list_project_jobs(project_id, user["id"])
-    return templates.TemplateResponse(
+    active_jobs = [job for job in jobs if job.get("status") in {"queued", "running"}]
+    return render_template(
         request,
         "project.html",
         {
@@ -658,6 +847,7 @@ def project_page(request: Request, project_id: int):
             "hyperframes_status": local_hyperframes_status(project_work) or {},
             "diagnostics": project_diagnostics_snapshot(project_id, scenes, selected_count),
             "jobs": jobs,
+            "active_jobs": active_jobs,
         },
     )
 
@@ -665,85 +855,182 @@ def project_page(request: Request, project_id: int):
 # ------------------------------------------------------------------
 # Gerar mapa visual
 # ------------------------------------------------------------------
+def run_generate_map_job(
+    job_id: int,
+    project_id: int,
+    user_id: int,
+    groq_key: str,
+    groq_model: str,
+) -> None:
+    try:
+        db.update_job(job_id, status="running", message="Gerando mapa visual")
+        project = db.get_project(project_id, user_id)
+        if not project:
+            raise RuntimeError("Projeto nao encontrado.")
+        config = project_config(project)
+        base_scenes = parse_script(project["script"], config["scene_duration"])
+        if not base_scenes:
+            raise RuntimeError("Roteiro vazio ou invalido.")
+        briefs = groq_service.generate_briefs(
+            base_scenes,
+            groq_key=groq_key,
+            style=config["visual_style"],
+            avatar_safe_area=config["avatar_safe_area"],
+            safe_ratio=config["avatar_safe_width_ratio"],
+            model=groq_model or groq_service.DEFAULT_MODEL,
+        )
+        brief_by_id = {b["scene_id"]: b for b in briefs}
+        merged = []
+        for s in base_scenes:
+            b = brief_by_id.get(s["scene_id"], {})
+            merged.append({
+                **s,
+                "visual_goal": b.get("visual_goal", ""),
+                "keywords": b.get("keywords", []),
+                "must_show": b.get("must_show", []),
+                "must_not_show": b.get("must_not_show", []),
+                "asset_type": b.get("asset_type", "video"),
+                "overlay_text": b.get("overlay_text", ""),
+                "avatar_safe_area": b.get("avatar_safe_area", config["avatar_safe_area"]),
+            })
+        db.replace_scenes(project_id, merged)
+        remove_project_artifacts(project_id, include_generated=True)
+        db.set_project_status(project_id, "mapped")
+        db.clear_kaggle_job(project_id)
+        db.finish_job(job_id, "Mapa visual pronto", {"scenes": len(merged)})
+    except Exception as exc:  # noqa: BLE001
+        db.set_project_status(project_id, "map_failed")
+        db.fail_job(job_id, "Falha ao gerar mapa visual", str(exc))
+
+
 @app.post("/projects/{project_id}/generate-map")
-def generate_map(request: Request, project_id: int):
+def generate_map(
+    request: Request,
+    project_id: int,
+    background_tasks: BackgroundTasks,
+    csrf_token: str = Form(""),
+):
     user = require_user(request)
+    verify_csrf(request, csrf_token)
     project = db.get_project(project_id, user["id"])
     if not project:
         raise HTTPException(404)
-    config = project_config(project)
-
-    base_scenes = parse_script(project["script"], config["scene_duration"])
-    if not base_scenes:
+    ensure_project_not_busy(project)
+    if not (project.get("script") or "").strip():
         raise HTTPException(400, "Roteiro vazio ou invalido.")
-
-    briefs = groq_service.generate_briefs(
-        base_scenes,
-        groq_key=user["groq_key"],
-        style=config["visual_style"],
-        avatar_safe_area=config["avatar_safe_area"],
-        safe_ratio=config["avatar_safe_width_ratio"],
-        model=user.get("groq_model") or groq_service.DEFAULT_MODEL,
+    job_id = db.create_job(user["id"], "generate_map", project_id, "Mapa visual na fila")
+    db.set_project_status(project_id, "mapping")
+    background_tasks.add_task(
+        run_generate_map_job,
+        job_id,
+        project_id,
+        user["id"],
+        user.get("groq_key", ""),
+        user.get("groq_model") or groq_service.DEFAULT_MODEL,
     )
-    brief_by_id = {b["scene_id"]: b for b in briefs}
-    merged = []
-    for s in base_scenes:
-        b = brief_by_id.get(s["scene_id"], {})
-        merged.append({
-            **s,
-            "visual_goal": b.get("visual_goal", ""),
-            "keywords": b.get("keywords", []),
-            "must_show": b.get("must_show", []),
-            "must_not_show": b.get("must_not_show", []),
-            "asset_type": b.get("asset_type", "video"),
-            "overlay_text": b.get("overlay_text", ""),
-            "avatar_safe_area": b.get("avatar_safe_area", config["avatar_safe_area"]),
-        })
-    db.replace_scenes(project_id, merged)
-    db.set_project_status(project_id, "mapped")
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
 # ------------------------------------------------------------------
 # Buscar assets
 # ------------------------------------------------------------------
+def run_search_job(
+    job_id: int,
+    project_id: int,
+    user_id: int,
+    pexels_key: str,
+    pixabay_key: str,
+) -> None:
+    try:
+        db.update_job(job_id, status="running", message="Buscando assets")
+        project = db.get_project(project_id, user_id)
+        if not project:
+            raise RuntimeError("Projeto nao encontrado.")
+        config = project_config(project)
+        max_w = resolution_width(config)
+        scenes = db.list_scenes(project_id)
+        if not scenes:
+            raise RuntimeError("Gere o mapa visual antes da busca.")
+        seen: set = set()
+        total_added = 0
+        empty_scenes: list[str] = []
+        for scene in scenes:
+            db.update_job(job_id, status="running", message=f"Buscando {scene['scene_id']}")
+            results = asset_search.search_scene(
+                scene["keywords"],
+                pexels_key,
+                pixabay_key,
+                max_w=max_w,
+                per_keyword=config["per_keyword"],
+                allow_images=bool(config["image_fallback"]),
+                seen_urls=seen,
+            )
+            added = db.add_assets(scene["id"], results)
+            total_added += added
+            if added == 0:
+                empty_scenes.append(scene["scene_id"])
+        if total_added <= 0:
+            raise RuntimeError("Busca retornou zero assets. Verifique chaves, keywords ou disponibilidade das APIs.")
+        db.set_project_status(project_id, "searched")
+        db.finish_job(
+            job_id,
+            "Busca concluida",
+            {"added": total_added, "empty_scenes": empty_scenes, "scenes": len(scenes)},
+        )
+    except Exception as exc:  # noqa: BLE001
+        db.set_project_status(project_id, "search_failed")
+        db.fail_job(job_id, "Falha na busca de assets", str(exc))
+
+
 @app.post("/projects/{project_id}/search")
-def search_all(request: Request, project_id: int):
+def search_all(
+    request: Request,
+    project_id: int,
+    background_tasks: BackgroundTasks,
+    csrf_token: str = Form(""),
+):
     user = require_user(request)
+    verify_csrf(request, csrf_token)
     project = db.get_project(project_id, user["id"])
     if not project:
         raise HTTPException(404)
-    config = project_config(project)
+    ensure_project_not_busy(project)
     if not user["pexels_key"] and not user["pixabay_key"]:
         raise HTTPException(400, "Cadastre ao menos uma chave de API em /settings.")
-
-    max_w = resolution_width(config)
     scenes = db.list_scenes(project_id)
-    seen: set = set()
-    for scene in scenes:
-        results = asset_search.search_scene(
-            scene["keywords"],
-            user["pexels_key"],
-            user["pixabay_key"],
-            max_w=max_w,
-            per_keyword=config["per_keyword"],
-            allow_images=bool(config["image_fallback"]),
-            seen_urls=seen,
-        )
-        db.add_assets(scene["id"], results)
-    db.set_project_status(project_id, "searched")
+    if not scenes:
+        raise HTTPException(400, "Gere o mapa visual antes de buscar assets.")
+    job_id = db.create_job(user["id"], "search_assets", project_id, "Busca de assets na fila")
+    db.set_project_status(project_id, "searching")
+    background_tasks.add_task(
+        run_search_job,
+        job_id,
+        project_id,
+        user["id"],
+        user.get("pexels_key", ""),
+        user.get("pixabay_key", ""),
+    )
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
 @app.post("/scenes/{scene_db_id}/search-more")
-def search_more(request: Request, scene_db_id: int, media: str = Form("all")):
+def search_more(
+    request: Request,
+    scene_db_id: int,
+    media: str = Form("all"),
+    csrf_token: str = Form(""),
+):
     user = require_user(request)
+    verify_csrf(request, csrf_token)
     scene = db.get_scene(scene_db_id)
     if not scene:
         raise HTTPException(404)
     project = db.get_project(scene["project_id"], user["id"])
     if not project:
         raise HTTPException(404)
+    ensure_project_not_busy(project)
+    if not user["pexels_key"] and not user["pixabay_key"]:
+        raise HTTPException(400, "Cadastre ao menos uma chave de API em /settings.")
     config = project_config(project)
     if media not in {"all", "video", "image"}:
         media = "all"
@@ -760,18 +1047,22 @@ def search_more(request: Request, scene_db_id: int, media: str = Form("all")):
         media=media,
     )
     added = db.add_assets(scene_db_id, results)
+    if added:
+        mark_project_dirty(project["id"])
     return JSONResponse({"added": added, "media": media})
 
 
 @app.post("/scenes/{scene_db_id}/regen-keywords")
-def regen_keywords(request: Request, scene_db_id: int):
+def regen_keywords(request: Request, scene_db_id: int, csrf_token: str = Form("")):
     user = require_user(request)
+    verify_csrf(request, csrf_token)
     scene = db.get_scene(scene_db_id)
     if not scene:
         raise HTTPException(404)
     project = db.get_project(scene["project_id"], user["id"])
     if not project:
         raise HTTPException(404)
+    ensure_project_not_busy(project)
     config = project_config(project)
     kws = groq_service.regenerate_keywords(
         scene.get("narration", ""),
@@ -781,6 +1072,7 @@ def regen_keywords(request: Request, scene_db_id: int):
         model=user.get("groq_model") or groq_service.DEFAULT_MODEL,
     )
     db.update_scene_keywords(scene_db_id, kws)
+    mark_project_dirty(project["id"])
     return JSONResponse({"keywords": kws})
 
 
@@ -788,15 +1080,27 @@ def regen_keywords(request: Request, scene_db_id: int):
 # Curadoria
 # ------------------------------------------------------------------
 @app.post("/assets/{asset_id}/state")
-def asset_state(request: Request, asset_id: int, state: str = Form(...)):
+def asset_state(
+    request: Request,
+    asset_id: int,
+    state: str = Form(...),
+    csrf_token: str = Form(""),
+):
     user = require_user(request)
+    verify_csrf(request, csrf_token)
     if state not in {"pending", "selected", "rejected", "favorite"}:
         raise HTTPException(400, "Estado invalido.")
-    if not db.asset_belongs_to_user(asset_id, user["id"]):
+    owner = db.get_asset_project(asset_id)
+    if not owner or owner["user_id"] != user["id"]:
         raise HTTPException(404)
+    project = db.get_project(owner["project_id"], user["id"])
+    if not project:
+        raise HTTPException(404)
+    ensure_project_not_busy(project)
     updated = db.set_asset_state(asset_id, state)
     if not updated:
         raise HTTPException(404)
+    mark_project_dirty(owner["project_id"])
     return JSONResponse({"id": asset_id, "state": updated["state"]})
 
 
@@ -863,15 +1167,22 @@ async def save_generated_image(
     prompt: str = Form(""),
     width: str = Form("0"),
     height: str = Form("0"),
+    csrf_token: str = Form(""),
 ):
     user = require_user(request)
+    verify_csrf(request, csrf_token)
     scene = db.get_scene(scene_db_id)
     if not scene:
         raise HTTPException(404)
     project = db.get_project(scene["project_id"], user["id"])
     if not project:
         raise HTTPException(404)
-    data = await image.read()
+    ensure_project_not_busy(project)
+    data = await read_upload_limited(
+        image,
+        MAX_GENERATED_UPLOAD_MB * 1024 * 1024,
+        f"Imagem muito grande (maximo {MAX_GENERATED_UPLOAD_MB} MB)",
+    )
     if not data:
         raise HTTPException(400, "Imagem vazia.")
     if len(data) > MAX_GENERATED_UPLOAD_MB * 1024 * 1024:
@@ -913,6 +1224,7 @@ async def save_generated_image(
     if added != 1:
         dest.unlink(missing_ok=True)
         raise HTTPException(500, "Falha ao registrar a imagem gerada.")
+    mark_project_dirty(project["id"])
     return JSONResponse({"added": added, "url": url})
 
 
@@ -942,74 +1254,83 @@ async def upload_media(
     project_id: int,
     kind: str = Form(...),
     media: UploadFile = File(...),
+    csrf_token: str = Form(""),
 ):
     user = require_user(request)
+    verify_csrf(request, csrf_token)
     project = db.get_project(project_id, user["id"])
     if not project:
         raise HTTPException(404)
+    ensure_project_not_busy(project)
     exts = MEDIA_KINDS.get(kind)
     if not exts:
         raise HTTPException(400, "Tipo de midia invalido.")
     suffix = Path(media.filename or "").suffix.lower()
     if suffix not in exts:
         raise HTTPException(400, f"Extensao nao suportada para {kind}: use {', '.join(sorted(exts))}.")
-    data = await media.read()
+    data = await read_upload_limited(
+        media,
+        MAX_MEDIA_UPLOAD_MB * 1024 * 1024,
+        f"Arquivo muito grande (maximo {MAX_MEDIA_UPLOAD_MB} MB)",
+    )
     save_input_media_bytes(project_id, kind, data, suffix)
+    mark_project_dirty(project_id)
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
 @app.post("/projects/{project_id}/remove-media")
-def remove_media(request: Request, project_id: int, kind: str = Form(...)):
+def remove_media(
+    request: Request,
+    project_id: int,
+    kind: str = Form(...),
+    csrf_token: str = Form(""),
+):
     user = require_user(request)
+    verify_csrf(request, csrf_token)
     project = db.get_project(project_id, user["id"])
     if not project:
         raise HTTPException(404)
+    ensure_project_not_busy(project)
     if kind not in MEDIA_KINDS:
         raise HTTPException(400, "Tipo de midia invalido.")
     existing = find_input_media(project_id, kind)
     if existing:
         existing.unlink(missing_ok=True)
+        mark_project_dirty(project_id)
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
 # ------------------------------------------------------------------
 # Gerar pacote (ZIP)
 # ------------------------------------------------------------------
-@app.post("/projects/{project_id}/package")
-def package(request: Request, project_id: int):
-    user = require_user(request)
-    project = db.get_project(project_id, user["id"])
-    if not project:
-        raise HTTPException(404)
-    config = project_config(project)
-    scenes = db.list_scenes(project_id)
-
-    selected_rows = db.list_assets_by_state(project_id, ["selected"])
-    selected_by_scene = {row["scene_id"]: row for row in selected_rows}
-    rejected = db.list_assets_by_state(project_id, ["rejected"])
-
-    if not selected_by_scene:
-        raise HTTPException(400, "Selecione ao menos um asset antes de gerar o pacote.")
-    missing = missing_selected_scene_ids(scenes, selected_by_scene)
-    if missing:
-        preview = ", ".join(missing[:8])
-        suffix = "..." if len(missing) > 8 else ""
-        raise HTTPException(
-            400,
-            f"Selecione um asset para todas as cenas antes de gerar o pacote. Faltando: {preview}{suffix}",
-        )
-
-    project_work = project_work_dir(project_id)
-    narration_file = find_input_media(project_id, "narration")
-    avatar_file = find_input_media(project_id, "avatar")
-    job_id = db.create_job(user["id"], "package", project_id, "Preparando pacote ZIP")
-    db.update_job(job_id, status="running", message="Gerando edit_plan e baixando assets")
+def run_package_job(
+    job_id: int,
+    project_id: int,
+    user_id: int,
+    openrouter_key: str,
+) -> None:
     try:
+        db.update_job(job_id, status="running", message="Gerando edit_plan e baixando assets")
+        project = db.get_project(project_id, user_id)
+        if not project:
+            raise RuntimeError("Projeto nao encontrado.")
+        config = project_config(project)
+        scenes = db.list_scenes(project_id)
+        selected_rows = db.list_assets_by_state(project_id, ["selected"])
+        selected_by_scene = {row["scene_id"]: row for row in selected_rows}
+        rejected = db.list_assets_by_state(project_id, ["rejected"])
+        missing = missing_selected_scene_ids(scenes, selected_by_scene)
+        if not selected_by_scene or missing:
+            raise RuntimeError("Selecao incompleta; escolha um asset para cada cena.")
+        project_work = project_work_dir(project_id)
+        remove_project_artifacts(project_id)
+        narration_file = find_input_media(project_id, "narration")
+        avatar_file = find_input_media(project_id, "avatar")
         plan = edit_plan.build_edit_plan_with_llm(
             project,
             config,
             scenes,
-            openrouter_key=user.get("openrouter_key", ""),
+            openrouter_key=openrouter_key,
             narration_file=narration_file.name if narration_file else "",
             avatar_file=avatar_file.name if avatar_file else "",
         )
@@ -1027,15 +1348,53 @@ def package(request: Request, project_id: int):
             edit_plan=plan,
             extra_files=[f for f in (narration_file, avatar_file) if f],
         )
-    except Exception as exc:  # noqa: BLE001 - job nunca pode ficar "running" orfao
+        db.set_project_status(project_id, "packaged")
+        db.clear_kaggle_job(project_id)
+        db.finish_job(
+            job_id,
+            "Pacote ZIP pronto",
+            {"zip": zip_path.name, "scenes": len(scenes), "selected": len(selected_by_scene)},
+        )
+    except Exception as exc:  # noqa: BLE001
         db.set_project_status(project_id, "package_failed")
         db.fail_job(job_id, "Falha ao gerar pacote", str(exc))
-        raise HTTPException(502, f"Falha ao gerar pacote: {exc}") from exc
-    db.set_project_status(project_id, "packaged")
-    db.finish_job(
+
+
+@app.post("/projects/{project_id}/package")
+def package(
+    request: Request,
+    project_id: int,
+    background_tasks: BackgroundTasks,
+    csrf_token: str = Form(""),
+):
+    user = require_user(request)
+    verify_csrf(request, csrf_token)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    ensure_project_not_busy(project)
+    scenes = db.list_scenes(project_id)
+    selected_rows = db.list_assets_by_state(project_id, ["selected"])
+    selected_by_scene = {row["scene_id"]: row for row in selected_rows}
+
+    if not selected_by_scene:
+        raise HTTPException(400, "Selecione ao menos um asset antes de gerar o pacote.")
+    missing = missing_selected_scene_ids(scenes, selected_by_scene)
+    if missing:
+        preview = ", ".join(missing[:8])
+        suffix = "..." if len(missing) > 8 else ""
+        raise HTTPException(
+            400,
+            f"Selecione um asset para todas as cenas antes de gerar o pacote. Faltando: {preview}{suffix}",
+        )
+    job_id = db.create_job(user["id"], "package", project_id, "Preparando pacote ZIP")
+    db.set_project_status(project_id, "packaging")
+    background_tasks.add_task(
+        run_package_job,
         job_id,
-        "Pacote ZIP pronto",
-        {"zip": zip_path.name, "scenes": len(scenes), "selected": len(selected_by_scene)},
+        project_id,
+        user["id"],
+        user.get("openrouter_key", ""),
     )
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
@@ -1057,8 +1416,14 @@ def download_zip(request: Request, project_id: int):
 # Kaggle - enviar para render
 # ------------------------------------------------------------------
 @app.post("/projects/{project_id}/send-to-kaggle")
-def send_to_kaggle(request: Request, project_id: int, background_tasks: BackgroundTasks):
+def send_to_kaggle(
+    request: Request,
+    project_id: int,
+    background_tasks: BackgroundTasks,
+    csrf_token: str = Form(""),
+):
     user = require_user(request)
+    verify_csrf(request, csrf_token)
     project = db.get_project(project_id, user["id"])
     if not project:
         return JSONResponse({"error": "Projeto não encontrado."}, status_code=404)
@@ -1148,8 +1513,9 @@ def project_diagnostics_json(request: Request, project_id: int, refresh: str = "
 
 
 @app.post("/projects/{project_id}/validate-output")
-def validate_output(request: Request, project_id: int):
+def validate_output(request: Request, project_id: int, csrf_token: str = Form("")):
     user = require_user(request)
+    verify_csrf(request, csrf_token)
     project = db.get_project(project_id, user["id"])
     if not project:
         raise HTTPException(404)

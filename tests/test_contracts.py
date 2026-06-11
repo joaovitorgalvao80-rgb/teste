@@ -1101,6 +1101,25 @@ class HardeningAndOptimizationTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
+    def _project_with_scene(self, username: str) -> tuple[int, int, dict]:
+        user_id = db.create_user(username, "password123")
+        project_id = db.create_project(user_id, f"{username} project", "script", {})
+        db.replace_scenes(
+            project_id,
+            [
+                {
+                    "scene_id": "scene_001",
+                    "idx": 1,
+                    "zone": "GANCHO",
+                    "start_time": 0,
+                    "end_time": 4,
+                    "duration": 4,
+                    "narration": "teste",
+                }
+            ],
+        )
+        return user_id, project_id, db.list_scenes(project_id)[0]
+
     def test_safe_next_url_rejects_backslash_and_control_chars(self) -> None:
         # navegadores tratam '\' como '/', virando redirect externo //evil.com
         self.assertEqual(webapp.safe_next_url("/\\evil.com"), "/projects")
@@ -1250,7 +1269,7 @@ class HardeningAndOptimizationTest(unittest.TestCase):
         finally:
             webapp.packager.build_zip = original_build
 
-        self.assertEqual(resp.status_code, 502)
+        self.assertEqual(resp.status_code, 303)
         self.assertEqual(project["status"], "package_failed")
         self.assertEqual(jobs[0]["status"], "error")
         self.assertIn("falha inesperada", jobs[0]["error"])
@@ -1346,6 +1365,203 @@ class HardeningAndOptimizationTest(unittest.TestCase):
             guide = json.loads(zf.read("guia_visual.json"))
         self.assertEqual([s["scene_id"] for s in sources], ["scene_001", "scene_002", "scene_003"])
         self.assertTrue(all(s["selected_asset"] for s in guide["scenes"]))
+
+    def test_secret_fields_are_encrypted_and_not_rendered_in_settings(self) -> None:
+        with TestClient(webapp.app) as client:
+            uid = db.create_user("secret-user", "password123")
+            db.update_api_keys(uid, "pexels-secret-123", "pixabay-secret-456", "groq-secret-789", openrouter="or-secret")
+            db.update_kaggle_keys(uid, "kg-user", "kaggle-token-abc")
+            client.post(
+                "/login",
+                data={"username": "secret-user", "password": "password123"},
+                follow_redirects=False,
+            )
+            page = client.get("/settings")
+
+        user = db.get_user(uid)
+        self.assertEqual(user["pexels_key"], "pexels-secret-123")
+        self.assertEqual(user["kaggle_token"], "kaggle-token-abc")
+        conn = db._connect()
+        try:
+            row = conn.execute("SELECT pexels_key, kaggle_token FROM users WHERE id = ?", (uid,)).fetchone()
+        finally:
+            conn.close()
+        self.assertTrue(row["pexels_key"].startswith(db.SECRET_PREFIX))
+        self.assertTrue(row["kaggle_token"].startswith(db.SECRET_PREFIX))
+        self.assertNotIn("pexels-secret-123", page.text)
+        self.assertNotIn("kaggle-token-abc", page.text)
+
+    def test_settings_blank_secret_preserves_existing_value_and_clear_removes_it(self) -> None:
+        with TestClient(webapp.app) as client:
+            uid = db.create_user("preserve", "password123")
+            db.update_api_keys(uid, "pexels-old", "", "", openrouter="or-old")
+            client.post(
+                "/login",
+                data={"username": "preserve", "password": "password123"},
+                follow_redirects=False,
+            )
+            keep = client.post("/settings", data={"groq_model": ""}, follow_redirects=False)
+            self.assertEqual(keep.status_code, 303)
+            self.assertEqual(db.get_user(uid)["pexels_key"], "pexels-old")
+            clear = client.post(
+                "/settings",
+                data={"groq_model": "", "clear_pexels": "1"},
+                follow_redirects=False,
+            )
+            self.assertEqual(clear.status_code, 303)
+        self.assertEqual(db.get_user(uid)["pexels_key"], "")
+
+    def test_asset_change_invalidates_package_and_removes_stale_outputs(self) -> None:
+        with TestClient(webapp.app) as client:
+            uid, project_id, scene = self._project_with_scene("dirty")
+            project_work = webapp.project_work_dir(project_id)
+            out_dir = project_work / "kaggle_output"
+            out_dir.mkdir(parents=True)
+            stale_zip = project_work / "asset_pack_dirty.zip"
+            stale_zip.write_bytes(b"zip")
+            (out_dir / "final_master.mp4").write_bytes(b"old")
+            db.update_kaggle_job(project_id, "dataset", "kernel", "complete")
+            db.set_project_status(project_id, "packaged")
+            db.add_assets(scene["id"], [{"source": "pexels", "download_url": "https://example.com/a.mp4"}])
+            asset = db.list_assets(scene["id"])[0]
+            client.post(
+                "/login",
+                data={"username": "dirty", "password": "password123"},
+                follow_redirects=False,
+            )
+            resp = client.post(f"/assets/{asset['id']}/state", data={"state": "selected"})
+
+        self.assertEqual(resp.status_code, 200)
+        project = db.get_project(project_id, uid)
+        self.assertEqual(project["status"], "needs_package")
+        self.assertEqual(project["kaggle_kernel_slug"], "")
+        self.assertFalse(stale_zip.exists())
+        self.assertFalse(out_dir.exists())
+
+    def test_asset_change_is_rejected_while_project_job_is_busy(self) -> None:
+        with TestClient(webapp.app) as client:
+            _, project_id, scene = self._project_with_scene("busy-change")
+            db.add_assets(scene["id"], [{"source": "pexels", "download_url": "https://example.com/a.mp4"}])
+            asset = db.list_assets(scene["id"])[0]
+            db.set_project_status(project_id, "packaging")
+            client.post(
+                "/login",
+                data={"username": "busy-change", "password": "password123"},
+                follow_redirects=False,
+            )
+            resp = client.post(f"/assets/{asset['id']}/state", data={"state": "selected"})
+
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(db.list_assets(scene["id"])[0]["state"], "pending")
+
+    def test_delete_project_removes_workspace_files(self) -> None:
+        with TestClient(webapp.app) as client:
+            uid = db.create_user("delete-files", "password123")
+            project_id = db.create_project(uid, "proj", "script", {})
+            project_work = webapp.project_work_dir(project_id)
+            project_work.mkdir(parents=True)
+            (project_work / "asset_pack.zip").write_bytes(b"zip")
+            client.post(
+                "/login",
+                data={"username": "delete-files", "password": "password123"},
+                follow_redirects=False,
+            )
+            resp = client.post(f"/projects/{project_id}/delete", follow_redirects=False)
+
+        self.assertEqual(resp.status_code, 303)
+        self.assertFalse(project_work.exists())
+
+    def test_search_job_fails_project_when_no_assets_are_found(self) -> None:
+        db.init_db()
+        uid = db.create_user("no-assets", "password123")
+        project_id = db.create_project(uid, "proj", "script", {})
+        db.replace_scenes(
+            project_id,
+            [{"scene_id": "scene_001", "idx": 1, "start_time": 0, "end_time": 4, "duration": 4, "keywords": ["x"]}],
+        )
+        job_id = db.create_job(uid, "search_assets", project_id, "buscando")
+        with patch.object(webapp.asset_search, "search_scene", return_value=[]):
+            webapp.run_search_job(job_id, project_id, uid, "pexels", "")
+
+        self.assertEqual(db.get_project(project_id, uid)["status"], "search_failed")
+        job = db.get_job(job_id, uid)
+        self.assertEqual(job["status"], "error")
+        self.assertIn("zero assets", job["error"])
+
+    def test_packager_writes_license_manifest_and_kaggle_uses_other_license(self) -> None:
+        project = {"name": "Licenca"}
+        config = {"avatar_safe_area": "right", "resolution": "1920x1080", "format": "16:9"}
+        scenes = [{
+            "id": 1, "scene_id": "scene_001", "idx": 1, "zone": "GANCHO",
+            "start_time": 0.0, "end_time": 4.0, "duration": 4.0,
+            "narration": "teste", "visual_goal": "", "keywords": [],
+            "must_show": [], "must_not_show": [], "asset_type": "video",
+            "overlay_text": "", "avatar_safe_area": "right",
+        }]
+        selected = {1: {"source": "pexels", "download_url": "https://example.com/a.mp4", "asset_type": "video"}}
+
+        def fake_download(_url, dest, _max_bytes):
+            dest.write_bytes(b"fake-video")
+            return True
+
+        original_download = packager._download
+        packager._download = fake_download
+        try:
+            zip_path = packager.build_zip(project, config, scenes, selected, [], self.root / "work")
+        finally:
+            packager._download = original_download
+
+        with zipfile.ZipFile(zip_path) as zf:
+            self.assertIn("LICENSES.md", zf.namelist())
+            license_text = zf.read("LICENSES.md").decode("utf-8")
+        self.assertIn("Nao redistribua", license_text)
+        self.assertTrue(any("other" in str(const) for const in kaggle_service.upload_dataset.__code__.co_consts))
+
+    def test_montador_rejects_selected_asset_outside_assets_folder(self) -> None:
+        pack_dir = self.root / "pack"
+        (pack_dir / "assets").mkdir(parents=True)
+        with self.assertRaisesRegex(RuntimeError, "assets"):
+            montador.resolve_selected_asset(pack_dir, "../evil.mp4")
+        with self.assertRaisesRegex(RuntimeError, "assets"):
+            montador.resolve_selected_asset(pack_dir, "other/file.mp4")
+
+    def test_production_csrf_blocks_missing_token(self) -> None:
+        old = webapp.ENFORCE_CSRF
+        webapp.ENFORCE_CSRF = True
+        try:
+            with TestClient(webapp.app) as client:
+                db.create_user("csrf", "password123")
+                client.post(
+                    "/login",
+                    data={"username": "csrf", "password": "password123"},
+                    follow_redirects=False,
+                )
+                client.get("/settings")
+                resp = client.post("/settings", data={"groq_model": ""}, follow_redirects=False)
+        finally:
+            webapp.ENFORCE_CSRF = old
+        self.assertEqual(resp.status_code, 403)
+
+    def test_registration_can_be_disabled(self) -> None:
+        old_allow = webapp.ALLOW_REGISTRATION
+        old_first = webapp.ALLOW_FIRST_USER
+        old_invite = webapp.INVITE_CODE
+        webapp.ALLOW_REGISTRATION = False
+        webapp.ALLOW_FIRST_USER = False
+        webapp.INVITE_CODE = ""
+        try:
+            with TestClient(webapp.app) as client:
+                resp = client.post(
+                    "/register",
+                    data={"username": "blocked", "password": "password123"},
+                    follow_redirects=False,
+                )
+        finally:
+            webapp.ALLOW_REGISTRATION = old_allow
+            webapp.ALLOW_FIRST_USER = old_first
+            webapp.INVITE_CODE = old_invite
+        self.assertEqual(resp.status_code, 303)
+        self.assertIn("Cadastro+desativado", resp.headers["location"])
 
 
 if __name__ == "__main__":

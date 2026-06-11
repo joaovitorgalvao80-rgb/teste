@@ -12,17 +12,20 @@
 
 <div class="settings-grid">
   <form method="post" action="/settings" class="settings-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
     <section class="settings-section">
       <p class="tag">Assets</p>
       <h2 class="settings-heading">Bibliotecas visuais</h2>
       <p class="t-muted t-small" style="margin-bottom:var(--sp-4)">Necessário para buscar vídeos e imagens.</p>
       <label>Pexels API Key
-        <input type="password" autocomplete="off" name="pexels" value="{{ user.pexels_key }}" placeholder="cole sua chave Pexels">
+        <input type="password" autocomplete="off" name="pexels" value="" placeholder="{% if secret_masks.pexels %}atual: {{ secret_masks.pexels }}{% else %}cole sua chave Pexels{% endif %}">
       </label>
+      {% if secret_masks.pexels %}<label class="check"><input type="checkbox" name="clear_pexels" value="1"> Limpar Pexels</label>{% endif %}
       <label>Pixabay API Key
-        <input type="password" autocomplete="off" name="pixabay" value="{{ user.pixabay_key }}" placeholder="cole sua chave Pixabay">
+        <input type="password" autocomplete="off" name="pixabay" value="" placeholder="{% if secret_masks.pixabay %}atual: {{ secret_masks.pixabay }}{% else %}cole sua chave Pixabay{% endif %}">
       </label>
+      {% if secret_masks.pixabay %}<label class="check"><input type="checkbox" name="clear_pixabay" value="1"> Limpar Pixabay</label>{% endif %}
     </section>
 
     <section class="settings-section">
@@ -30,8 +33,9 @@
       <h2 class="settings-heading">IA + transcrição de áudio</h2>
       <p class="t-muted t-small" style="margin-bottom:var(--sp-4)">Usado para gerar o mapa visual e transcrever narração.</p>
       <label>Groq API Key
-        <input type="password" autocomplete="off" name="groq" value="{{ user.groq_key }}" placeholder="gsk_...">
+        <input type="password" autocomplete="off" name="groq" value="" placeholder="{% if secret_masks.groq %}atual: {{ secret_masks.groq }}{% else %}gsk_...{% endif %}">
       </label>
+      {% if secret_masks.groq %}<label class="check"><input type="checkbox" name="clear_groq" value="1"> Limpar Groq</label>{% endif %}
       <label>Modelo de geração
         <select name="groq_model">
           {% for value, label in groq_models %}
@@ -46,8 +50,9 @@
       <h2 class="settings-heading">Cérebro editorial</h2>
       <p class="t-muted t-small" style="margin-bottom:var(--sp-4)">Decide motion, transições e captions do master final. Opcional: sem chave, o plano de edição usa o modo determinístico.</p>
       <label>OpenRouter API Key
-        <input type="password" autocomplete="off" name="openrouter" value="{{ user.openrouter_key }}" placeholder="sk-or-...">
+        <input type="password" autocomplete="off" name="openrouter" value="" placeholder="{% if secret_masks.openrouter %}atual: {{ secret_masks.openrouter }}{% else %}sk-or-...{% endif %}">
       </label>
+      {% if secret_masks.openrouter %}<label class="check"><input type="checkbox" name="clear_openrouter" value="1"> Limpar OpenRouter</label>{% endif %}
     </section>
 
     <section class="settings-section">
@@ -58,8 +63,9 @@
         <input name="kaggle_username" value="{{ user.kaggle_username }}" placeholder="seu username no Kaggle">
       </label>
       <label>Kaggle API Token
-        <input type="password" autocomplete="off" name="kaggle_token" value="{{ user.kaggle_token }}" placeholder="KGAT_...">
+        <input type="password" autocomplete="off" name="kaggle_token" value="" placeholder="{% if secret_masks.kaggle_token %}atual: {{ secret_masks.kaggle_token }}{% else %}KGAT_...{% endif %}">
       </label>
+      {% if secret_masks.kaggle_token %}<label class="check"><input type="checkbox" name="clear_kaggle_token" value="1"> Limpar token Kaggle</label>{% endif %}
       <div class="row" style="margin-top:var(--sp-2)">
         <button type="button" class="btn btn-ghost btn-sm" onclick="testKaggle(this)">Verificar credenciais</button>
         <span id="kaggle-test-result" class="t-small"></span>

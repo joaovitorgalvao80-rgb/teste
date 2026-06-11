@@ -206,7 +206,8 @@ def upload_dataset(
         metadata = {
             "title": f"B-rolls {project_name}"[:50],
             "id": f"{username}/{slug}",
-            "licenses": [{"name": "CC0-1.0"}],
+            "subtitle": "Private render pack; review LICENSES.md and metadata/*.json for asset-specific licenses.",
+            "licenses": [{"name": "other"}],
         }
         (tmp / "dataset-metadata.json").write_text(
             json.dumps(metadata, ensure_ascii=False), encoding="utf-8"

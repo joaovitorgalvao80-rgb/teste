@@ -5,8 +5,11 @@ MVP single-file: sem ORM, apenas sqlite3 da stdlib.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import json
+import os
 import secrets
 import sqlite3
 import time
@@ -16,6 +19,9 @@ from typing import Any, Optional
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "plataforma.db"
+SECRET_FIELDS = {"pexels_key", "pixabay_key", "groq_key", "openrouter_key", "kaggle_token"}
+SECRET_PREFIX = "enc:v1:"
+DEV_SECRET_KEY = "dev-insecure-key-change-in-production-please"
 
 
 def _connect() -> sqlite3.Connection:
@@ -26,6 +32,63 @@ def _connect() -> sqlite3.Connection:
     # background jobs escrevem enquanto requests leem; espera em vez de "database is locked"
     conn.execute("PRAGMA busy_timeout = 5000")
     return conn
+
+
+def _secret_key_material() -> bytes:
+    raw = os.getenv("API_SECRET_KEY") or os.getenv("APP_SECRET_KEY") or DEV_SECRET_KEY
+    return hashlib.sha256(raw.encode("utf-8")).digest()
+
+
+def _keystream(key: bytes, nonce: bytes, size: int) -> bytes:
+    blocks: list[bytes] = []
+    counter = 0
+    while sum(len(block) for block in blocks) < size:
+        counter += 1
+        blocks.append(hmac.new(key, nonce + counter.to_bytes(4, "big"), hashlib.sha256).digest())
+    return b"".join(blocks)[:size]
+
+
+def protect_secret(value: str) -> str:
+    """Encrypts API secrets before writing them to SQLite.
+
+    Existing plaintext values are still readable through reveal_secret, so old
+    databases migrate lazily the next time settings are saved.
+    """
+    value = value or ""
+    if not value or value.startswith(SECRET_PREFIX):
+        return value
+    key = _secret_key_material()
+    nonce = secrets.token_bytes(16)
+    raw = value.encode("utf-8")
+    cipher = bytes(a ^ b for a, b in zip(raw, _keystream(key, nonce, len(raw))))
+    mac = hmac.new(key, b"nwrch-secret-v1" + nonce + cipher, hashlib.sha256).digest()
+    return SECRET_PREFIX + base64.urlsafe_b64encode(nonce + cipher + mac).decode("ascii")
+
+
+def reveal_secret(value: str) -> str:
+    value = value or ""
+    if not value.startswith(SECRET_PREFIX):
+        return value
+    try:
+        blob = base64.urlsafe_b64decode(value[len(SECRET_PREFIX):].encode("ascii"))
+        nonce, rest = blob[:16], blob[16:]
+        cipher, mac = rest[:-32], rest[-32:]
+        key = _secret_key_material()
+        expected = hmac.new(key, b"nwrch-secret-v1" + nonce + cipher, hashlib.sha256).digest()
+        if not hmac.compare_digest(mac, expected):
+            return ""
+        raw = bytes(a ^ b for a, b in zip(cipher, _keystream(key, nonce, len(cipher))))
+        return raw.decode("utf-8")
+    except Exception:
+        return ""
+
+
+def _user_to_dict(row: sqlite3.Row) -> dict:
+    data = dict(row)
+    for field in SECRET_FIELDS:
+        if field in data:
+            data[field] = reveal_secret(data[field])
+    return data
 
 
 SCHEMA = """
@@ -180,7 +243,7 @@ def get_user_by_name(username: str) -> Optional[dict]:
     conn = _connect()
     try:
         row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
-        return dict(row) if row else None
+        return _user_to_dict(row) if row else None
     finally:
         conn.close()
 
@@ -189,7 +252,16 @@ def get_user(user_id: int) -> Optional[dict]:
     conn = _connect()
     try:
         row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-        return dict(row) if row else None
+        return _user_to_dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def count_users() -> int:
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT COUNT(*) AS total FROM users").fetchone()
+        return int(row["total"] if row else 0)
     finally:
         conn.close()
 
@@ -207,7 +279,14 @@ def update_api_keys(
         conn.execute(
             "UPDATE users SET pexels_key = ?, pixabay_key = ?, groq_key = ?, groq_model = ?, "
             "openrouter_key = ? WHERE id = ?",
-            (pexels, pixabay, groq, groq_model or "llama-3.3-70b-versatile", openrouter, user_id),
+            (
+                protect_secret(pexels),
+                protect_secret(pixabay),
+                protect_secret(groq),
+                groq_model or "llama-3.3-70b-versatile",
+                protect_secret(openrouter),
+                user_id,
+            ),
         )
         conn.commit()
     finally:
@@ -219,7 +298,7 @@ def update_kaggle_keys(user_id: int, kaggle_username: str, kaggle_token: str) ->
     try:
         conn.execute(
             "UPDATE users SET kaggle_username = ?, kaggle_token = ? WHERE id = ?",
-            (kaggle_username, kaggle_token, user_id),
+            (kaggle_username, protect_secret(kaggle_token), user_id),
         )
         conn.commit()
     finally:
@@ -242,6 +321,18 @@ def update_kaggle_status(project_id: int, status: str) -> None:
     conn = _connect()
     try:
         conn.execute("UPDATE projects SET kaggle_status = ? WHERE id = ?", (status, project_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def clear_kaggle_job(project_id: int) -> None:
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE projects SET kaggle_dataset_slug = '', kaggle_kernel_slug = '', kaggle_status = '' WHERE id = ?",
+            (project_id,),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -425,6 +516,28 @@ def set_project_status(project_id: int, status: str) -> None:
     conn = _connect()
     try:
         conn.execute("UPDATE projects SET status = ? WHERE id = ?", (status, project_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_project_needs_package(project_id: int) -> None:
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT status FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if not row:
+            return
+        if row["status"] in {"created", "mapped", "searching", "mapping"}:
+            return
+        conn.execute(
+            """UPDATE projects
+               SET status = 'needs_package',
+                   kaggle_dataset_slug = '',
+                   kaggle_kernel_slug = '',
+                   kaggle_status = ''
+               WHERE id = ?""",
+            (project_id,),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -623,6 +736,22 @@ def asset_belongs_to_user(asset_id: int, user_id: int) -> bool:
             (asset_id, user_id),
         ).fetchone()
         return row is not None
+    finally:
+        conn.close()
+
+
+def get_asset_project(asset_id: int) -> Optional[dict]:
+    conn = _connect()
+    try:
+        row = conn.execute(
+            """SELECT p.id AS project_id, p.user_id AS user_id, s.id AS scene_id
+               FROM assets a
+               JOIN scenes s ON a.scene_id = s.id
+               JOIN projects p ON s.project_id = p.id
+               WHERE a.id = ?""",
+            (asset_id,),
+        ).fetchone()
+        return dict(row) if row else None
     finally:
         conn.close()
 

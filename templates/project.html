@@ -20,21 +20,24 @@
 <div class="panel" style="margin-bottom:var(--sp-5)">
   <div class="pipeline">
     <form method="post" action="/projects/{{ project.id }}/generate-map" style="flex:1;display:contents">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button class="step {% if scenes %}is-done{% endif %}" type="submit">
         <span class="step-idx">01</span>
         <span class="step-name">Mapa visual</span>
       </button>
     </form>
     <form method="post" action="/projects/{{ project.id }}/search" style="flex:1;display:contents">
-      <button class="step {% if project.status in ['searched','packaged'] %}is-done{% endif %}" type="submit"
-              {% if not scenes %}disabled{% endif %}>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="step {% if project.status in ['searched','packaged','needs_package','packaging','package_failed'] %}is-done{% endif %}" type="submit"
+              {% if not scenes or project.status in ['searching','packaging','mapping'] %}disabled{% endif %}>
         <span class="step-idx">02</span>
         <span class="step-name">Buscar assets</span>
       </button>
     </form>
     <form method="post" action="/projects/{{ project.id }}/package" style="flex:1;display:contents">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button class="step {% if project.status == 'packaged' %}is-done{% endif %}" id="btn-package" type="submit"
-              {% if scenes|length == 0 or selected_count != scenes|length %}disabled{% endif %}>
+              {% if scenes|length == 0 or selected_count != scenes|length or project.status in ['mapping','searching','packaging'] %}disabled{% endif %}>
         <span class="step-idx">03</span>
         <span class="step-name">Pacote ({{ selected_count }}/{{ scenes|length }})</span>
       </button>
@@ -95,6 +98,11 @@
   {% if project.status == 'packaged' %}
   <div style="padding:var(--sp-3) var(--sp-5);border-top:1px solid var(--line-0)">
     <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}/download-zip">Baixar ZIP</a>
+  </div>
+  {% endif %}
+  {% if project.status == 'needs_package' %}
+  <div style="padding:var(--sp-3) var(--sp-5);border-top:1px solid var(--line-0)">
+    <p class="note note-warn">O projeto mudou depois do último pacote. Gere a etapa 03 novamente antes de enviar ao Kaggle.</p>
   </div>
   {% endif %}
 </div>
@@ -190,11 +198,13 @@
           <p class="t-small">Atual: <strong>{{ narration_name }}</strong></p>
           <form method="post" action="/projects/{{ project.id }}/remove-media">
             <input type="hidden" name="kind" value="narration">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn btn-danger btn-sm" type="submit">Remover</button>
           </form>
         {% endif %}
         <form method="post" action="/projects/{{ project.id }}/upload-media" enctype="multipart/form-data">
           <input type="hidden" name="kind" value="narration">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="file" name="media" accept=".mp3,.wav,.m4a,.aac,.ogg,.flac" required>
           <button class="btn btn-secondary btn-sm" type="submit">{% if narration_name %}Substituir{% else %}Enviar narração{% endif %}</button>
         </form>
@@ -206,11 +216,13 @@
           <p class="t-small">Atual: <strong>{{ avatar_name }}</strong></p>
           <form method="post" action="/projects/{{ project.id }}/remove-media">
             <input type="hidden" name="kind" value="avatar">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn btn-danger btn-sm" type="submit">Remover</button>
           </form>
         {% endif %}
         <form method="post" action="/projects/{{ project.id }}/upload-media" enctype="multipart/form-data">
           <input type="hidden" name="kind" value="avatar">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="file" name="media" accept=".webm,.mov,.mp4" required>
           <button class="btn btn-secondary btn-sm" type="submit">{% if avatar_name %}Substituir{% else %}Enviar avatar{% endif %}</button>
         </form>
@@ -308,7 +320,7 @@
 
       <div class="gen-panel" id="gen-panel-{{ scene.id }}" style="display:none;margin-top:var(--sp-3);padding:var(--sp-3);border:1px solid var(--line-0);border-radius:6px">
         <p class="t-small t-faint" style="margin-bottom:var(--sp-2)">
-          Gera via Puter.js no seu navegador (login gratuito na primeira vez). A imagem entra como take normal.
+          O gerador externo carrega somente quando você clicar em Gerar. A imagem entra como take normal.
         </p>
         <textarea id="gen-prompt-{{ scene.id }}" rows="3" style="width:100%;resize:vertical"
           >{{ (scene.visual_goal or scene.narration or '')[:160] }}{% if scene.keywords %}, {{ scene.keywords[:3]|join(', ') }}{% endif %}, {{ config.visual_style }}, photorealistic, 16:9 wide shot, no text, no watermark</textarea>
@@ -323,5 +335,5 @@
 {% endblock %}
 
 {% block scripts %}
-{% if scenes %}<script src="https://js.puter.com/v2/"></script>{% endif %}
+<script>window.NWRCH_PROJECT_ID = {{ project.id }};</script>
 {% endblock %}
