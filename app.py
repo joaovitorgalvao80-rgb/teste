@@ -277,6 +277,13 @@ def status_label(status: str) -> str:
 templates.env.globals["status_label"] = status_label
 
 
+def keyword_role_label(role: str) -> str:
+    return scoring.ROLE_LABELS_PT.get(role or "", "reserva")
+
+
+templates.env.globals["role_label"] = keyword_role_label
+
+
 def csrf_token_for(request: Request) -> str:
     token = request.session.get("_csrf_token")
     if not token:
@@ -1773,8 +1780,10 @@ def run_research_job(
                 model=groq_model or groq_service.DEFAULT_MODEL,
             )
             if kws:
-                db.update_scene_keywords(scene["id"], kws)
+                roles = scoring.assign_roles(kws)
+                db.update_scene_keywords(scene["id"], kws, roles)
                 scene["keywords"] = kws
+                scene["keyword_roles"] = roles
             existing = {a["download_url"] for a in assets_by_scene.get(scene["id"], [])}
             results = asset_search.search_scene(
                 scene["keywords"],

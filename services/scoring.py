@@ -86,12 +86,45 @@ def scene_concept_tokens(scene: dict) -> set[str]:
     return tokens
 
 
+# Papéis das keywords por estratégia de busca (ordem = prioridade):
+#   primary     -> depiction concreta e literal do assunto principal
+#   alternative -> ângulo semântico diferente, igualmente no tema
+#   fallback    -> consulta mais ampla, ainda no tema (rede de segurança)
+ROLE_PRIMARY = "primary"
+ROLE_ALTERNATIVE = "alternative"
+ROLE_FALLBACK = "fallback"
+KEYWORD_ROLES = [ROLE_PRIMARY, ROLE_ALTERNATIVE, ROLE_FALLBACK]
+ROLE_LABELS_PT = {ROLE_PRIMARY: "principal", ROLE_ALTERNATIVE: "alternativa", ROLE_FALLBACK: "reserva"}
+
+
+def assign_roles(keywords: list) -> list[str]:
+    """Deriva o papel de cada keyword pela posição (1ª principal, 2ª alternativa,
+    o resto reserva). Determinístico e alinhado à ordem produzida pela IA."""
+    roles: list[str] = []
+    for i in range(len(keywords or [])):
+        roles.append(KEYWORD_ROLES[i] if i < len(KEYWORD_ROLES) else ROLE_FALLBACK)
+    return roles
+
+
+def keyword_role(scene: dict, query: str) -> str:
+    """Papel da `query` dentro da cena (usa keyword_roles persistido ou posição)."""
+    keywords = [str(k).strip().lower() for k in (scene.get("keywords") or [])]
+    q = str(query or "").strip().lower()
+    if q not in keywords:
+        return ROLE_FALLBACK
+    idx = keywords.index(q)
+    roles = scene.get("keyword_roles") or assign_roles(keywords)
+    if idx < len(roles) and roles[idx] in KEYWORD_ROLES:
+        return roles[idx]
+    return KEYWORD_ROLES[idx] if idx < len(KEYWORD_ROLES) else ROLE_FALLBACK
+
+
 def keyword_relevance(scene: dict, asset: dict) -> float:
     """Relevância textual em [0,1] entre a keyword do asset e o conceito da cena.
 
     1.0  = a keyword do asset está totalmente contida no conceito da cena.
     0.0  = nenhuma sobreposição (provável imagem fora de contexto).
-    Penaliza colisão com must_not_show e keyword genérica.
+    Penaliza colisão com must_not_show, keyword genérica e match por reserva.
     """
     kw_tokens = normalize_tokens(asset.get("keyword", ""))
     if not kw_tokens:
@@ -103,11 +136,13 @@ def keyword_relevance(scene: dict, asset: dict) -> float:
     overlap = kw_tokens & concept
     base = len(overlap) / len(kw_tokens)
 
-    # bônus se a keyword bate exatamente com a keyword principal da cena
-    scene_keywords = [str(k).strip().lower() for k in (scene.get("keywords") or [])]
-    asset_kw = str(asset.get("keyword", "")).strip().lower()
-    if scene_keywords and asset_kw == scene_keywords[0]:
+    # bônus/penalidade pelo papel da keyword que trouxe o asset: a principal é a
+    # mais precisa; a reserva é ampla de propósito, então vale um pouco menos.
+    role = keyword_role(scene, asset.get("keyword", ""))
+    if role == ROLE_PRIMARY:
         base = min(1.0, base + 0.25)
+    elif role == ROLE_FALLBACK:
+        base *= 0.9
 
     # penaliza se a keyword toca algo proibido pela cena
     forbidden: set[str] = set()

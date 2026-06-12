@@ -197,6 +197,31 @@ class KeywordFallbackTest(unittest.TestCase):
         self.assertIn("METAPHORICAL", prompt)
 
 
+class KeywordRoleTest(unittest.TestCase):
+    def test_assign_roles_by_position(self) -> None:
+        self.assertEqual(
+            scoring.assign_roles(["a", "b", "c", "d"]),
+            ["primary", "alternative", "fallback", "fallback"],
+        )
+        self.assertEqual(scoring.assign_roles([]), [])
+
+    def test_keyword_role_uses_persisted_roles(self) -> None:
+        scene = {"keywords": ["x", "y", "z"],
+                 "keyword_roles": ["primary", "alternative", "fallback"]}
+        self.assertEqual(scoring.keyword_role(scene, "x"), "primary")
+        self.assertEqual(scoring.keyword_role(scene, "z"), "fallback")
+        self.assertEqual(scoring.keyword_role(scene, "desconhecida"), "fallback")
+
+    def test_primary_match_scores_above_fallback_match(self) -> None:
+        asset = {"keyword": "alpha beta"}
+        primary_scene = {"keywords": ["alpha beta"], "keyword_roles": ["primary"]}
+        fallback_scene = {"keywords": ["alpha beta"], "keyword_roles": ["fallback"]}
+        self.assertGreater(
+            scoring.keyword_relevance(primary_scene, asset),
+            scoring.keyword_relevance(fallback_scene, asset),
+        )
+
+
 class PersistedVisionScoreTest(unittest.TestCase):
     def test_llm_vision_score_boosts_heuristic_score(self) -> None:
         scene = _scene()
@@ -304,6 +329,21 @@ class VisionJobTest(unittest.TestCase):
         self.assertGreaterEqual(job["result"]["vision_analyzed"], 1)
         scene_db_id = db.list_scenes(project_id)[0]["id"]
         self.assertTrue(all(a["vision_analyzed"] == 1 for a in db.list_assets(scene_db_id)))
+
+    def test_keyword_roles_persist_round_trip(self) -> None:
+        user_id = db.create_user("ru", "p")
+        project_id = db.create_project(user_id, "rp", "x", {})
+        db.replace_scenes(project_id, [{
+            "scene_id": "scene_001", "idx": 1, "start_time": 0, "end_time": 4, "duration": 4,
+            "keywords": ["main shot", "other angle", "broad theme"],
+        }])
+        scene = db.list_scenes(project_id)[0]
+        # roles derivados por posição na ausência de roles explícitos
+        self.assertEqual(scene["keyword_roles"], ["primary", "alternative", "fallback"])
+        # update_scene_keywords também atualiza os papéis
+        db.update_scene_keywords(scene["id"], ["novo principal", "reserva ampla"])
+        scene2 = db.get_scene(scene["id"])
+        self.assertEqual(scene2["keyword_roles"], ["primary", "alternative"])
 
     def test_gallery_sorts_chosen_and_best_first(self) -> None:
         user_id, project_id = self._seed()

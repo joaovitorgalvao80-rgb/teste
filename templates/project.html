@@ -438,7 +438,8 @@
 
       <div class="scene-meta">
         {% for kw in scene.keywords %}
-          <span class="kw">{{ kw }}</span>
+          {% set role = scene.keyword_roles[loop.index0] if loop.index0 < (scene.keyword_roles|length) else 'fallback' %}
+          <span class="kw kw-{{ role }}" title="busca {{ role_label(role) }}">{{ kw }} <small class="t-faint">· {{ role_label(role) }}</small></span>
         {% endfor %}
         {% if scene.assets | selectattr('state', 'equalto', 'accepted') | list %}
           <span class="tally tally-ok" style="margin-left:auto">take aceito</span>

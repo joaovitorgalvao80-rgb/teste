@@ -16,6 +16,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from services import scoring
+
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "plataforma.db"
@@ -133,6 +135,7 @@ CREATE TABLE IF NOT EXISTS scenes (
     narration       TEXT DEFAULT '',
     visual_goal     TEXT DEFAULT '',
     keywords_json   TEXT DEFAULT '[]',
+    keyword_roles_json TEXT DEFAULT '[]',
     must_show_json  TEXT DEFAULT '[]',
     must_not_show_json TEXT DEFAULT '[]',
     asset_type      TEXT DEFAULT 'video',
@@ -217,6 +220,7 @@ _MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN openrouter_key TEXT DEFAULT ''",
     "ALTER TABLE projects ADD COLUMN review_round INTEGER DEFAULT 0",
     "ALTER TABLE scenes ADD COLUMN part INTEGER DEFAULT 1",
+    "ALTER TABLE scenes ADD COLUMN keyword_roles_json TEXT DEFAULT '[]'",
     "ALTER TABLE assets ADD COLUMN auto_score REAL DEFAULT 0",
     "ALTER TABLE assets ADD COLUMN auto_reason TEXT DEFAULT ''",
     "ALTER TABLE assets ADD COLUMN review_round INTEGER DEFAULT 0",
@@ -622,9 +626,10 @@ def replace_scenes(project_id: int, scenes: list[dict]) -> None:
             conn.execute(
                 """INSERT INTO scenes
                 (project_id, scene_id, idx, zone, start_time, end_time, duration,
-                 narration, visual_goal, keywords_json, must_show_json, must_not_show_json,
+                 narration, visual_goal, keywords_json, keyword_roles_json,
+                 must_show_json, must_not_show_json,
                  asset_type, overlay_text, avatar_safe_area, part)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     project_id,
                     s["scene_id"],
@@ -636,6 +641,10 @@ def replace_scenes(project_id: int, scenes: list[dict]) -> None:
                     s.get("narration", ""),
                     s.get("visual_goal", ""),
                     json.dumps(s.get("keywords", []), ensure_ascii=False),
+                    json.dumps(
+                        s.get("keyword_roles") or scoring.assign_roles(s.get("keywords", [])),
+                        ensure_ascii=False,
+                    ),
                     json.dumps(s.get("must_show", []), ensure_ascii=False),
                     json.dumps(s.get("must_not_show", []), ensure_ascii=False),
                     s.get("asset_type", "video"),
@@ -652,6 +661,11 @@ def replace_scenes(project_id: int, scenes: list[dict]) -> None:
 def _scene_to_dict(row: sqlite3.Row) -> dict:
     d = dict(row)
     d["keywords"] = json.loads(d.pop("keywords_json") or "[]")
+    roles = json.loads(d.pop("keyword_roles_json", None) or "[]")
+    # bancos antigos (sem a coluna preenchida) caem na derivação por posição
+    if len(roles) != len(d["keywords"]):
+        roles = scoring.assign_roles(d["keywords"])
+    d["keyword_roles"] = roles
     d["must_show"] = json.loads(d.pop("must_show_json") or "[]")
     d["must_not_show"] = json.loads(d.pop("must_not_show_json") or "[]")
     return d
@@ -677,12 +691,18 @@ def get_scene(scene_db_id: int) -> Optional[dict]:
         conn.close()
 
 
-def update_scene_keywords(scene_db_id: int, keywords: list[str]) -> None:
+def update_scene_keywords(
+    scene_db_id: int, keywords: list[str], roles: Optional[list[str]] = None
+) -> None:
     conn = _connect()
     try:
         conn.execute(
-            "UPDATE scenes SET keywords_json = ? WHERE id = ?",
-            (json.dumps(keywords, ensure_ascii=False), scene_db_id),
+            "UPDATE scenes SET keywords_json = ?, keyword_roles_json = ? WHERE id = ?",
+            (
+                json.dumps(keywords, ensure_ascii=False),
+                json.dumps(roles or scoring.assign_roles(keywords), ensure_ascii=False),
+                scene_db_id,
+            ),
         )
         conn.commit()
     finally:
