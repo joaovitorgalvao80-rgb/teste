@@ -27,6 +27,16 @@ from starlette.middleware.sessions import SessionMiddleware
 
 import database as db
 from services import asset_search, auto_select, diagnostics, edit_plan, groq_service, packager, kaggle_service, scoring, vision
+from services.project_config import (
+    DEFAULT_CONFIG,
+    _coerce_bool,
+    _coerce_int,
+    normalize_project_config,
+    project_config,
+    resolution_width,
+)
+from services.key_detect import KEY_FIELD_LABELS, MAX_KEYS_FILE_BYTES, detect_api_keys
+from services.image_probe import image_kind_and_size as _image_kind_and_size
 from services.script_parser import assign_parts, parse_script
 
 ROOT = Path(__file__).resolve().parent
@@ -94,89 +104,10 @@ BUSY_PROJECT_STATUSES = {"mapping", "searching", "packaging", "auto_selecting", 
 # estados de take que contam como "escolhido" para pacote/diagnostico
 CHOSEN_ASSET_STATES = ["selected", "accepted"]
 
-DEFAULT_CONFIG = {
-    "format": "16:9",
-    "resolution": "1920x1080",
-    "avatar_safe_area": "right",
-    "avatar_safe_width_ratio": 0.30,
-    "asset_type_priority": "video",
-    "image_fallback": False,
-    "visual_style": "realistic editorial YouTube B-roll, concrete scenes, rural Brazil when relevant",
-    "script_language": "pt-BR",
-    "keyword_language": "english",
-    "scene_duration": 4.0,
-    "per_keyword": 8,
-    "max_download_mb": 90,
-    "long_mode": False,
-    "part_target_seconds": 150,
-}
-
 EDIT_PLAN_FILENAME = "edit_plan.json"
 
-ALLOWED_RESOLUTIONS = {"1920x1080", "1280x720"}
-ALLOWED_SAFE_AREAS = {"left", "right"}
-MIN_SCENE_DURATION = 2.0
-MAX_SCENE_DURATION = 8.0
-MIN_AVATAR_SAFE_RATIO = 0.10
-MAX_AVATAR_SAFE_RATIO = 0.45
-
-
-def _coerce_bool(value: object) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on", "sim"}
-    return bool(value)
-
-
-def _coerce_float(value: object, default: float, minimum: float, maximum: float) -> float:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        number = default
-    return min(max(number, minimum), maximum)
-
-
-def _coerce_int(value: object, default: int, minimum: int, maximum: int) -> int:
-    try:
-        number = int(value)
-    except (TypeError, ValueError):
-        number = default
-    return min(max(number, minimum), maximum)
-
-
-def normalize_project_config(raw_config: Optional[dict] = None) -> dict:
-    cfg = dict(DEFAULT_CONFIG)
-    if raw_config:
-        cfg.update(raw_config)
-    if cfg.get("resolution") not in ALLOWED_RESOLUTIONS:
-        cfg["resolution"] = DEFAULT_CONFIG["resolution"]
-    if cfg.get("avatar_safe_area") not in ALLOWED_SAFE_AREAS:
-        cfg["avatar_safe_area"] = DEFAULT_CONFIG["avatar_safe_area"]
-    cfg["scene_duration"] = _coerce_float(
-        cfg.get("scene_duration"),
-        DEFAULT_CONFIG["scene_duration"],
-        MIN_SCENE_DURATION,
-        MAX_SCENE_DURATION,
-    )
-    cfg["avatar_safe_width_ratio"] = _coerce_float(
-        cfg.get("avatar_safe_width_ratio"),
-        DEFAULT_CONFIG["avatar_safe_width_ratio"],
-        MIN_AVATAR_SAFE_RATIO,
-        MAX_AVATAR_SAFE_RATIO,
-    )
-    cfg["per_keyword"] = _coerce_int(cfg.get("per_keyword"), DEFAULT_CONFIG["per_keyword"], 1, 20)
-    cfg["max_download_mb"] = _coerce_int(
-        cfg.get("max_download_mb"), DEFAULT_CONFIG["max_download_mb"], 5, 500
-    )
-    cfg["image_fallback"] = _coerce_bool(cfg.get("image_fallback"))
-    cfg["long_mode"] = _coerce_bool(cfg.get("long_mode"))
-    cfg["part_target_seconds"] = _coerce_int(
-        cfg.get("part_target_seconds"), DEFAULT_CONFIG["part_target_seconds"], 60, 300
-    )
-    visual_style = str(cfg.get("visual_style") or "").strip()
-    cfg["visual_style"] = visual_style or DEFAULT_CONFIG["visual_style"]
-    return cfg
+# Defaults, coerção e normalização de config vivem em services/project_config.py
+# (importados abaixo). _coerce_bool/_coerce_int seguem usados em rotas daqui.
 
 # ------------------------------------------------------------------
 # App
@@ -394,18 +325,6 @@ def require_user(request: Request) -> dict:
     if not user:
         raise HTTPException(status_code=401)
     return user
-
-
-def project_config(project: dict) -> dict:
-    try:
-        stored = json.loads(project.get("config_json") or "{}")
-    except json.JSONDecodeError:
-        stored = {}
-    return normalize_project_config(stored)
-
-
-def resolution_width(config: dict) -> int:
-    return int(str(config.get("resolution") or DEFAULT_CONFIG["resolution"]).split("x", 1)[0])
 
 
 def missing_selected_scene_ids(scenes: list[dict], selected_by_scene: dict[int, dict]) -> list[str]:
@@ -854,81 +773,7 @@ def settings_save(
 # ------------------------------------------------------------------
 # Importação de chaves por arquivo .txt (detecção automática)
 # ------------------------------------------------------------------
-MAX_KEYS_FILE_BYTES = 64 * 1024
-
-# Formatos conhecidos de cada provedor; usados quando a linha não tem rótulo.
-_KEY_GUESS_PATTERNS = [
-    ("groq", re.compile(r"^gsk_[A-Za-z0-9_-]{20,}$")),
-    ("openrouter", re.compile(r"^sk-or-[A-Za-z0-9_-]{20,}$")),
-    ("kaggle_token", re.compile(r"^KGAT[A-Za-z0-9_-]{10,}$", re.IGNORECASE)),
-    ("pixabay", re.compile(r"^\d{6,10}-[0-9a-f]{20,40}$", re.IGNORECASE)),
-    ("kaggle_token", re.compile(r"^[0-9a-f]{32}$")),
-    ("pexels", re.compile(r"^[A-Za-z0-9]{45,60}$")),
-]
-
-KEY_FIELD_LABELS = {
-    "pexels": "Pexels",
-    "pixabay": "Pixabay",
-    "groq": "Groq",
-    "openrouter": "OpenRouter",
-    "kaggle_username": "Kaggle username",
-    "kaggle_token": "Kaggle token",
-}
-
-
-def _key_field_from_label(label: str) -> Optional[str]:
-    low = label.lower()
-    if "pexels" in low:
-        return "pexels"
-    if "pixabay" in low:
-        return "pixabay"
-    if "groq" in low:
-        return "groq"
-    if "openrouter" in low or "open router" in low or "open_router" in low:
-        return "openrouter"
-    if "kaggle" in low:
-        return "kaggle_username" if "user" in low else "kaggle_token"
-    if low.strip() in {"username", "user"}:
-        return "kaggle_username"
-    return None
-
-
-def detect_api_keys(text: str) -> dict[str, str]:
-    """Lê um .txt (ou kaggle.json) e descobre qual chave pertence a qual API.
-
-    Aceita linhas rotuladas ("pexels: CHAVE", "groq = CHAVE"), o kaggle.json
-    oficial e chaves soltas reconhecidas pelo formato (gsk_, sk-or-, etc).
-    """
-    detected: dict[str, str] = {}
-
-    # kaggle.json oficial: {"username": "...", "key": "..."}
-    m_user = re.search(r'"username"\s*:\s*"([^"\s]+)"', text)
-    m_key = re.search(r'"key"\s*:\s*"([^"\s]+)"', text)
-    if m_user and m_key:
-        detected["kaggle_username"] = m_user.group(1)
-        detected["kaggle_token"] = m_key.group(1)
-
-    for raw_line in text.splitlines():
-        line = raw_line.strip().strip(",;")
-        if not line or line.startswith("#") or line.startswith("//"):
-            continue
-        match = re.match(r"^[-*\s]*([A-Za-z _\-]{2,40}?)\s*[:=]\s*(\S+)\s*$", line)
-        if match:
-            field = _key_field_from_label(match.group(1))
-            value = match.group(2).strip().strip('"').strip("'")
-            min_len = 3 if field == "kaggle_username" else 8
-            if field and len(value) >= min_len:
-                detected.setdefault(field, value)
-                continue
-        for token in re.split(r"[\s,;]+", line):
-            token = token.strip().strip('"').strip("'")
-            if not token:
-                continue
-            for field, pattern in _KEY_GUESS_PATTERNS:
-                if field not in detected and pattern.match(token):
-                    detected[field] = token
-                    break
-    return detected
+# Detecção de chaves (formatos, rótulos, parsing) vive em services/key_detect.py.
 
 
 @app.post("/settings/import-keys")
@@ -1980,46 +1825,8 @@ def project_generated_dir(project_id: int) -> Path:
     return project_work_dir(project_id) / GENERATED_DIR_NAME
 
 
-def _jpeg_size(data: bytes) -> tuple[int, int]:
-    """Extrai (width, height) dos marcadores SOF de um JPEG; (0,0) se falhar."""
-    i = 2
-    try:
-        while i + 9 < len(data):
-            if data[i] != 0xFF:
-                i += 1
-                continue
-            marker = data[i + 1]
-            if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
-                return (
-                    int.from_bytes(data[i + 7:i + 9], "big"),
-                    int.from_bytes(data[i + 5:i + 7], "big"),
-                )
-            seg_len = int.from_bytes(data[i + 2:i + 4], "big")
-            i += 2 + max(seg_len, 2)
-    except Exception:  # noqa: BLE001 - dimensao e best-effort, nunca bloqueia o upload
-        pass
-    return 0, 0
-
-
-def _image_kind_and_size(data: bytes) -> tuple[str, int, int]:
-    """Detecta o formato por magic bytes e le as dimensoes quando possivel.
-
-    Retorna (extensao, width, height); width/height = 0 quando nao deu para ler.
-    Levanta ValueError para formatos nao suportados (nao confiamos no mimetype
-    enviado pelo browser).
-    """
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        w = h = 0
-        if len(data) >= 24:
-            w = int.from_bytes(data[16:20], "big")
-            h = int.from_bytes(data[20:24], "big")
-        return ".png", w, h
-    if data.startswith(b"\xff\xd8\xff"):
-        w, h = _jpeg_size(data)
-        return ".jpg", w, h
-    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return ".webp", 0, 0
-    raise ValueError("Arquivo nao e PNG, JPEG ou WebP.")
+# Detecção de formato/dimensões de imagem vive em services/image_probe.py
+# (importado como _image_kind_and_size no topo).
 
 
 @app.post("/scenes/{scene_db_id}/generated-image")
