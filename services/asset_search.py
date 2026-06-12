@@ -7,6 +7,9 @@ usuario vai rejeitar.
 from __future__ import annotations
 
 import logging
+import os
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -20,6 +23,42 @@ PEXELS_IMAGE_URL = "https://api.pexels.com/v1/search"
 PIXABAY_VIDEO_URL = "https://pixabay.com/api/videos/"
 PIXABAY_IMAGE_URL = "https://pixabay.com/api/"
 REQUEST_TIMEOUT = 25
+
+# A Pexels rejeita rajadas concorrentes/seguidas com 401 "Invalid API key"
+# (nao 429). search_scene dispara ate 8 requests em paralelo, entao a maioria
+# das chamadas Pexels falhava silenciosamente (cada provedor devolve [] em erro),
+# degradando a curadoria sem avisar. Aqui serializamos as chamadas Pexels, damos
+# um intervalo minimo entre elas e tentamos de novo com backoff no transiente.
+# Chaves muito limitadas (free tier estressado) ainda podem cair para Pixabay,
+# mas agora isso fica registrado em log em vez de sumir em silencio.
+_PEXELS_GATE = threading.Semaphore(1)
+_PEXELS_MIN_INTERVAL = float(os.getenv("PEXELS_MIN_INTERVAL", "0.34"))
+_PEXELS_LAST = [0.0]
+_RETRY_STATUSES = {401, 429}
+_MAX_RETRIES = 2
+_RETRY_BACKOFF = (1.5, 3.0)
+
+
+def _pexels_get(url: str, *, headers: dict, params: dict):
+    """GET a Pexels serializado, espacado e com retry/backoff em 401/429."""
+    resp = None
+    for attempt in range(_MAX_RETRIES + 1):
+        with _PEXELS_GATE:
+            wait = _PEXELS_MIN_INTERVAL - (time.monotonic() - _PEXELS_LAST[0])
+            if wait > 0:
+                time.sleep(wait)
+            resp = requests.get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT)
+            _PEXELS_LAST[0] = time.monotonic()
+        if resp.status_code not in _RETRY_STATUSES:
+            return resp
+        if attempt < _MAX_RETRIES:
+            time.sleep(_RETRY_BACKOFF[attempt])
+    logger.warning(
+        "Pexels respondeu %s apos %d tentativas (chave possivelmente limitada/invalida); "
+        "caindo para os demais provedores nesta busca.",
+        resp.status_code if resp is not None else "erro", _MAX_RETRIES + 1,
+    )
+    return resp
 
 
 def _bounded_per_page(value: int, default: int = 8, minimum: int = 1) -> int:
@@ -52,11 +91,10 @@ def search_pexels_videos(keyword: str, key: str, max_w: int, per_page: int = 8) 
         return []
     per_page = _bounded_per_page(per_page)
     try:
-        resp = requests.get(
+        resp = _pexels_get(
             PEXELS_VIDEO_URL,
             headers={"Authorization": key},
             params={"query": keyword, "orientation": "landscape", "per_page": per_page},
-            timeout=REQUEST_TIMEOUT,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Pexels video erro: %s", exc)
@@ -140,11 +178,10 @@ def search_pexels_images(keyword: str, key: str, per_page: int = 6) -> list[dict
         return []
     per_page = _bounded_per_page(per_page, default=6)
     try:
-        resp = requests.get(
+        resp = _pexels_get(
             PEXELS_IMAGE_URL,
             headers={"Authorization": key},
             params={"query": keyword, "orientation": "landscape", "per_page": per_page},
-            timeout=REQUEST_TIMEOUT,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Pexels image erro: %s", exc)

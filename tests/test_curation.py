@@ -197,6 +197,48 @@ class KeywordFallbackTest(unittest.TestCase):
         self.assertIn("METAPHORICAL", prompt)
 
 
+class PexelsRateLimitTest(unittest.TestCase):
+    """A Pexels devolve 401 em rajada; o cliente serializa e tenta de novo."""
+
+    class _Resp:
+        def __init__(self, code: int) -> None:
+            self.status_code = code
+            self.text = ""
+
+        def json(self) -> dict:
+            return {"videos": [], "photos": []}
+
+    def test_pexels_get_retries_on_401_then_succeeds(self) -> None:
+        from unittest.mock import patch
+        from services import asset_search
+
+        seq = [self._Resp(401), self._Resp(200)]
+        calls = {"n": 0}
+
+        def fake_get(url, headers=None, params=None, timeout=None):
+            r = seq[min(calls["n"], len(seq) - 1)]
+            calls["n"] += 1
+            return r
+
+        with patch.object(asset_search.requests, "get", side_effect=fake_get), \
+             patch.object(asset_search.time, "sleep", lambda *_a, **_k: None):
+            resp = asset_search._pexels_get("http://x", headers={}, params={})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(calls["n"], 2)  # uma falha + um retry bem-sucedido
+
+    def test_pexels_video_degrades_gracefully_when_always_401(self) -> None:
+        from unittest.mock import patch
+        from services import asset_search
+
+        def always_401(url, headers=None, params=None, timeout=None):
+            return self._Resp(401)
+
+        with patch.object(asset_search.requests, "get", side_effect=always_401), \
+             patch.object(asset_search.time, "sleep", lambda *_a, **_k: None):
+            out = asset_search.search_pexels_videos("rain", "key", max_w=1280, per_page=3)
+        self.assertEqual(out, [])  # cai para [] sem estourar excecao
+
+
 class KeywordRoleTest(unittest.TestCase):
     def test_assign_roles_by_position(self) -> None:
         self.assertEqual(
