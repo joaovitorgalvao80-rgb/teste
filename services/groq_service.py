@@ -40,30 +40,6 @@ def resolve_model(model: str) -> str:
         return DEFAULT_MODEL
     return model
 
-PT_TO_EN = {
-    "dengue": "dengue fever Brazil mosquito",
-    "mosquito": "mosquito close up",
-    "aedes": "aedes aegypti mosquito",
-    "balde": "bucket water backyard",
-    "agua": "stagnant water backyard",
-    "agua parada": "stagnant water mosquito breeding",
-    "bti": "biological mosquito control larvicide",
-    "larvicida": "biological larvicide mosquito control",
-    "quintal": "rural backyard Brazil",
-    "roca": "rural farm Brazil",
-    "sitio": "rural farm backyard",
-    "hospital": "hospital emergency room",
-    "abelha": "bee flower close up",
-    "cachorro": "dog backyard",
-    "crianca": "child playing backyard",
-    "veneno": "pesticide spraying",
-    "pulverizador": "garden sprayer",
-    "calha": "gutter water leaves",
-    "pneu": "old tire water",
-    "garrafa": "plastic bottle water",
-}
-
-
 def _overlay_from(text: str) -> str:
     clean = remove_accents(text)
     words = re.sub(r"[^A-Za-z0-9\s]", " ", clean).split()
@@ -80,19 +56,15 @@ _ZONE_FALLBACK = {
 
 
 def fallback_scene_brief(scene: dict, style: str, avatar_safe_area: str) -> dict:
-    """Brief determinístico (sem IA).
+    """Brief determinístico (sem IA), usado só quando a Groq falha.
 
-    Sem tradução PT->EN confiável offline, prioriza âncoras concretas conhecidas
-    (PT_TO_EN), depois tokens significativos da narração (já sem stopwords) e por
-    fim fillers por zona narrativa — evitando despejar palavras de ligação em
-    português numa API de busca em inglês.
+    Sem tradução PT->EN confiável offline, usa os tokens significativos da
+    narração (já sem stopwords) e fillers por zona narrativa — evitando despejar
+    palavras de ligação em português numa API de busca em inglês. O caminho
+    normal é a Groq (generate_briefs), que produz keywords concretas em inglês.
     """
     text = scene.get("narration", "")
-    low = remove_accents(text.lower())
     keywords: list[str] = []
-    for pt, en in PT_TO_EN.items():
-        if remove_accents(pt) in low and en not in keywords:
-            keywords.append(en)
     # tokens significativos (sem stopwords PT/EN), não só "len > 4"
     tokens = [t for t in scoring.normalize_tokens(text, min_len=4) if not t.isdigit()]
     if tokens:

@@ -153,13 +153,32 @@ class VisionAdapterTest(unittest.TestCase):
             vision.get_provider("llm", api_key="x"), vision.LLMVisionProvider
         )
 
-    def test_llm_provider_falls_back_to_heuristic_on_video(self) -> None:
-        # vídeo não tem frame estático: cai no heurístico mesmo com chave
+    def test_llm_provider_falls_back_when_no_thumbnail(self) -> None:
+        # sem thumbnail analisável (preview_url ausente), cai no heurístico
         scene = _scene()
-        asset = _asset(1, "mosquito close up")
+        asset = _asset(1, "mosquito close up")  # sem preview_url
         provider = vision.LLMVisionProvider(api_key="fake-key")
         result = provider.analyze(asset, scene, CONFIG)
         self.assertEqual(result.provider, "heuristic")
+
+    def test_llm_provider_analyzes_video_poster(self) -> None:
+        # vídeo COM poster (preview_url) agora é enviado ao modelo de visão
+        from unittest.mock import patch
+        scene = _scene()
+        asset = _asset(1, "mosquito close up", preview_url="http://x/poster.jpg")
+
+        class _R:
+            status_code = 200
+            def raise_for_status(self): pass
+            def json(self):
+                return {"choices": [{"message": {"content":
+                    '{"score": 88, "reasons": ["combina"], "flags": []}'}}]}
+
+        provider = vision.LLMVisionProvider(api_key="fake-key")
+        with patch.object(vision.requests, "post", return_value=_R()):
+            result = provider.analyze(asset, scene, CONFIG)
+        self.assertEqual(result.provider, "llm-vision")
+        self.assertEqual(result.score, 88.0)
 
     def test_analyze_candidates_returns_one_per_asset(self) -> None:
         scene = _scene()
@@ -179,12 +198,16 @@ class KeywordFallbackTest(unittest.TestCase):
             self.assertNotIn(f" {stop} ", f" {joined} ")
         self.assertTrue(brief["keywords"])
 
-    def test_fallback_uses_known_anchor_terms(self) -> None:
-        scene = {"scene_id": "scene_001", "zone": "DESENVOLVIMENTO",
-                 "narration": "O mosquito da dengue ataca no quintal"}
+    def test_fallback_uses_zone_fillers(self) -> None:
+        # sem o dict de dominio removido, o fallback usa fillers por zona +
+        # tokens da narracao, sempre devolvendo keywords nao vazias e em ingles.
+        scene = {"scene_id": "scene_001", "zone": "CTA",
+                 "narration": "Aplique o produto e proteja sua casa hoje"}
         brief = groq_service.fallback_scene_brief(scene, "documentary", "right")
         joined = " ".join(brief["keywords"]).lower()
-        self.assertIn("mosquito", joined)
+        self.assertTrue(brief["keywords"])
+        # algum filler de CTA deve aparecer
+        self.assertTrue("action" in joined or "hands" in joined or "working" in joined)
 
     def test_prompt_requests_multi_query_strategy(self) -> None:
         prompt = groq_service._build_prompt(
@@ -386,6 +409,25 @@ class VisionJobTest(unittest.TestCase):
         db.update_scene_keywords(scene["id"], ["novo principal", "reserva ampla"])
         scene2 = db.get_scene(scene["id"])
         self.assertEqual(scene2["keyword_roles"], ["primary", "alternative"])
+
+    def test_preview_page_shows_chosen_take_and_warnings(self) -> None:
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+
+        user_id, project_id = self._seed()
+        scene_db_id = db.list_scenes(project_id)[0]["id"]
+        # marca o asset genérico (low-res) como escolhido -> preview deve alertar
+        generic = next(a for a in db.list_assets(scene_db_id) if a["keyword"] == "business background")
+        db.set_asset_state(generic["id"], "selected")
+
+        client = TestClient(webapp.app)
+        with patch.object(webapp, "require_user", return_value={"id": user_id, "username": "u"}):
+            r = client.get(f"/projects/{project_id}/preview")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Preview da montagem", r.text)
+        self.assertIn("scene_001", r.text)
+        # baixa relevância / descarte do take genérico aparece como alerta
+        self.assertIn("relevância baixa", r.text)
 
     def test_gallery_sorts_chosen_and_best_first(self) -> None:
         user_id, project_id = self._seed()

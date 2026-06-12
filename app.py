@@ -413,6 +413,9 @@ def missing_selected_scene_ids(scenes: list[dict], selected_by_scene: dict[int, 
 
 
 _VISION_PROVIDER = vision.HeuristicVisionProvider()
+# Quantos candidatos por cena a IA de visao analisa de fato (os melhores pela
+# heuristica). Limita custo/tempo do LLM; o resto fica na heuristica offline.
+VISION_LLM_TOP_N = int(os.getenv("VISION_LLM_TOP_N", "8"))
 
 # Ordenação da galeria: take escolhido primeiro, depois melhores por visão/relevância.
 _TAKE_STATE_RANK = {"accepted": 3, "selected": 2, "favorite": 1, "pending": 0, "rejected": -1}
@@ -1593,11 +1596,12 @@ def analyze_pending_vision(
 ) -> tuple[int, str]:
     """Analisa (e persiste) os assets ainda nao analisados do projeto.
 
-    Usa o LLMVisionProvider quando ha chave OpenRouter (interpreta a thumbnail
-    de verdade); senao cai no provedor heuristico offline. Idempotente: so toca
-    assets com vision_analyzed=0, entao pode rodar repetidamente apos buscas.
-    Retorna (quantos_analisados, nome_do_provedor). Compartilhado entre o job
-    dedicado e o disparo automatico ao fim da busca.
+    Visao por IA por padrao: quando ha chave OpenRouter, o LLMVisionProvider
+    interpreta a thumbnail (inclusive o poster de videos) dos MELHORES candidatos
+    de cada cena (top-N pela heuristica), limitando custo/tempo; o restante e
+    pontuado pela heuristica offline. Sem chave, tudo cai na heuristica.
+    Idempotente: so toca assets com vision_analyzed=0. Retorna
+    (quantos_analisados, nome_do_provedor_principal).
     """
     project = db.get_project(project_id, user_id)
     if not project:
@@ -1605,36 +1609,46 @@ def analyze_pending_vision(
     config = project_config(project)
     scenes = db.list_scenes(project_id)
     assets_by_scene = db.list_assets_for_project(project_id)
-    provider = vision.get_provider("llm", api_key=openrouter_key) if openrouter_key \
-        else vision.HeuristicVisionProvider()
 
-    pending = [
-        (scene, asset)
-        for scene in scenes
-        for asset in assets_by_scene.get(scene["id"], [])
-        if not asset.get("vision_analyzed")
-    ]
-    if not pending:
-        return 0, provider.name
+    use_llm = bool(openrouter_key)
+    llm = vision.get_provider("llm", api_key=openrouter_key) if use_llm else None
+    heuristic = vision.HeuristicVisionProvider()
+    primary_name = (llm.name if llm else heuristic.name)
 
-    # cache por (cena, fonte, id): a analise compara a imagem COM a cena,
-    # entao a chave inclui a cena (nao so o source_id).
+    total_pending = sum(
+        1 for scene in scenes
+        for a in assets_by_scene.get(scene["id"], []) if not a.get("vision_analyzed")
+    )
+    if total_pending == 0:
+        return 0, primary_name
+
+    # cache de conteudo por (cena, thumbnail): a analise compara a imagem COM a
+    # cena, entao a chave inclui a cena; evita reanalisar thumbnails repetidas.
     cache: dict[tuple, object] = {}
     analyzed = 0
-    for scene, asset in pending:
-        sig = (scene["id"], asset.get("source"), str(asset.get("source_id")))
-        res = cache.get(sig)
-        if res is None:
-            res = provider.analyze(asset, scene, config)
-            cache[sig] = res
-        db.set_asset_vision(
-            asset["id"], res.score, res.verdict,
-            "; ".join(res.reasons)[:300], res.flags, res.provider,
-        )
-        analyzed += 1
-        if progress and analyzed % 10 == 0:
-            progress(analyzed, len(pending))
-    return analyzed, provider.name
+    for scene in scenes:
+        pend = [a for a in assets_by_scene.get(scene["id"], []) if not a.get("vision_analyzed")]
+        if not pend:
+            continue
+        # ranqueia pela heuristica: a IA so olha os finalistas (top-N) da cena.
+        ranked = sorted(pend, key=lambda a: auto_select.heuristic_score(scene, a, config), reverse=True)
+        for i, asset in enumerate(ranked):
+            provider = llm if (use_llm and i < VISION_LLM_TOP_N) else heuristic
+            thumb = asset.get("preview_url") or asset.get("download_url")
+            ckey = (scene["id"], thumb)
+            res = cache.get(ckey) if thumb else None
+            if res is None:
+                res = provider.analyze(asset, scene, config)
+                if thumb:
+                    cache[ckey] = res
+            db.set_asset_vision(
+                asset["id"], res.score, res.verdict,
+                "; ".join(res.reasons)[:300], res.flags, res.provider,
+            )
+            analyzed += 1
+            if progress and analyzed % 10 == 0:
+                progress(analyzed, total_pending)
+    return analyzed, primary_name
 
 
 def run_vision_job(
@@ -1905,6 +1919,52 @@ def download_curation_report(request: Request, project_id: int):
     if not path.exists():
         raise HTTPException(404, "Relatorio de curadoria ainda nao gerado. Conclua a revisao primeiro.")
     return FileResponse(path, filename=path.name, media_type="text/markdown")
+
+
+@app.get("/projects/{project_id}/preview", response_class=HTMLResponse)
+def preview_page(request: Request, project_id: int):
+    """Folha de contato: o take escolhido de cada cena lado a lado com a narracao.
+
+    Permite revisar visualmente as escolhas e pegar erros ANTES de gastar render.
+    """
+    user = require_user(request)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    config = project_config(project)
+    scenes = db.list_scenes(project_id)
+    chosen_rows = db.list_assets_by_state(project_id, CHOSEN_ASSET_STATES)
+    chosen_by_scene = {row["scene_id"]: row for row in chosen_rows}
+
+    cards = []
+    missing = low_rel = discard = 0
+    for scene in scenes:
+        asset = chosen_by_scene.get(scene["id"])
+        annotated = annotate_assets_with_vision(scene, [asset], config)[0] if asset else None
+        if not annotated:
+            missing += 1
+        else:
+            if annotated.get("low_relevance"):
+                low_rel += 1
+            if annotated.get("vision_verdict") == "descartar":
+                discard += 1
+        cards.append({"scene": scene, "asset": annotated})
+
+    return render_template(
+        request,
+        "preview.html",
+        {
+            "user": user,
+            "project": project,
+            "config": config,
+            "cards": cards,
+            "total": len(scenes),
+            "with_take": len(scenes) - missing,
+            "missing": missing,
+            "low_relevance": low_rel,
+            "discard": discard,
+        },
+    )
 
 
 # ------------------------------------------------------------------

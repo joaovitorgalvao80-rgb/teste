@@ -111,6 +111,11 @@
           Analisar visão
         </button>
       </form>
+      <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}/preview"
+         title="Folha de contato dos takes escolhidos antes de renderizar"
+         {% if selected_count == 0 %}aria-disabled="true"{% endif %}>
+        Preview
+      </a>
     </div>
   </div>
 

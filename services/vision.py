@@ -165,9 +165,13 @@ class LLMVisionProvider:
         self._fallback = HeuristicVisionProvider()
 
     def analyze(self, asset: dict, scene: dict, config: dict) -> VisionAnalysis:
-        thumb = asset.get("preview_url") or asset.get("download_url")
-        if not self.api_key or not thumb or asset.get("asset_type") == "video":
-            # sem chave, sem imagem, ou vídeo (frame indisponível): heurística
+        # Para vídeo usamos o poster (preview_url); o download_url de vídeo é o
+        # .mp4 e não serve para um endpoint de visão. Imagens têm os dois.
+        thumb = asset.get("preview_url")
+        if asset.get("asset_type") != "video":
+            thumb = thumb or asset.get("download_url")
+        if not self.api_key or not thumb:
+            # sem chave ou sem thumbnail analisável: heurística
             return self._fallback.analyze(asset, scene, config)
         try:
             return self._analyze_remote(asset, scene, config, thumb)
