@@ -267,15 +267,20 @@ def _wait_dataset_ready(
 _RUNNER = """\
 import json
 import os
+import select
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
 BASE_VIDEO_NAME = "video_broll_base.mp4"
 MASTER_VIDEO_NAME = "final_master.mp4"
-HYPERFRAMES_CMD = ["npx", "-y", "--package", "node@22", "--package", "hyperframes", "hyperframes"]
+HYPERFRAMES_VERSION = (os.environ.get("PRODUCER_HYPERFRAMES_VERSION") or "0.6.93").strip() or "0.6.93"
+HYPERFRAMES_PACKAGE = "hyperframes@" + HYPERFRAMES_VERSION
+HYPERFRAMES_CMD = ["npx", "-y", "--package", "node@22", "--package", HYPERFRAMES_PACKAGE, "hyperframes"]
+RUN_TIMINGS = []
 CHROME_LIBS = [
     "libatk-bridge2.0-0",
     "libatk1.0-0",
@@ -306,21 +311,61 @@ CHROME_LIBS = [
 
 def run_logged(cmd, cwd=None, timeout=None, env=None):
     print("$ " + " ".join(str(c) for c in cmd))
-    result = subprocess.run(
+    started = time.monotonic()
+    cmd_label = " ".join(str(c) for c in cmd[:4])
+    process = subprocess.Popen(
         cmd,
         cwd=str(cwd) if cwd else None,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
-        timeout=timeout,
         env=env,
+        bufsize=1,
     )
-    if result.stdout:
-        print(result.stdout[-4000:])
-    if result.stderr:
-        print("STDERR:", result.stderr[-3000:])
+    chunks = []
+    try:
+        while True:
+            if process.stdout:
+                ready, _, _ = select.select([process.stdout], [], [], 1)
+                if ready:
+                    line = process.stdout.readline()
+                    if line:
+                        chunks.append(line)
+                        print(line, end="", flush=True)
+            if process.poll() is not None:
+                if process.stdout:
+                    rest = process.stdout.read()
+                    if rest:
+                        chunks.append(rest)
+                        print(rest, end="", flush=True)
+                break
+            if timeout and (time.monotonic() - started) > timeout:
+                process.kill()
+                elapsed = round(time.monotonic() - started, 3)
+                RUN_TIMINGS.append({"stage": "command_timeout", "command": cmd_label, "seconds": elapsed})
+                raise TimeoutError("Comando excedeu timeout de " + str(timeout) + "s: " + " ".join(str(c) for c in cmd))
+    finally:
+        if process.stdout:
+            process.stdout.close()
+    output = "".join(chunks)
+    result = subprocess.CompletedProcess(cmd, process.returncode, output, "")
+    RUN_TIMINGS.append(
+        {
+            "stage": "command",
+            "command": cmd_label,
+            "seconds": round(time.monotonic() - started, 3),
+            "returncode": result.returncode,
+        }
+    )
     if result.returncode != 0:
         raise RuntimeError("Comando falhou (exit " + str(result.returncode) + "): " + " ".join(str(c) for c in cmd))
     return result
+
+
+def mark_timing(stage, started, **extra):
+    item = {"stage": stage, "seconds": round(time.monotonic() - started, 3)}
+    item.update(extra)
+    RUN_TIMINGS.append(item)
 
 
 def command_output(cmd):
@@ -373,7 +418,8 @@ def hyperframes_render_args(output_path, render_format="mp4"):
         "--fps",
         str(RENDER_FPS),
         "--workers",
-        "2",
+        str(RENDER_WORKERS),
+        "--low-memory-mode",
         "--no-browser-gpu",
         "--protocol-timeout",
         "900000",
@@ -400,19 +446,23 @@ def encode_png_sequence(frames_dir, master_out):
                 "ffmpeg",
                 "-y",
                 "-framerate",
-                "30",
+                str(RENDER_FPS),
                 "-pattern_type",
                 "glob",
                 "-i",
                 str(direct_pattern),
                 "-vf",
                 "format=yuv420p",
+                "-r",
+                str(OUTPUT_FPS),
                 "-c:v",
                 "libx264",
                 "-preset",
                 "fast",
                 "-crf",
                 "18",
+                "-movflags",
+                "+faststart",
                 str(master_out),
             ],
             timeout=1200,
@@ -429,7 +479,7 @@ def encode_png_sequence(frames_dir, master_out):
                 "ffmpeg",
                 "-y",
                 "-r",
-                "30",
+                str(RENDER_FPS),
                 "-f",
                 "concat",
                 "-safe",
@@ -438,12 +488,16 @@ def encode_png_sequence(frames_dir, master_out):
                 str(manifest),
                 "-vf",
                 "format=yuv420p",
+                "-r",
+                str(OUTPUT_FPS),
                 "-c:v",
                 "libx264",
                 "-preset",
                 "fast",
                 "-crf",
                 "18",
+                "-movflags",
+                "+faststart",
                 str(master_out),
             ],
             timeout=1200,
@@ -451,12 +505,31 @@ def encode_png_sequence(frames_dir, master_out):
     return len(pngs)
 
 
+def timeout_from_env(name, default_seconds):
+    raw = os.environ.get(name)
+    if not raw:
+        return int(default_seconds)
+    try:
+        return max(60, int(float(raw)))
+    except ValueError:
+        print("Valor invalido para", name + ":", raw, "usando", default_seconds)
+        return int(default_seconds)
+
+
+def hyperframes_timeout(duration, mode):
+    if mode == "mp4":
+        default_seconds = max(300, min(900, int(duration * 8 + 180)))
+        return timeout_from_env("PRODUCER_HF_MP4_TIMEOUT_SECONDS", default_seconds)
+    default_seconds = max(900, min(3600, int(duration * 20 + 300)))
+    return timeout_from_env("PRODUCER_HF_PNG_TIMEOUT_SECONDS", default_seconds)
+
+
 def assert_node_runtime():
     print("Node do sistema:", optional_command_output(["node", "--version"]))
     print("npm:", optional_command_output(["npm", "--version"]))
     print("npx:", command_output(["npx", "--version"]))
     # Pre-warm node@22 + hyperframes em paralelo para evitar download duplo no lint/render
-    node_version = command_output(["npx", "-y", "--package", "node@22", "--package", "hyperframes", "node", "--version"])
+    node_version = command_output(["npx", "-y", "--package", "node@22", "--package", HYPERFRAMES_PACKAGE, "node", "--version"])
     major = int(node_version.strip().lstrip("v").split(".", 1)[0])
     print("Node para HyperFrames:", node_version)
     if major < 22:
@@ -515,6 +588,8 @@ PACK_EXTRAS_DIR = Path("/kaggle/working/pack_extras")
 NL = chr(10)
 
 RENDER_FPS = 15
+OUTPUT_FPS = 30
+RENDER_WORKERS = 1
 
 COMPOSITION_CSS = (
     "html, body { margin: 0; width: 100%; height: 100%; background: #050708; overflow: hidden; }"
@@ -763,6 +838,20 @@ def _gsap_script_tag(assets_dir):
     return '<script src="./assets/gsap.min.js"></script>'
 
 
+def avatar_corner_filter(width, height, edit_plan):
+    plan_avatar = (edit_plan or {}).get("avatar") or {}
+    pos = "left" if str(plan_avatar.get("position") or "right") == "left" else "right"
+    try:
+        scale = float(plan_avatar.get("scale") or 0.30)
+    except (TypeError, ValueError):
+        scale = 0.30
+    scale = min(max(scale, 0.10), 0.60)
+    avatar_w = int(width * scale)
+    x = "24" if pos == "left" else "W-w-24"
+    y = "H-h"
+    return avatar_w, x, y
+
+
 def ffmpeg_compose_base_layers(base_video, avatar, windows, out_path, duration, width, height):
     # FFmpeg: avatar full-screen + b-roll windows com fade. Substitui video-in-browser.
     inputs = ["-y"]
@@ -811,6 +900,33 @@ def ffmpeg_compose_base_layers(base_video, avatar, windows, out_path, duration, 
     run_logged(cmd, timeout=1200)
 
 
+def ffmpeg_compose_corner_layers(base_video, avatar, out_path, duration, width, height, edit_plan):
+    inputs = ["-y", "-stream_loop", "-1", "-t", "%.3f" % duration, "-i", str(base_video)]
+    filters = [
+        "[0:v]scale=" + str(width) + ":" + str(height)
+        + ":force_original_aspect_ratio=increase,crop=" + str(width) + ":" + str(height)
+        + ",setsar=1[base]"
+    ]
+    current = "base"
+    if avatar:
+        avatar_w, x, y = avatar_corner_filter(width, height, edit_plan)
+        inputs += ["-stream_loop", "-1", "-t", "%.3f" % duration, "-i", str(avatar)]
+        filters.append("[1:v]scale=" + str(avatar_w) + ":-2,format=rgba[avatar]")
+        filters.append("[base][avatar]overlay=" + x + ":" + y + ":eof_action=pass:shortest=0[out]")
+        current = "out"
+    cmd = ["ffmpeg"] + inputs + [
+        "-filter_complex", ";".join(filters),
+        "-map", "[" + current + "]",
+        "-r", str(OUTPUT_FPS),
+        "-t", "%.3f" % duration,
+        "-an",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        str(out_path),
+    ]
+    run_logged(cmd, timeout=1200)
+
+
 def ffmpeg_overlay_captions(base_video, frames_dir, out_path):
     # Overlay de captions (chroma-keyed PNG sequence) sobre o video base.
     pngs = sorted(frames_dir.rglob("*.png"))
@@ -823,7 +939,7 @@ def ffmpeg_overlay_captions(base_video, frames_dir, out_path):
     else:
         manifest = Path("/kaggle/working/caption_frames.txt")
         lines = ["file '" + str(f).replace("'", "'\\''") + "'" for f in pngs]
-        manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        manifest.write_text("\\n".join(lines) + "\\n", encoding="utf-8")
         cap_input = ["-r", str(RENDER_FPS), "-f", "concat", "-safe", "0", "-i", str(manifest)]
     run_logged(
         [
@@ -918,6 +1034,8 @@ def write_hyperframes_project(base_video, project_dir, edit_plan=None, narration
                     + ', ease: "power2.in" }, ' + ("%.3f" % max(w["start"] + w["duration"] - fade, w["start"])) + ");"
                 )
                 tl.extend(motion_tweens("#" + wid, w.get("scenes") or []))
+    elif text_overlay_only:
+        pass
     else:
         # camada 0: video base dentro do wrapper de motion
         body.append('<div id="motion-wrap">')
@@ -1062,7 +1180,7 @@ def write_hyperframes_project(base_video, project_dir, edit_plan=None, narration
         + str(cap_idx) + " captions, " + str(fade_idx) + " fades"
     )
     if text_overlay_only:
-        return {"duration": duration, "windows": windows, "base_dur": base_dur, "cap_idx": cap_idx}
+        return {"duration": duration, "windows": windows, "base_dur": base_dur, "cap_idx": cap_idx, "fade_idx": fade_idx}
     return duration
 
 
@@ -1223,6 +1341,7 @@ def _make_hyperframes_env():
     env["CI"] = "1"
     env["HYPERFRAMES_NO_UPDATE_CHECK"] = "1"
     env["PUPPETEER_SKIP_CHROMIUM_DOWNLOAD"] = "true"
+    env["PRODUCER_LOW_MEMORY_MODE"] = "1"
     env["PRODUCER_PUPPETEER_LAUNCH_TIMEOUT_MS"] = "180000"
     env["PRODUCER_PUPPETEER_PROTOCOL_TIMEOUT_MS"] = "900000"
     env["PRODUCER_PLAYER_READY_TIMEOUT_MS"] = "180000"
@@ -1236,27 +1355,36 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
     avatar_mode = plan_avatar_mode(edit_plan, avatar)
     width, height = plan_resolution(edit_plan)
 
-    if avatar_mode == "base" and avatar:
+    if avatar_mode in ("base", "corner") and avatar:
         # Pipeline rapido: FFmpeg compoe video, HyperFrames renderiza so texto
+        stage_start = time.monotonic()
         result = write_hyperframes_project(
             base_video, project_dir, edit_plan, None, avatar,
             avatar_mode=avatar_mode, text_overlay_only=True
         )
         duration = result["duration"]
         windows = result["windows"]
-        has_captions = result["cap_idx"] > 0
+        has_overlays = result["cap_idx"] > 0 or result["fade_idx"] > 0
+        mark_timing("write_hyperframes_overlay_project", stage_start, avatar_mode=avatar_mode)
 
         # Etapa 1: FFmpeg compoe avatar + b-rolls (rapido, sem browser)
         composed_base = Path("/kaggle/working/composed_base.mp4")
-        print("FFmpeg: compondo base (avatar + %d b-rolls)..." % len(windows))
-        ffmpeg_compose_base_layers(base_video, avatar, windows, composed_base, duration, width, height)
+        compose_start = time.monotonic()
+        if avatar_mode == "base":
+            print("FFmpeg: compondo base (avatar + %d b-rolls)..." % len(windows))
+            ffmpeg_compose_base_layers(base_video, avatar, windows, composed_base, duration, width, height)
+        else:
+            print("FFmpeg: compondo base (b-roll + avatar corner)...")
+            ffmpeg_compose_corner_layers(base_video, avatar, composed_base, duration, width, height, edit_plan)
+        mark_timing("ffmpeg_compose_base", compose_start, avatar_mode=avatar_mode, broll_windows=len(windows))
         print("FFmpeg base pronto: " + str(composed_base))
 
         render_mode = "ffmpeg+hyperframes-overlay"
         png_count = 0
 
-        if has_captions:
-            # Etapa 2: HyperFrames renderiza apenas captions (sem video elements = rapido)
+        if has_overlays:
+            # Etapa 2: HyperFrames renderiza apenas overlays (sem video elements = rapido)
+            hf_start = time.monotonic()
             assert_node_runtime()
             env = _make_hyperframes_env()
             install_chrome_libs()
@@ -1264,7 +1392,7 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
             if system_chrome:
                 env["HYPERFRAMES_BROWSER_PATH"] = system_chrome
                 env["PUPPETEER_EXECUTABLE_PATH"] = system_chrome
-            print("HyperFrames: renderizando captions (overlay apenas)...")
+            print("HyperFrames: renderizando overlays (captions/fades apenas)...")
             try:
                 run_logged(HYPERFRAMES_CMD + ["lint", "."], cwd=project_dir, timeout=600, env=env)
             except Exception as lint_exc:
@@ -1273,24 +1401,33 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
                 shutil.rmtree(frames_dir)
             run_logged(
                 hyperframes_render_args(frames_dir, "png-sequence"),
-                cwd=project_dir, timeout=3600, env=env,
+                cwd=project_dir, timeout=hyperframes_timeout(duration, "png-sequence"), env=env,
             )
             png_count = len(list(frames_dir.rglob("*.png")))
-            # Etapa 3: FFmpeg overlay captions sobre o base
+            mark_timing("hyperframes_overlay_frames", hf_start, png_frames=png_count)
+            # Etapa 3: FFmpeg aplica overlays sobre o base
+            overlay_start = time.monotonic()
             ffmpeg_overlay_captions(composed_base, frames_dir, master_out)
+            mark_timing("ffmpeg_overlay_captions", overlay_start, png_frames=png_count)
         else:
             import shutil as _sh
+            copy_start = time.monotonic()
             _sh.copy2(str(composed_base), str(master_out))
+            mark_timing("copy_composed_base", copy_start)
 
         if not master_out.exists():
             raise RuntimeError("Pipeline nao gerou " + str(master_out))
+        post_start = time.monotonic()
         postprocess = apply_master_postprocess(master_out, narration, avatar, edit_plan, avatar_mode=avatar_mode)
+        mark_timing("ffmpeg_postprocess", post_start, avatar_mode=avatar_mode)
     else:
-        # Modo legado (corner / sem avatar): HyperFrames renderiza tudo
+        # Modo legado (sem avatar): HyperFrames renderiza tudo
+        stage_start = time.monotonic()
         assert_node_runtime()
         duration = write_hyperframes_project(
             base_video, project_dir, edit_plan, None, avatar, avatar_mode=avatar_mode
         )
+        mark_timing("write_hyperframes_full_project", stage_start, avatar_mode=avatar_mode)
         env = _make_hyperframes_env()
         install_chrome_libs()
         system_chrome = ensure_system_chrome()
@@ -1302,23 +1439,38 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
             run_logged(HYPERFRAMES_CMD + ["lint", "."], cwd=project_dir, timeout=600, env=env)
         except Exception as lint_exc:
             print("Aviso: lint:", lint_exc)
-        render_mode = "mp4"
+        preferred_mode = os.environ.get("PRODUCER_HF_RENDER_MODE", "png-sequence").strip().lower()
+        render_mode = "png-sequence+ffmpeg"
         png_count = 0
-        try:
-            run_logged(hyperframes_render_args(master_out), cwd=project_dir, timeout=3600, env=env)
-        except Exception as first_exc:
-            print("HyperFrames MP4 falhou; tentando png-sequence:", first_exc)
+        if preferred_mode == "mp4":
+            render_mode = "mp4"
+            try:
+                mp4_start = time.monotonic()
+                run_logged(
+                    hyperframes_render_args(master_out),
+                    cwd=project_dir,
+                    timeout=hyperframes_timeout(duration, "mp4"),
+                    env=env,
+                )
+                mark_timing("hyperframes_mp4", mp4_start)
+            except Exception as first_exc:
+                print("HyperFrames MP4 falhou; tentando png-sequence:", first_exc)
+                render_mode = "png-sequence+ffmpeg"
+        if render_mode == "png-sequence+ffmpeg":
             if frames_dir.exists():
                 shutil.rmtree(frames_dir)
+            png_start = time.monotonic()
             run_logged(
                 hyperframes_render_args(frames_dir, "png-sequence"),
-                cwd=project_dir, timeout=3600, env=env,
+                cwd=project_dir, timeout=hyperframes_timeout(duration, "png-sequence"), env=env,
             )
             png_count = encode_png_sequence(frames_dir, master_out)
-            render_mode = "png-sequence+ffmpeg"
+            mark_timing("hyperframes_png_sequence_encode", png_start, png_frames=png_count)
         if not master_out.exists():
             raise RuntimeError("HyperFrames terminou sem gerar " + str(master_out))
+        post_start = time.monotonic()
         postprocess = apply_master_postprocess(master_out, narration, avatar, edit_plan, avatar_mode=avatar_mode)
+        mark_timing("ffmpeg_postprocess", post_start, avatar_mode=avatar_mode)
 
     write_status(
         {
@@ -1335,6 +1487,14 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
             "requested_audio": postprocess["requested_audio"],
             "requested_avatar": postprocess["requested_avatar"],
             "postprocess": postprocess,
+            "performance": RUN_TIMINGS,
+            "hyperframes": {
+                "package": HYPERFRAMES_PACKAGE,
+                "fps": RENDER_FPS,
+                "output_fps": OUTPUT_FPS,
+                "workers": RENDER_WORKERS,
+                "low_memory": True,
+            },
         }
     )
     print(f"Master: {master_out} ({master_out.stat().st_size/1024/1024:.1f} MB)")
@@ -1460,7 +1620,7 @@ def push_kernel(
             json.dumps(metadata, ensure_ascii=False), encoding="utf-8"
         )
 
-        r = _run(["kernels", "push", "-p", str(tmp), "--accelerator", "NvidiaTeslaT4"], username, token, timeout=60)
+        r = _run(["kernels", "push", "--accelerator", "NvidiaTeslaT4", "-p", str(tmp)], username, token, timeout=60)
         push_out = (r.stdout or "") + (r.stderr or "")
 
     return _extract_kernel_slug(push_out, username, slug), push_out.strip()

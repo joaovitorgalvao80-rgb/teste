@@ -765,6 +765,8 @@ class DeployContractsTest(unittest.TestCase):
         self.assertIn("hyperframes_status.json", kaggle_service._RUNNER)
         self.assertIn('"node@22"', kaggle_service._RUNNER)
         self.assertIn('"hyperframes"', kaggle_service._RUNNER)
+        self.assertIn('HYPERFRAMES_VERSION = (os.environ.get("PRODUCER_HYPERFRAMES_VERSION") or "0.6.93").strip() or "0.6.93"', kaggle_service._RUNNER)
+        self.assertIn('HYPERFRAMES_PACKAGE = "hyperframes@" + HYPERFRAMES_VERSION', kaggle_service._RUNNER)
         self.assertIn('window.__timelines["nwrch-master"]', kaggle_service._RUNNER)
         self.assertIn('"apt-get", "install"', kaggle_service._RUNNER)
         self.assertIn('"libatk1.0-0"', kaggle_service._RUNNER)
@@ -772,7 +774,11 @@ class DeployContractsTest(unittest.TestCase):
         self.assertIn('"HYPERFRAMES_BROWSER_PATH"', kaggle_service._RUNNER)
         self.assertIn('"PUPPETEER_EXECUTABLE_PATH"', kaggle_service._RUNNER)
         self.assertIn('"--workers"', kaggle_service._RUNNER)
+        self.assertIn("RENDER_WORKERS = 1", kaggle_service._RUNNER)
         self.assertIn('"PRODUCER_LOW_MEMORY_MODE"', kaggle_service._RUNNER)
+        self.assertIn('"PRODUCER_HF_RENDER_MODE"', kaggle_service._RUNNER)
+        self.assertIn('"PRODUCER_HF_MP4_TIMEOUT_SECONDS"', kaggle_service._RUNNER)
+        self.assertIn('"PRODUCER_HF_PNG_TIMEOUT_SECONDS"', kaggle_service._RUNNER)
         self.assertIn('"PRODUCER_PLAYER_READY_TIMEOUT_MS"', kaggle_service._RUNNER)
         self.assertIn('"--low-memory-mode"', kaggle_service._RUNNER)
         self.assertIn('"--protocol-timeout"', kaggle_service._RUNNER)
@@ -784,6 +790,7 @@ class DeployContractsTest(unittest.TestCase):
         self.assertIn("hyperframes_frames", kaggle_service._RUNNER)
         self.assertIn('"format=yuv420p"', kaggle_service._RUNNER)
         self.assertIn('"png-sequence+ffmpeg"', kaggle_service._RUNNER)
+        self.assertIn('"performance": RUN_TIMINGS', kaggle_service._RUNNER)
         self.assertIn("data-duration=", kaggle_service._RUNNER)
 
     def test_runner_composition_uses_edit_plan_extras(self) -> None:
@@ -825,6 +832,11 @@ class DeployContractsTest(unittest.TestCase):
         # fallback sem HyperFrames mantem o avatar como base
         self.assertIn("plan_avatar_mode(edit_plan, avatar_file)", runner)
         self.assertIn("avatar_audio", runner)
+        # corner tambem evita video pesado no browser: FFmpeg compoe, HyperFrames so overlay
+        self.assertIn('avatar_mode in ("base", "corner") and avatar', runner)
+        self.assertIn("ffmpeg_compose_corner_layers", runner)
+        self.assertIn("has_overlays = result", runner)
+        self.assertIn('elif text_overlay_only:', runner)
 
     def test_edit_plan_builder_is_deterministic(self) -> None:
         from services import edit_plan as ep
