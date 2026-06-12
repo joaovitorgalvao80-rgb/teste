@@ -17,6 +17,7 @@ Para trocar de provedor basta implementar `analyze()` e registrá-lo em
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import time
@@ -199,14 +200,15 @@ class LLMVisionProvider:
             base.flags.append("vision_indisponivel")
             return base
 
-    def _analyze_remote(self, asset: dict, scene: dict, config: dict, thumb: str) -> VisionAnalysis:
-        prompt = (
+    @staticmethod
+    def _prompt(scene: dict) -> str:
+        return (
             "You are a strict B-roll curator for a YouTube video. Look at the IMAGE "
             "and judge how well it ACTUALLY DEPICTS the scene below — by its visible "
             "content, not by hope.\n"
             f'Scene narration (pt-BR): {scene.get("narration", "")}\n'
             f'What the footage should show: {scene.get("visual_goal", "")}\n'
-            f'Must NOT show: {", ".join(scene.get("must_not_show") or []) or "-"}\n\n"'
+            f'Must NOT show: {", ".join(scene.get("must_not_show") or []) or "-"}\n\n'
             "Scoring (be harsh): 85-100 = clearly shows it; 60-84 = related/works; "
             "35-59 = weak/tangential; 0-34 = does NOT show it / off-topic / wrong "
             "subject or place. If the visible content is off-topic, score under 35 "
@@ -216,18 +218,8 @@ class LLMVisionProvider:
             '"flags": ["irrelevante"|"fora_do_tema"|"baixa_qualidade"|"texto_logo"|'
             '"pessoa_errada"|"ambiente_errado"|"tom_incompativel"|"conteudo_proibido"]}'
         )
-        payload = {
-            "model": self.model,
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": thumb}},
-                ],
-            }],
-            "temperature": 0.2,
-            "response_format": {"type": "json_object"},
-        }
+
+    def _post_with_retry(self, payload: dict):
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         resp = None
         for attempt in range(_VISION_MAX_RETRIES + 1):
@@ -235,14 +227,16 @@ class LLMVisionProvider:
             if resp.status_code not in _VISION_RETRY_STATUSES:
                 break
             if attempt < _VISION_MAX_RETRIES:
-                # respeita Retry-After do provedor quando presente
                 try:
                     wait = float(resp.headers.get("retry-after", ""))
                 except (TypeError, ValueError):
                     wait = _VISION_BACKOFF[attempt]
                 time.sleep(max(wait, _VISION_BACKOFF[attempt]))
         resp.raise_for_status()
-        data = json.loads(resp.json()["choices"][0]["message"]["content"])
+        return resp
+
+    def _parse(self, asset: dict, scene: dict, content: str) -> VisionAnalysis:
+        data = json.loads(content)
         score = max(0.0, min(100.0, float(data.get("score") or 0)))
         flags = [str(f).strip() for f in (data.get("flags") or []) if str(f).strip()]
         reasons = [str(r).strip() for r in (data.get("reasons") or []) if str(r).strip()]
@@ -258,6 +252,57 @@ class LLMVisionProvider:
             flags=flags,
             provider=self.name,
         )
+
+    def _analyze_remote(self, asset: dict, scene: dict, config: dict, thumb: str) -> VisionAnalysis:
+        payload = {
+            "model": self.model,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": self._prompt(scene)},
+                    {"type": "image_url", "image_url": {"url": thumb}},
+                ],
+            }],
+            "temperature": 0.2,
+            "response_format": {"type": "json_object"},
+        }
+        resp = self._post_with_retry(payload)
+        return self._parse(asset, scene, resp.json()["choices"][0]["message"]["content"])
+
+
+class NvidiaVisionProvider(LLMVisionProvider):
+    """Visão via NVIDIA NIM (build.nvidia.com). Os VLMs da NVIDIA exigem a imagem
+    em base64 embutida (<img src="data:..."/>), nao a URL remota. Baixamos a
+    thumbnail, encodamos e mandamos inline. Cai na heuristica em falha/limite."""
+
+    name = "nvidia-vision"
+    NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+    NVIDIA_MODEL = "meta/llama-3.2-11b-vision-instruct"
+    MAX_IMG_BYTES = 180 * 1024  # limite pratico do endpoint para imagem inline
+
+    def __init__(self, api_key: str, model: str = "", timeout: int = 60) -> None:
+        super().__init__(api_key=api_key, model=model or self.NVIDIA_MODEL,
+                         url=self.NVIDIA_URL, timeout=timeout, name=self.name)
+
+    def _analyze_remote(self, asset: dict, scene: dict, config: dict, thumb: str) -> VisionAnalysis:
+        img = requests.get(thumb, timeout=self.timeout).content
+        if not img or len(img) > self.MAX_IMG_BYTES:
+            raise RuntimeError(f"thumbnail invalida/grande para NVIDIA ({len(img)} bytes)")
+        b64 = base64.b64encode(img).decode()
+        content = self._prompt(scene) + f' <img src="data:image/jpeg;base64,{b64}" />'
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": content}],
+            "temperature": 0.2,
+            "max_tokens": 300,
+        }
+        resp = self._post_with_retry(payload)
+        raw = resp.json()["choices"][0]["message"]["content"]
+        # NVIDIA nem sempre respeita JSON puro; extrai o objeto do texto.
+        start, end = raw.find("{"), raw.rfind("}")
+        if start >= 0 and end > start:
+            raw = raw[start:end + 1]
+        return self._parse(asset, scene, raw)
 
 
 # Visão pelo Groq (chave que o usuário já tem e que funciona): modelo Llama-4
@@ -275,6 +320,8 @@ def get_provider(name: str = "heuristic", **kwargs) -> VisionProvider:
             url=GROQ_VISION_URL,
             name="groq-vision",
         )
+    if name == "nvidia" and kwargs.get("api_key"):
+        return NvidiaVisionProvider(api_key=kwargs.get("api_key", ""), model=kwargs.get("model", ""))
     if name in {"llm", "llm-vision", "openrouter"} and kwargs.get("api_key"):
         return LLMVisionProvider(
             api_key=kwargs.get("api_key", ""),

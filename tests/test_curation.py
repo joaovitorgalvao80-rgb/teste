@@ -147,6 +147,13 @@ class VisionAdapterTest(unittest.TestCase):
         result = vision.HeuristicVisionProvider().analyze(vertical, scene, CONFIG)
         self.assertIn("retrato", result.flags)
 
+    def test_get_provider_nvidia(self) -> None:
+        p = vision.get_provider("nvidia", api_key="nvapi-x")
+        self.assertIsInstance(p, vision.NvidiaVisionProvider)
+        self.assertEqual(p.name, "nvidia-vision")
+        self.assertIn("nvidia", p.url)
+        self.assertIn("vision", p.model)
+
     def test_get_provider_groq_uses_groq_endpoint(self) -> None:
         p = vision.get_provider("groq", api_key="gsk_x")
         self.assertIsInstance(p, vision.LLMVisionProvider)

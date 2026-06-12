@@ -21,7 +21,7 @@ from services import scoring
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "plataforma.db"
-SECRET_FIELDS = {"pexels_key", "pixabay_key", "groq_key", "openrouter_key", "kaggle_token"}
+SECRET_FIELDS = {"pexels_key", "pixabay_key", "groq_key", "openrouter_key", "kaggle_token", "coverr_key", "nvidia_key"}
 SECRET_PREFIX = "enc:v1:"
 DEV_SECRET_KEY = "dev-insecure-key-change-in-production-please"
 
@@ -103,6 +103,8 @@ CREATE TABLE IF NOT EXISTS users (
     groq_key        TEXT DEFAULT '',
     groq_model      TEXT DEFAULT 'llama-3.3-70b-versatile',
     openrouter_key  TEXT DEFAULT '',
+    coverr_key      TEXT DEFAULT '',
+    nvidia_key      TEXT DEFAULT '',
     kaggle_username TEXT DEFAULT '',
     kaggle_token    TEXT DEFAULT '',
     created_at      REAL NOT NULL
@@ -218,6 +220,8 @@ _MIGRATIONS = [
     "ALTER TABLE projects ADD COLUMN kaggle_status TEXT DEFAULT ''",
     "ALTER TABLE users ADD COLUMN groq_model TEXT DEFAULT 'llama-3.3-70b-versatile'",
     "ALTER TABLE users ADD COLUMN openrouter_key TEXT DEFAULT ''",
+    "ALTER TABLE users ADD COLUMN coverr_key TEXT DEFAULT ''",
+    "ALTER TABLE users ADD COLUMN nvidia_key TEXT DEFAULT ''",
     "ALTER TABLE projects ADD COLUMN review_round INTEGER DEFAULT 0",
     "ALTER TABLE scenes ADD COLUMN part INTEGER DEFAULT 1",
     "ALTER TABLE scenes ADD COLUMN keyword_roles_json TEXT DEFAULT '[]'",
@@ -316,18 +320,22 @@ def update_api_keys(
     groq: str,
     groq_model: str = "",
     openrouter: str = "",
+    coverr: str = "",
+    nvidia: str = "",
 ) -> None:
     conn = _connect()
     try:
         conn.execute(
             "UPDATE users SET pexels_key = ?, pixabay_key = ?, groq_key = ?, groq_model = ?, "
-            "openrouter_key = ? WHERE id = ?",
+            "openrouter_key = ?, coverr_key = ?, nvidia_key = ? WHERE id = ?",
             (
                 protect_secret(pexels),
                 protect_secret(pixabay),
                 protect_secret(groq),
                 groq_model or "llama-3.3-70b-versatile",
                 protect_secret(openrouter),
+                protect_secret(coverr),
+                protect_secret(nvidia),
                 user_id,
             ),
         )

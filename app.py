@@ -698,6 +698,8 @@ def settings_page(request: Request, saved: str = ""):
         "pixabay": mask_secret(user.get("pixabay_key", "")),
         "groq": mask_secret(user.get("groq_key", "")),
         "openrouter": mask_secret(user.get("openrouter_key", "")),
+        "coverr": mask_secret(user.get("coverr_key", "")),
+        "nvidia": mask_secret(user.get("nvidia_key", "")),
         "kaggle_token": mask_secret(user.get("kaggle_token", "")),
     }
     return render_template(
@@ -743,12 +745,16 @@ def settings_save(
     groq: str = Form(""),
     groq_model: str = Form(""),
     openrouter: str = Form(""),
+    coverr: str = Form(""),
+    nvidia: str = Form(""),
     kaggle_username: str = Form(""),
     kaggle_token: str = Form(""),
     clear_pexels: str = Form(""),
     clear_pixabay: str = Form(""),
     clear_groq: str = Form(""),
     clear_openrouter: str = Form(""),
+    clear_coverr: str = Form(""),
+    clear_nvidia: str = Form(""),
     clear_kaggle_token: str = Form(""),
     csrf_token: str = Form(""),
 ):
@@ -761,6 +767,8 @@ def settings_save(
         secret_from_form(user.get("groq_key", ""), groq, clear_groq),
         groq_model.strip(),
         openrouter=secret_from_form(user.get("openrouter_key", ""), openrouter, clear_openrouter),
+        coverr=secret_from_form(user.get("coverr_key", ""), coverr, clear_coverr),
+        nvidia=secret_from_form(user.get("nvidia_key", ""), nvidia, clear_nvidia),
     )
     db.update_kaggle_keys(
         user["id"],
@@ -1158,6 +1166,8 @@ def run_search_job(
     groq_key: str = "",
     groq_model: str = "",
     openrouter_key: str = "",
+    coverr_key: str = "",
+    nvidia_key: str = "",
 ) -> None:
     try:
         db.update_job(job_id, status="running", message="Buscando assets")
@@ -1182,6 +1192,7 @@ def run_search_job(
                 per_keyword=config["per_keyword"],
                 allow_images=bool(config["image_fallback"]),
                 seen_urls=seen,
+                coverr_key=coverr_key,
             )
             added = db.add_assets(scene["id"], results)
             total_added += added
@@ -1197,7 +1208,7 @@ def run_search_job(
         vision_provider = ""
         try:
             db.update_job(job_id, status="running", message="Analisando visao dos assets")
-            analyzed, vision_provider = analyze_pending_vision(project_id, user_id, groq_key, openrouter_key)
+            analyzed, vision_provider = analyze_pending_vision(project_id, user_id, groq_key, openrouter_key, nvidia_key=nvidia_key)
         except Exception as vexc:  # noqa: BLE001
             logger.warning("Analise de visao automatica falhou (busca mantida): %s", vexc)
 
@@ -1250,6 +1261,8 @@ def search_all(
         user.get("groq_key", ""),
         user.get("groq_model") or groq_service.DEFAULT_MODEL,
         user.get("openrouter_key", ""),
+        user.get("coverr_key", ""),
+        user.get("nvidia_key", ""),
     )
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
@@ -1286,6 +1299,7 @@ def search_more(
         allow_images=True,
         seen_urls=existing,
         media=media,
+        coverr_key=user.get("coverr_key", ""),
     )
     added = db.add_assets(scene_db_id, results)
     if added:
@@ -1439,14 +1453,16 @@ def analyze_pending_vision(
     groq_key: str = "",
     openrouter_key: str = "",
     progress: Optional[callable] = None,
+    nvidia_key: str = "",
 ) -> tuple[int, str]:
     """Analisa (e persiste) os assets ainda nao analisados do projeto.
 
-    Visao por IA por padrao: a IA olha a thumbnail (inclusive o poster de
-    videos) dos MELHORES candidatos de cada cena (top-N pela heuristica) e julga
-    se a imagem REALMENTE representa a cena. Provedor preferido: Groq (chave que
-    o usuario ja tem e que funciona); cai para OpenRouter se houver; senao
-    heuristica offline. Idempotente: so toca assets com vision_analyzed=0.
+    A IA olha a thumbnail (inclusive o poster de videos) dos candidatos mais
+    relevantes de cada cena e julga se a imagem REALMENTE representa a cena.
+    Usa TODOS os provedores de visao disponiveis em rodizio (round-robin) —
+    Groq + NVIDIA — para distribuir a carga e driblar o rate limit de cada um,
+    cobrindo mais candidatos por cena. Cai na heuristica offline para o restante
+    ou quando nao ha chave. Idempotente: so toca assets com vision_analyzed=0.
     Retorna (quantos_analisados, nome_do_provedor_principal).
     """
     project = db.get_project(project_id, user_id)
@@ -1456,15 +1472,17 @@ def analyze_pending_vision(
     scenes = db.list_scenes(project_id)
     assets_by_scene = db.list_assets_for_project(project_id)
 
+    providers: list = []
     if groq_key:
-        llm = vision.get_provider("groq", api_key=groq_key)
-    elif openrouter_key:
-        llm = vision.get_provider("llm", api_key=openrouter_key)
-    else:
-        llm = None
-    use_llm = llm is not None
+        providers.append(vision.get_provider("groq", api_key=groq_key))
+    if nvidia_key:
+        providers.append(vision.get_provider("nvidia", api_key=nvidia_key))
+    if openrouter_key:
+        providers.append(vision.get_provider("llm", api_key=openrouter_key))
     heuristic = vision.HeuristicVisionProvider()
-    primary_name = (llm.name if llm else heuristic.name)
+    primary_name = providers[0].name if providers else heuristic.name
+    # Com mais provedores, vetamos mais candidatos por cena sem estourar limites.
+    per_scene_budget = VISION_LLM_TOP_N * max(1, len(providers))
 
     total_pending = sum(
         1 for scene in scenes
@@ -1477,14 +1495,19 @@ def analyze_pending_vision(
     # cena, entao a chave inclui a cena; evita reanalisar thumbnails repetidas.
     cache: dict[tuple, object] = {}
     analyzed = 0
+    rr = 0  # round-robin entre provedores
     for scene in scenes:
         pend = [a for a in assets_by_scene.get(scene["id"], []) if not a.get("vision_analyzed")]
         if not pend:
             continue
-        # ranqueia pela heuristica: a IA so olha os finalistas (top-N) da cena.
-        ranked = sorted(pend, key=lambda a: auto_select.heuristic_score(scene, a, config), reverse=True)
+        # ranqueia pela RELEVANCIA textual: a IA olha primeiro os mais on-topic.
+        ranked = sorted(pend, key=lambda a: scoring.keyword_relevance(scene, a), reverse=True)
         for i, asset in enumerate(ranked):
-            provider = llm if (use_llm and i < VISION_LLM_TOP_N) else heuristic
+            if providers and i < per_scene_budget:
+                provider = providers[rr % len(providers)]
+                rr += 1
+            else:
+                provider = heuristic
             thumb = asset.get("preview_url") or asset.get("download_url")
             ckey = (scene["id"], thumb)
             res = cache.get(ckey) if thumb else None
@@ -1508,6 +1531,7 @@ def run_vision_job(
     user_id: int,
     groq_key: str,
     openrouter_key: str,
+    nvidia_key: str = "",
 ) -> None:
     """Job dedicado de analise de visao (botao 'Analisar visao')."""
     try:
@@ -1517,7 +1541,7 @@ def run_vision_job(
             db.update_job(job_id, status="running", message=f"Analisando assets ({done}/{total})")
 
         analyzed, provider_name = analyze_pending_vision(
-            project_id, user_id, groq_key, openrouter_key, progress=progress
+            project_id, user_id, groq_key, openrouter_key, progress=progress, nvidia_key=nvidia_key
         )
         if analyzed == 0:
             db.finish_job(job_id, "Nada novo para analisar", {"analyzed": 0, "provider": provider_name})
@@ -1557,6 +1581,7 @@ def analyze_vision_route(
         user["id"],
         user.get("groq_key", ""),
         user.get("openrouter_key", ""),
+        user.get("nvidia_key", ""),
     )
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
@@ -1612,6 +1637,8 @@ def run_research_job(
     groq_key: str,
     groq_model: str,
     openrouter_key: str = "",
+    coverr_key: str = "",
+    nvidia_key: str = "",
 ) -> None:
     try:
         db.update_job(job_id, status="running", message="Buscando takes melhores para as cenas rejeitadas")
@@ -1660,13 +1687,14 @@ def run_research_job(
                 per_keyword=config["per_keyword"] + 4,
                 allow_images=True,
                 seen_urls=existing,
+                coverr_key=coverr_key,
             )
             added_total += db.add_assets(scene["id"], results)
 
         # pontua os novos takes antes de escolher, para a selecao usar a visao
         try:
             db.update_job(job_id, status="running", message="Analisando visao dos novos takes")
-            analyze_pending_vision(project_id, user_id, groq_key, openrouter_key)
+            analyze_pending_vision(project_id, user_id, groq_key, openrouter_key, nvidia_key=nvidia_key)
         except Exception as vexc:  # noqa: BLE001
             logger.warning("Analise de visao na re-busca falhou: %s", vexc)
 
@@ -1713,6 +1741,8 @@ def research_rejected(
         user.get("groq_key", ""),
         user.get("groq_model") or groq_service.DEFAULT_MODEL,
         user.get("openrouter_key", ""),
+        user.get("coverr_key", ""),
+        user.get("nvidia_key", ""),
     )
     return RedirectResponse(f"/projects/{project_id}/review", status_code=303)
 

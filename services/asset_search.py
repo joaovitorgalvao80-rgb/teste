@@ -22,7 +22,14 @@ PEXELS_VIDEO_URL = "https://api.pexels.com/v1/videos/search"
 PEXELS_IMAGE_URL = "https://api.pexels.com/v1/search"
 PIXABAY_VIDEO_URL = "https://pixabay.com/api/videos/"
 PIXABAY_IMAGE_URL = "https://pixabay.com/api/"
+COVERR_URL = "https://api.coverr.co/videos"
+COVERR_CDN = "https://cdn.coverr.co/videos"
 REQUEST_TIMEOUT = 25
+
+# Coverr tem limite apertado (~50 req/hora): serializa e usamos so a keyword
+# principal por cena (ver search_scene). A URL do MP4 e deterministica a partir
+# do base_filename, entao NAO gastamos request extra para baixar.
+_COVERR_GATE = threading.Semaphore(1)
 
 # A Pexels rejeita rajadas concorrentes/seguidas com 401 "Invalid API key"
 # (nao 429). search_scene dispara ate 8 requests em paralelo, entao a maioria
@@ -247,6 +254,50 @@ def search_pixabay_images(keyword: str, key: str, per_page: int = 6) -> list[dic
     return out
 
 
+def search_coverr_videos(keyword: str, key: str, max_w: int, per_page: int = 8) -> list[dict]:
+    if not key:
+        return []
+    per_page = _bounded_per_page(per_page)
+    try:
+        with _COVERR_GATE:
+            resp = requests.get(
+                COVERR_URL,
+                params={"query": keyword, "page_size": per_page, "api_key": key},
+                timeout=REQUEST_TIMEOUT,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Coverr erro: %s", exc)
+        return []
+    if resp.status_code >= 400:
+        logger.warning("Coverr HTTP %s: %s", resp.status_code, resp.text[:160])
+        return []
+    out = []
+    for hit in resp.json().get("hits", []):
+        if hit.get("is_vertical"):
+            continue  # queremos paisagem 16:9
+        bf = hit.get("base_filename")
+        if not bf:
+            continue
+        out.append(
+            {
+                "source": "coverr",
+                "source_id": str(hit.get("id", "")),
+                "asset_type": "video",
+                "preview_url": hit.get("thumbnail") or hit.get("poster", ""),
+                # URL deterministica do MP4 (sem request extra)
+                "download_url": f"{COVERR_CDN}/{bf}/1080p.mp4",
+                "page_url": f"https://coverr.co/videos/{hit.get('slug', '')}",
+                "width": int(hit.get("max_width") or 1920),
+                "height": int(hit.get("max_height") or 1080),
+                "duration": float(hit.get("duration") or 0),
+                "keyword": keyword,
+                "author": "Coverr",
+                "author_url": "https://coverr.co",
+            }
+        )
+    return out
+
+
 def search_scene(
     keywords: list[str],
     pexels_key: str,
@@ -256,6 +307,7 @@ def search_scene(
     allow_images: bool = False,
     seen_urls: Optional[set] = None,
     media: str = "all",
+    coverr_key: str = "",
 ) -> list[dict]:
     """Busca todas as keywords de uma cena e devolve candidatos deduplicados.
 
@@ -270,10 +322,13 @@ def search_scene(
     # Monta as buscas em ordem deterministica e executa em paralelo;
     # cada provedor ja devolve [] em caso de erro/chave ausente.
     tasks: list[Callable[[], list[dict]]] = []
-    for kw in keywords[:3]:
+    for i, kw in enumerate(keywords[:3]):
         if want_video:
             tasks.append(lambda kw=kw: search_pexels_videos(kw, pexels_key, max_w, per_keyword))
             tasks.append(lambda kw=kw: search_pixabay_videos(kw, pixabay_key, max_w, per_keyword))
+            # Coverr so na keyword principal (limite ~50 req/hora)
+            if coverr_key and i == 0:
+                tasks.append(lambda kw=kw: search_coverr_videos(kw, coverr_key, max_w, per_keyword))
         if want_image:
             n = per_keyword if media == "image" else (per_keyword // 2 or 1)
             tasks.append(lambda kw=kw, n=n: search_pexels_images(kw, pexels_key, n))

@@ -220,6 +220,15 @@ def choose_best_takes(
         non_discard = [c for c in candidates if (c.get("vision_verdict") or "") != "descartar"]
         if non_discard:
             candidates = non_discard
+        # Prefere takes que a IA de visao REALMENTE aprovou (viu a imagem e
+        # achou que combina) em vez de candidatos so pontuados pela heuristica.
+        vetted = [
+            c for c in candidates
+            if (c.get("vision_provider") or "heuristic") != "heuristic"
+            and (c.get("vision_verdict") or "") in {"ótimo", "bom"}
+        ]
+        if vetted:
+            candidates = vetted
         top = rank_candidates(scene, candidates, config)[:CANDIDATES_PER_SCENE]
         pending.append((scene, top))
 
