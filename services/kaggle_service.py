@@ -371,10 +371,9 @@ def hyperframes_render_args(output_path, render_format="mp4"):
         "--quality",
         "standard",
         "--fps",
-        "30",
+        "24",
         "--workers",
-        "1",
-        "--low-memory-mode",
+        "4",
         "--no-browser-gpu",
         "--protocol-timeout",
         "900000",
@@ -411,7 +410,7 @@ def encode_png_sequence(frames_dir, master_out):
                 "-c:v",
                 "libx264",
                 "-preset",
-                "medium",
+                "fast",
                 "-crf",
                 "18",
                 str(master_out),
@@ -442,7 +441,7 @@ def encode_png_sequence(frames_dir, master_out):
                 "-c:v",
                 "libx264",
                 "-preset",
-                "medium",
+                "fast",
                 "-crf",
                 "18",
                 str(master_out),
@@ -456,7 +455,8 @@ def assert_node_runtime():
     print("Node do sistema:", optional_command_output(["node", "--version"]))
     print("npm:", optional_command_output(["npm", "--version"]))
     print("npx:", command_output(["npx", "--version"]))
-    node_version = command_output(["npx", "-y", "--package", "node@22", "node", "--version"])
+    # Pre-warm node@22 + hyperframes em paralelo para evitar download duplo no lint/render
+    node_version = command_output(["npx", "-y", "--package", "node@22", "--package", "hyperframes", "node", "--version"])
     major = int(node_version.strip().lstrip("v").split(".", 1)[0])
     print("Node para HyperFrames:", node_version)
     if major < 22:
@@ -475,9 +475,17 @@ def find_system_chrome():
     return ""
 
 
+def _chrome_libs_installed():
+    result = subprocess.run(["dpkg", "-l", "libatk1.0-0"], capture_output=True)
+    return result.returncode == 0
+
+
 def install_chrome_libs():
     if not Path("/usr/bin/apt-get").exists():
         print("apt-get indisponivel; nao da para instalar bibliotecas do Chrome.")
+        return
+    if _chrome_libs_installed():
+        print("Bibliotecas do Chrome ja instaladas; pulando apt-get.")
         return
     env = os.environ.copy()
     env["DEBIAN_FRONTEND"] = "noninteractive"
@@ -574,12 +582,13 @@ def find_pack_extras(input_root):
 
 
 def plan_resolution(edit_plan):
-    raw = str((edit_plan or {}).get("resolution") or "1920x1080")
+    raw = str((edit_plan or {}).get("resolution") or "1280x720")
     try:
         w, h = raw.lower().split("x", 1)
-        return max(int(w), 16), max(int(h), 16)
+        w, h = max(int(w), 16), max(int(h), 16)
+        return min(w, 1280), min(h, 720)
     except ValueError:
-        return 1920, 1080
+        return 1280, 720
 
 
 def plan_scenes_within(edit_plan, duration):
@@ -720,6 +729,21 @@ def motion_tweens(target, scenes, base_scale=1.0):
                 'tl.set("' + target + '", { scale: ' + base + ', xPercent: 0 }, ' + s_start + ");"
             )
     return tweens
+
+
+_GSAP_CDN = "https://cdn.jsdelivr.net/npm/gsap@3/dist/gsap.min.js"
+_GSAP_CACHE = Path("/kaggle/working/.gsap_cache.js")
+
+
+def _gsap_script_tag():
+    if not _GSAP_CACHE.exists():
+        try:
+            import urllib.request
+            urllib.request.urlretrieve(_GSAP_CDN, str(_GSAP_CACHE))
+        except Exception as exc:
+            print("Aviso: nao foi possivel baixar GSAP; usando CDN:", exc)
+            return '<script src="' + _GSAP_CDN + '"></script>'
+    return "<script>" + _GSAP_CACHE.read_text(encoding="utf-8") + "</script>"
 
 
 def write_hyperframes_project(base_video, project_dir, edit_plan=None, narration=None, avatar=None, avatar_mode="none"):
@@ -920,8 +944,9 @@ def write_hyperframes_project(base_video, project_dir, edit_plan=None, narration
         + '" data-width="' + str(width) + '" data-height="' + str(height)
         + '" style="width:' + str(width) + "px;height:" + str(height) + 'px">',
     ]
+    gsap_tag = _gsap_script_tag()
     tail = [
-        '<script src="https://cdn.jsdelivr.net/npm/gsap@3/dist/gsap.min.js"></script>',
+        gsap_tag,
         "<script>",
         "const tl = gsap.timeline({ paused: true });",
     ] + tl + [
@@ -1018,7 +1043,7 @@ def apply_master_postprocess(master_out, narration=None, avatar=None, edit_plan=
                 "-c:v",
                 "libx264",
                 "-preset",
-                "medium",
+                "fast",
                 "-crf",
                 "18",
                 "-pix_fmt",
@@ -1063,7 +1088,7 @@ def apply_master_postprocess(master_out, narration=None, avatar=None, edit_plan=
                 "-c:v",
                 "libx264",
                 "-preset",
-                "medium",
+                "fast",
                 "-crf",
                 "18",
                 "-pix_fmt",
@@ -1115,7 +1140,6 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
     env["PRODUCER_PUPPETEER_LAUNCH_TIMEOUT_MS"] = "180000"
     env["PRODUCER_PUPPETEER_PROTOCOL_TIMEOUT_MS"] = "900000"
     env["PRODUCER_PLAYER_READY_TIMEOUT_MS"] = "180000"
-    env["PRODUCER_LOW_MEMORY_MODE"] = "1"
     print(f"HyperFrames project: {project_dir} ({duration:.2f}s)")
     run_logged(HYPERFRAMES_CMD + ["lint", "."], cwd=project_dir, timeout=600, env=env)
     render_mode = "mp4"
