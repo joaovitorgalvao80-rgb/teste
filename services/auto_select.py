@@ -17,6 +17,7 @@ from typing import Optional
 
 import requests
 
+from . import scoring
 from .groq_service import GROQ_URL, DEFAULT_MODEL, resolve_model
 
 logger = logging.getLogger("nwrch.autoselect")
@@ -24,9 +25,16 @@ logger = logging.getLogger("nwrch.autoselect")
 SCENES_PER_CALL = 8       # cenas por chamada ao Groq
 CANDIDATES_PER_SCENE = 10  # top-N da heurística enviados à IA
 
+# Pesos da relevância textual e penalidades de curadoria.
+RELEVANCE_WEIGHT = 35.0     # quanto a relevância textual (0-1) vale no score
+GENERIC_PENALTY = 12.0      # keyword puramente genérica de banco de imagem
+DIVERSITY_PENALTY = 18.0    # asset/autor já escolhido para outra cena
+VISION_WEIGHT = 0.5         # peso por ponto (0-100) da análise de visão por IA
+VISION_DISCARD_PENALTY = 40.0  # IA de visão marcou o asset como "descartar"
+
 
 def heuristic_score(scene: dict, asset: dict, config: dict) -> float:
-    """Pontua a adequação técnica de um candidato à cena (maior = melhor)."""
+    """Pontua a adequação técnica + textual de um candidato à cena (maior = melhor)."""
     score = 0.0
     is_video = asset.get("asset_type") == "video"
     prefer_video = (config.get("asset_type_priority") or "video") == "video"
@@ -58,14 +66,28 @@ def heuristic_score(scene: dict, asset: dict, config: dict) -> float:
         if 3 <= duration <= 30:
             score += 5.0
 
-    # casou com a keyword principal da cena (mais alinhada ao visual_goal)
-    keywords = scene.get("keywords") or []
-    if keywords and asset.get("keyword") == keywords[0]:
-        score += 10.0
+    # relevância textual: o quanto a keyword que trouxe o asset corresponde
+    # ao conceito visual da cena. É o sinal que faltava — sem ele dois assets
+    # da mesma busca eram ordenados só por pixels/segundos.
+    relevance = scoring.keyword_relevance(scene, asset)
+    score += RELEVANCE_WEIGHT * relevance
+
+    # penaliza keyword puramente genérica de banco de imagem
+    if scoring.is_generic_keyword(asset.get("keyword", "")):
+        score -= GENERIC_PENALTY
 
     # imagens geradas pelo usuário foram feitas sob medida para a cena
     if asset.get("source") == "generated":
         score += 12.0
+
+    # análise de visão por IA (quando já rodou e NÃO é a heurística — evita
+    # contar duas vezes os sinais técnicos que já estão acima). É o julgamento
+    # visual real do conteúdo da imagem.
+    provider = asset.get("vision_provider") or ""
+    if provider and provider != "heuristic":
+        score += VISION_WEIGHT * float(asset.get("vision_score") or 0)
+        if (asset.get("vision_verdict") or "") == "descartar":
+            score -= VISION_DISCARD_PENALTY
 
     return score
 
@@ -197,6 +219,8 @@ def choose_best_takes(
         pending.append((scene, top))
 
     results: dict[int, tuple[int, float, str]] = {}
+    used_signatures: set[tuple[str, str]] = set()
+    used_authors: set[str] = set()
     done = 0
     for start in range(0, len(pending), SCENES_PER_CALL):
         batch = pending[start:start + SCENES_PER_CALL]
@@ -210,14 +234,42 @@ def choose_best_takes(
                 score = heuristic_score(scene, asset, config)
                 results[scene_db_id] = (asset_id, score, reason or "escolhido pela IA")
             else:
-                best = top[0]
-                score = heuristic_score(scene, best, config)
-                results[scene_db_id] = (
-                    best["id"],
-                    score,
-                    "melhor opção técnica (resolução/duração/tipo)",
-                )
+                # Fallback determinístico: melhor candidato penalizando assets/autores
+                # já usados em outras cenas (diversidade visual entre cenas).
+                asset = _best_with_diversity(scene, top, config, used_signatures, used_authors)
+                score = heuristic_score(scene, asset, config)
+                relevance = scoring.keyword_relevance(scene, asset)
+                results[scene_db_id] = (asset["id"], score, _fallback_reason(relevance))
+            used_signatures.add(scoring.asset_signature(asset))
+            if asset.get("author"):
+                used_authors.add(str(asset["author"]))
         done += len(batch)
         if progress:
             progress(done, len(pending))
     return results
+
+
+def _best_with_diversity(
+    scene: dict,
+    candidates: list[dict],
+    config: dict,
+    used_signatures: set[tuple[str, str]],
+    used_authors: set[str],
+) -> dict:
+    """Escolhe o melhor candidato descontando repetição de asset/autor entre cenas."""
+    def adjusted(asset: dict) -> float:
+        score = heuristic_score(scene, asset, config)
+        if scoring.asset_signature(asset) in used_signatures:
+            score -= DIVERSITY_PENALTY
+        if asset.get("author") and str(asset["author"]) in used_authors:
+            score -= DIVERSITY_PENALTY / 2
+        return score
+
+    return max(candidates, key=adjusted)
+
+
+def _fallback_reason(relevance: float) -> str:
+    label = scoring.relevance_label(relevance)
+    if relevance < 0.33:
+        return f"melhor opção técnica disponível (relevância {label} — revise)"
+    return f"melhor opção técnica e de relevância {label} (resolução/duração/tipo)"

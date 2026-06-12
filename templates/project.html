@@ -103,6 +103,14 @@
           Selecao automatica
         </button>
       </form>
+      <form method="post" action="/projects/{{ project.id }}/analyze-vision" data-busy-submit>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="btn btn-ghost btn-sm" type="submit"
+                title="Pontua cada candidato comparando a imagem com a cena (usa IA de visão se houver chave OpenRouter)"
+                {% if asset_count == 0 or project.status in ['searching','packaging','mapping','auto_selecting','researching'] %}disabled{% endif %}>
+          Analisar visão
+        </button>
+      </form>
     </div>
   </div>
 
@@ -450,6 +458,14 @@
               <span>{{ a.source }} · {{ a.width }}x{{ a.height }}{% if a.duration %} · {{ a.duration }}s{% endif %}</span>
               <span class="kw-label">{{ a.keyword }}</span>
             </div>
+            <div class="take-meta">
+              <span class="tally {% if a.relevance_label == 'alta' %}tally-ok{% elif a.relevance_label == 'baixa' %}tally-warn{% endif %}"
+                    title="Relevância da keyword vs. a cena (score {{ a.vision_score }})">relevância {{ a.relevance_label }}</span>
+              {% if a.auto_reason %}<span class="kw-label" title="{{ a.auto_reason }}">IA: {{ a.auto_reason|truncate(40) }}</span>{% endif %}
+            </div>
+            {% if a.vision_flags %}
+              <p class="t-small t-faint" style="padding:0 var(--sp-3)">⚠ {{ a.vision_flags|join(', ') }}</p>
+            {% endif %}
             {% if a.author %}
               <div style="padding:0 var(--sp-3) var(--sp-1)">
                 <a class="t-small t-faint" href="{{ a.author_url }}" target="_blank" rel="noopener">{{ a.author }}</a>

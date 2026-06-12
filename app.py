@@ -26,7 +26,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
 import database as db
-from services import asset_search, auto_select, diagnostics, edit_plan, groq_service, packager, kaggle_service
+from services import asset_search, auto_select, diagnostics, edit_plan, groq_service, packager, kaggle_service, scoring, vision
 from services.script_parser import assign_parts, parse_script
 
 ROOT = Path(__file__).resolve().parent
@@ -403,6 +403,45 @@ def resolution_width(config: dict) -> int:
 
 def missing_selected_scene_ids(scenes: list[dict], selected_by_scene: dict[int, dict]) -> list[str]:
     return [s["scene_id"] for s in scenes if s["id"] not in selected_by_scene]
+
+
+_VISION_PROVIDER = vision.HeuristicVisionProvider()
+
+
+def annotate_assets_with_vision(scene: dict, assets: list[dict], config: dict) -> list[dict]:
+    """Anexa sinais de curadoria a cada asset para a UI (relevância, alerta, motivo).
+
+    Usa o provedor de visão heurístico (offline). Não altera o banco: são campos
+    derivados, calculados a cada render, para a galeria de seleção manual.
+    """
+    annotated: list[dict] = []
+    for asset in assets:
+        item = dict(asset)
+        relevance = scoring.keyword_relevance(scene, asset)
+        if asset.get("vision_analyzed"):
+            # análise persistida (job de visão já rodou) — fonte de verdade
+            try:
+                flags = json.loads(asset.get("vision_flags_json") or "[]")
+            except (TypeError, ValueError):
+                flags = []
+            verdict = asset.get("vision_verdict") or ""
+            item["vision_score"] = asset.get("vision_score") or 0
+            item["vision_flags"] = flags
+            item["vision_verdict"] = verdict
+            item["vision_reason"] = asset.get("vision_reason") or ""
+            item["low_relevance"] = verdict == "descartar" or relevance < 0.33
+        else:
+            # ainda não analisado: estimativa heurística offline ao vivo
+            analysis = _VISION_PROVIDER.analyze(asset, scene, config)
+            item["vision_score"] = analysis.score
+            item["vision_flags"] = analysis.flags
+            item["vision_verdict"] = analysis.verdict
+            item["vision_reason"] = "; ".join(analysis.reasons)
+            item["low_relevance"] = analysis.relevance < 0.33
+        item["relevance"] = round(relevance, 3)
+        item["relevance_label"] = scoring.relevance_label(relevance)
+        annotated.append(item)
+    return annotated
 
 
 def project_work_dir(project_id: int) -> Path:
@@ -1046,7 +1085,7 @@ def project_page(request: Request, project_id: int):
     scenes = db.list_scenes(project_id)
     assets_by_scene = db.list_assets_for_project(project_id)
     for s in scenes:
-        s["assets"] = assets_by_scene.get(s["id"], [])
+        s["assets"] = annotate_assets_with_vision(s, assets_by_scene.get(s["id"], []), config)
         s["selected"] = next((a for a in s["assets"] if a["state"] in CHOSEN_ASSET_STATES), None)
     asset_count = sum(len(s["assets"]) for s in scenes)
     selected_count = sum(1 for s in scenes if s.get("selected"))
@@ -1507,6 +1546,100 @@ def auto_select_route(
     return RedirectResponse(f"/projects/{project_id}/review", status_code=303)
 
 
+# ------------------------------------------------------------------
+# Analise de visao: pontua cada candidato comparando imagem x cena
+# ------------------------------------------------------------------
+def run_vision_job(
+    job_id: int,
+    project_id: int,
+    user_id: int,
+    openrouter_key: str,
+) -> None:
+    """Analisa os candidatos de cada cena e persiste score/veredito/flags.
+
+    Usa o LLMVisionProvider quando ha chave OpenRouter (interpreta a thumbnail
+    de verdade); senao cai no provedor heuristico offline. Idempotente: so
+    analisa assets ainda nao analisados, permitindo reexecutar apos novas buscas.
+    """
+    try:
+        db.update_job(job_id, status="running", message="Analisando assets")
+        project = db.get_project(project_id, user_id)
+        if not project:
+            raise RuntimeError("Projeto nao encontrado.")
+        config = project_config(project)
+        scenes = db.list_scenes(project_id)
+        assets_by_scene = db.list_assets_for_project(project_id)
+        provider = vision.get_provider("llm", api_key=openrouter_key) if openrouter_key \
+            else vision.HeuristicVisionProvider()
+
+        pending = [
+            (scene, asset)
+            for scene in scenes
+            for asset in assets_by_scene.get(scene["id"], [])
+            if not asset.get("vision_analyzed")
+        ]
+        if not pending:
+            db.finish_job(job_id, "Nada novo para analisar", {"analyzed": 0, "provider": provider.name})
+            return
+
+        # cache por (cena, fonte, id): a analise compara a imagem COM a cena,
+        # entao a chave inclui a cena (nao so o source_id).
+        cache: dict[tuple, object] = {}
+        analyzed = 0
+        for scene, asset in pending:
+            sig = (scene["id"], asset.get("source"), str(asset.get("source_id")))
+            res = cache.get(sig)
+            if res is None:
+                res = provider.analyze(asset, scene, config)
+                cache[sig] = res
+            db.set_asset_vision(
+                asset["id"], res.score, res.verdict,
+                "; ".join(res.reasons)[:300], res.flags, res.provider,
+            )
+            analyzed += 1
+            if analyzed % 10 == 0:
+                db.update_job(
+                    job_id, status="running",
+                    message=f"Analisando assets ({analyzed}/{len(pending)})",
+                )
+        db.finish_job(
+            job_id,
+            f"{analyzed} assets analisados ({provider.name})",
+            {"analyzed": analyzed, "provider": provider.name},
+        )
+    except Exception as exc:  # noqa: BLE001
+        db.fail_job(job_id, "Falha na analise de visao", str(exc))
+
+
+@app.post("/projects/{project_id}/analyze-vision")
+def analyze_vision_route(
+    request: Request,
+    project_id: int,
+    background_tasks: BackgroundTasks,
+    csrf_token: str = Form(""),
+):
+    user = require_user(request)
+    verify_csrf(request, csrf_token)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    ensure_project_not_busy(project)
+    scenes = db.list_scenes(project_id)
+    assets_by_scene = db.list_assets_for_project(project_id)
+    if not any(assets_by_scene.get(scene["id"]) for scene in scenes):
+        raise HTTPException(400, "Busque assets antes de analisar a visao.")
+    ensure_no_active_job(project_id, "vision")
+    job_id = db.create_job(user["id"], "vision", project_id, "Analise de visao na fila")
+    background_tasks.add_task(
+        run_vision_job,
+        job_id,
+        project_id,
+        user["id"],
+        user.get("openrouter_key", ""),
+    )
+    return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+
 @app.get("/projects/{project_id}/review", response_class=HTMLResponse)
 def review_page(request: Request, project_id: int):
     user = require_user(request)
@@ -1519,7 +1652,7 @@ def review_page(request: Request, project_id: int):
     review_scenes = []
     accepted = rejected_waiting = pending_review = 0
     for scene in scenes:
-        assets = assets_by_scene.get(scene["id"], [])
+        assets = annotate_assets_with_vision(scene, assets_by_scene.get(scene["id"], []), config)
         chosen = next((a for a in assets if a["state"] in CHOSEN_ASSET_STATES), None)
         scene["chosen"] = chosen
         scene["rejected_count"] = sum(1 for a in assets if a["state"] == "rejected")

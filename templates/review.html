@@ -60,7 +60,15 @@
         <div class="take-meta">
           <span>{{ a.source }} · {{ a.width }}x{{ a.height }}{% if a.duration %} · {{ a.duration }}s{% endif %}</span>
           {% if a.author %}<a class="t-small t-faint" href="{{ a.author_url }}" target="_blank" rel="noopener">{{ a.author }}</a>{% endif %}
+          <span class="tally {% if a.relevance_label == 'alta' %}tally-ok{% elif a.relevance_label == 'baixa' %}tally-warn{% endif %}"
+                title="Relevância da keyword vs. a cena (score {{ a.vision_score }})">relevância {{ a.relevance_label }}</span>
         </div>
+        {% if a.low_relevance %}
+          <p class="t-small t-faint">⚠ Baixa relevância para esta cena — considere rejeitar e buscar melhores.</p>
+        {% endif %}
+        {% if a.vision_flags %}
+          <p class="t-small t-faint">⚠ {{ a.vision_flags|join(', ') }}</p>
+        {% endif %}
         {% if a.auto_reason %}
           <p class="review-reason">IA: {{ a.auto_reason }}</p>
         {% endif %}

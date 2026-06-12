@@ -15,6 +15,7 @@ from typing import Optional
 
 import requests
 
+from . import scoring
 from .script_parser import remove_accents
 
 logger = logging.getLogger("nwrch.groq")
@@ -70,18 +71,33 @@ def _overlay_from(text: str) -> str:
     return " ".join(words).upper()
 
 
+# Fillers de fallback por zona narrativa: menos genéricos que um único default.
+_ZONE_FALLBACK = {
+    "GANCHO": ["close up curious detail", "everyday real life moment"],
+    "CTA": ["person taking action outdoors", "hands working close up"],
+    "DESENVOLVIMENTO": ["documentary real scene", "natural environment detail"],
+}
+
+
 def fallback_scene_brief(scene: dict, style: str, avatar_safe_area: str) -> dict:
+    """Brief determinístico (sem IA).
+
+    Sem tradução PT->EN confiável offline, prioriza âncoras concretas conhecidas
+    (PT_TO_EN), depois tokens significativos da narração (já sem stopwords) e por
+    fim fillers por zona narrativa — evitando despejar palavras de ligação em
+    português numa API de busca em inglês.
+    """
     text = scene.get("narration", "")
     low = remove_accents(text.lower())
     keywords: list[str] = []
     for pt, en in PT_TO_EN.items():
         if remove_accents(pt) in low and en not in keywords:
             keywords.append(en)
-    clean = re.sub(r"[^a-z0-9\s]", " ", remove_accents(text.lower()))
-    tokens = [t for t in clean.split() if len(t) > 4]
+    # tokens significativos (sem stopwords PT/EN), não só "len > 4"
+    tokens = [t for t in scoring.normalize_tokens(text, min_len=4) if not t.isdigit()]
     if tokens:
-        keywords.append(" ".join(tokens[:4]))
-    for fb in ["rural Brazil daily life", "practical close up detail", "natural outdoor scene"]:
+        keywords.append(" ".join(sorted(tokens)[:3]))
+    for fb in _ZONE_FALLBACK.get(scene.get("zone", ""), ["real life close up detail", "natural outdoor scene"]):
         if fb not in keywords:
             keywords.append(fb)
     return {
@@ -122,9 +138,20 @@ Return ONE JSON object only, shape:
   ]
 }}
 
-Rules:
-- Keywords MUST be in English (Pexels/Pixabay work better in English).
-- Use concrete, filmable scenes. Avoid generic corporate stock.
+Keyword strategy (CRITICAL — bad keywords cause irrelevant footage):
+- Provide exactly 3 English search phrases, ORDERED by strategy:
+  1) PRIMARY: the most concrete, literal depiction of the scene's main subject/action.
+  2) SEMANTIC ALTERNATIVE: a different but equally on-topic angle (other object,
+     environment or point of view of the same idea).
+  3) SAFE FALLBACK: a broader but still on-theme phrase that is likely to return
+     results even if the first two are too niche.
+- 2 to 4 words each. Concrete and filmable. NEVER single generic words like
+  "background", "business", "concept", "abstract", "people", "nature".
+- If the narration is METAPHORICAL or idiomatic, search for the REAL underlying
+  meaning, not the literal words (e.g. "the economy is heating up" -> "stock
+  market trading floor", NOT "fire"). Put the intended meaning in visual_goal.
+- Match the right footage TYPE to the idea: a person/action, an environment, a
+  close-up object, or an abstract/conceptual B-roll — pick what fits the scene.
 - Visual style requested: {style}.
 - Avatar safe area is on the {avatar_safe_area} (~{safe_ratio*100:.0f}% of width). Keep main action and text away from it.
 - must_not_show should always include watermark / text inside footage / generic corporate stock.
@@ -261,7 +288,12 @@ def regenerate_keywords(
     if groq_key:
         try:
             prompt = (
-                "Generate 3 concrete English video search phrases for Pexels/Pixabay for this scene.\n"
+                "Generate 3 FRESH English video search phrases for Pexels/Pixabay for this scene, "
+                "different from obvious literal terms (the previous results were rejected).\n"
+                "Order them: 1) most concrete primary, 2) a different semantic angle, "
+                "3) a broader safe fallback. 2-4 words each, no generic single words "
+                "(background/business/concept). If the narration is metaphorical, search the "
+                "real underlying meaning, not the literal words.\n"
                 f"Visual style: {style}.\n"
                 f"Narration (pt-BR): {narration}\n"
                 f"Visual goal: {visual_goal}\n"

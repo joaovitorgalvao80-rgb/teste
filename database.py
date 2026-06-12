@@ -161,6 +161,12 @@ CREATE TABLE IF NOT EXISTS assets (
     auto_score    REAL DEFAULT 0,
     auto_reason   TEXT DEFAULT '',
     review_round  INTEGER DEFAULT 0,
+    vision_score    REAL DEFAULT 0,
+    vision_verdict  TEXT DEFAULT '',
+    vision_reason   TEXT DEFAULT '',
+    vision_flags_json TEXT DEFAULT '[]',
+    vision_provider TEXT DEFAULT '',
+    vision_analyzed INTEGER DEFAULT 0,
     FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
 );
 
@@ -214,6 +220,12 @@ _MIGRATIONS = [
     "ALTER TABLE assets ADD COLUMN auto_score REAL DEFAULT 0",
     "ALTER TABLE assets ADD COLUMN auto_reason TEXT DEFAULT ''",
     "ALTER TABLE assets ADD COLUMN review_round INTEGER DEFAULT 0",
+    "ALTER TABLE assets ADD COLUMN vision_score REAL DEFAULT 0",
+    "ALTER TABLE assets ADD COLUMN vision_verdict TEXT DEFAULT ''",
+    "ALTER TABLE assets ADD COLUMN vision_reason TEXT DEFAULT ''",
+    "ALTER TABLE assets ADD COLUMN vision_flags_json TEXT DEFAULT '[]'",
+    "ALTER TABLE assets ADD COLUMN vision_provider TEXT DEFAULT ''",
+    "ALTER TABLE assets ADD COLUMN vision_analyzed INTEGER DEFAULT 0",
 ]
 
 
@@ -841,6 +853,36 @@ def set_asset_state(
         conn.commit()
         updated = conn.execute("SELECT * FROM assets WHERE id = ?", (asset_id,)).fetchone()
         return dict(updated) if updated else None
+    finally:
+        conn.close()
+
+
+def set_asset_vision(
+    asset_id: int,
+    score: float,
+    verdict: str,
+    reason: str,
+    flags: list[str],
+    provider: str,
+) -> None:
+    """Persiste o resultado da análise de visão de um asset (item de roadmap)."""
+    conn = _connect()
+    try:
+        conn.execute(
+            """UPDATE assets
+               SET vision_score = ?, vision_verdict = ?, vision_reason = ?,
+                   vision_flags_json = ?, vision_provider = ?, vision_analyzed = 1
+               WHERE id = ?""",
+            (
+                float(score or 0),
+                verdict or "",
+                reason or "",
+                json.dumps(flags or [], ensure_ascii=False),
+                provider or "",
+                asset_id,
+            ),
+        )
+        conn.commit()
     finally:
         conn.close()
 
