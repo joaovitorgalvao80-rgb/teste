@@ -1296,7 +1296,7 @@ def push_kernel(
             "kernel_type": "script",
             "is_private": True,
             "enable_gpu": True,
-            "accelerator": "nvidiagputeslat4x2",
+            "machine_shape": "NvidiaTeslaT4",
             "enable_internet": True,
             "dataset_sources": [f"{username}/{ds_slug}"],
             "competition_sources": [],
@@ -1306,7 +1306,7 @@ def push_kernel(
             json.dumps(metadata, ensure_ascii=False), encoding="utf-8"
         )
 
-        r = _run(["kernels", "push", "-p", str(tmp)], username, token, timeout=60)
+        r = _run(["kernels", "push", "-p", str(tmp), "--accelerator", "NvidiaTeslaT4"], username, token, timeout=60)
         push_out = (r.stdout or "") + (r.stderr or "")
 
     return _extract_kernel_slug(push_out, username, slug), push_out.strip()
