@@ -215,6 +215,11 @@ def choose_best_takes(
         candidates = candidates_by_scene.get(scene["id"]) or []
         if not candidates:
             continue
+        # A IA de visao ja reprovou ('descartar') os assets fora de contexto;
+        # nunca escolhe um desses quando ha alternativa melhor para a cena.
+        non_discard = [c for c in candidates if (c.get("vision_verdict") or "") != "descartar"]
+        if non_discard:
+            candidates = non_discard
         top = rank_candidates(scene, candidates, config)[:CANDIDATES_PER_SCENE]
         pending.append((scene, top))
 

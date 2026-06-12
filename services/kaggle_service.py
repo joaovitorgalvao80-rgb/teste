@@ -727,11 +727,22 @@ def plan_scenes_within(edit_plan, duration):
 
 
 MAX_AVATAR_SOLO_SECONDS = 30.0
-BROLL_FADE_SECONDS = 0.45
+BROLL_FADE_SECONDS = 0.3
+# Pausas de narracao entre cenas broll consecutivas que NAO devem revelar o
+# avatar: a janela e estendida para cobri-las (sequencia de b-roll continua).
+BROLL_MERGE_MAX_GAP = 1.2
 
 
 def broll_windows(scenes, master_duration, base_duration):
     # Junta cenas broll consecutivas em janelas continuas de overlay.
+    #
+    # A narracao tem micro-pausas (~0.3s) entre cenas; cada cena tem
+    # start=start_time real. Se nao mesclassemos atravessando essas pausas, duas
+    # cenas broll seguidas viravam DUAS janelas, cada uma com fade-out -> avatar
+    # -> fade-in, causando o "piscar" do avatar entre b-rolls. Mesclamos quando o
+    # gap ate a proxima cena broll e pequeno (<= BROLL_MERGE_MAX_GAP), estendendo
+    # a janela para cobrir a pausa: a sequencia de b-roll fica continua e sem
+    # fade interno (o fade fica so na borda avatar<->broll).
     windows = []
     current = None
     for s in scenes:
@@ -740,13 +751,14 @@ def broll_windows(scenes, master_duration, base_duration):
                 windows.append(current)
                 current = None
             continue
-        if current and abs(current["end"] - s["start"]) < 0.05:
-            current["end"] = s["start"] + s["duration"]
+        s_end = s["start"] + s["duration"]
+        if current and (s["start"] - current["end"]) <= BROLL_MERGE_MAX_GAP:
+            current["end"] = s_end
             current["scenes"].append(s)
         else:
             if current:
                 windows.append(current)
-            current = {"start": s["start"], "end": s["start"] + s["duration"], "scenes": [s]}
+            current = {"start": s["start"], "end": s_end, "scenes": [s]}
     if current:
         windows.append(current)
     cleaned = []

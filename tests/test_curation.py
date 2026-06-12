@@ -220,6 +220,63 @@ class KeywordFallbackTest(unittest.TestCase):
         self.assertIn("METAPHORICAL", prompt)
 
 
+def _load_runner_func(name: str):
+    """Extrai e executa uma funcao do _RUNNER (codigo do kernel Kaggle, que vive
+    como string e nao e importavel). Permite testar a logica real do render."""
+    import re
+    from services import kaggle_service
+    src = kaggle_service._RUNNER
+    ns: dict = {}
+    gap = re.search(r"^BROLL_MERGE_MAX_GAP = ([\d.]+)", src, re.M)
+    if gap:
+        ns["BROLL_MERGE_MAX_GAP"] = float(gap.group(1))
+    start = src.index(f"def {name}(")
+    end = src.index("\ndef ", start + 1)
+    exec(src[start:end], ns)
+    return ns[name]
+
+
+class BrollWindowTest(unittest.TestCase):
+    """O avatar nao pode 'piscar' entre b-rolls consecutivos (pausas da narracao)."""
+
+    def setUp(self) -> None:
+        self.broll_windows = _load_runner_func("broll_windows")
+
+    def test_consecutive_broll_scenes_merge_across_narration_gap(self) -> None:
+        # duas cenas broll com pausa de 0.3s entre elas (fim 7.1 -> inicio 7.4)
+        scenes = [
+            {"start": 0.0, "duration": 7.1, "broll": True},
+            {"start": 7.4, "duration": 6.2, "broll": True},
+        ]
+        wins = self.broll_windows(scenes, 20.0, 20.0)
+        self.assertEqual(len(wins), 1, "cenas broll seguidas devem virar UMA janela continua")
+        self.assertAlmostEqual(wins[0]["start"], 0.0, places=2)
+        self.assertAlmostEqual(wins[0]["end"], 13.6, places=2)  # cobre a pausa
+
+    def test_avatar_scene_between_brolls_splits_windows(self) -> None:
+        scenes = [
+            {"start": 0.0, "duration": 4.0, "broll": True},
+            {"start": 4.0, "duration": 4.0, "broll": False},  # avatar
+            {"start": 8.0, "duration": 4.0, "broll": True},
+        ]
+        wins = self.broll_windows(scenes, 20.0, 20.0)
+        self.assertEqual(len(wins), 2, "cena de avatar no meio deve separar as janelas")
+
+
+class DiscardExclusionTest(unittest.TestCase):
+    def test_auto_select_skips_vision_discarded_when_alternative_exists(self) -> None:
+        scene = _scene()
+        good = _asset(1, "mosquito close up")
+        good["vision_verdict"] = "bom"
+        # asset bem pontuado pela heuristica, mas reprovado pela visao
+        discarded = _asset(2, "mosquito close up", width=4000)
+        discarded["vision_verdict"] = "descartar"
+        choices = auto_select.choose_best_takes(
+            [scene], {scene["id"]: [discarded, good]}, CONFIG, groq_key=""
+        )
+        self.assertEqual(choices[scene["id"]][0], 1, "nao deve escolher o take reprovado pela visao")
+
+
 class PexelsRateLimitTest(unittest.TestCase):
     """A Pexels devolve 401 em rajada; o cliente serializa e tenta de novo."""
 
