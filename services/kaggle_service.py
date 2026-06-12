@@ -371,7 +371,7 @@ def hyperframes_render_args(output_path, render_format="mp4"):
         "--quality",
         "standard",
         "--fps",
-        "15",
+        str(RENDER_FPS),
         "--workers",
         "2",
         "--no-browser-gpu",
@@ -514,6 +514,8 @@ EDIT_PLAN_NAME = "edit_plan.json"
 PACK_EXTRAS_DIR = Path("/kaggle/working/pack_extras")
 NL = chr(10)
 
+RENDER_FPS = 15
+
 COMPOSITION_CSS = (
     "html, body { margin: 0; width: 100%; height: 100%; background: #050708; overflow: hidden; }"
     " #root { position: relative; background: #050708; overflow: hidden; }"
@@ -531,6 +533,18 @@ COMPOSITION_CSS = (
     " .avatar-clip { position: absolute; bottom: 0; object-fit: contain; }"
     " .avatar-clip.pos-right { right: 24px; } .avatar-clip.pos-left { left: 24px; }"
 )
+
+OVERLAY_ONLY_CSS = (
+    "html, body { margin: 0; width: 100%; height: 100%; background: #00FFFF; overflow: hidden; }"
+    " #root { position: relative; background: #00FFFF; overflow: hidden; }"
+    " .fadeov { position: absolute; inset: 0; background: #000; opacity: 0; pointer-events: none; }"
+    " .caption { position: absolute; bottom: 92px; max-width: 40%; padding: 14px 22px;"
+    " background: rgba(5, 8, 10, 0.72); border-left: 4px solid #34d2b2; color: #f2f7f5;"
+    " font-family: Arial, Helvetica, sans-serif; font-size: 34px; line-height: 1.22;"
+    " font-weight: 650; border-radius: 8px; opacity: 0; }"
+    " .caption.pos-left { left: 72px; } .caption.pos-right { right: 72px; }"
+)
+OVERLAY_CHROMA_KEY = "0x00FFFF"
 
 NARRATION_EXTS = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac")
 AVATAR_EXTS = (".webm", ".mov", ".mp4")
@@ -749,7 +763,86 @@ def _gsap_script_tag(assets_dir):
     return '<script src="./assets/gsap.min.js"></script>'
 
 
-def write_hyperframes_project(base_video, project_dir, edit_plan=None, narration=None, avatar=None, avatar_mode="none"):
+def ffmpeg_compose_base_layers(base_video, avatar, windows, out_path, duration, width, height):
+    # FFmpeg: avatar full-screen + b-roll windows com fade. Substitui video-in-browser.
+    inputs = ["-y"]
+    filter_parts = []
+    inputs += ["-stream_loop", "-1", "-t", "%.3f" % duration, "-i", str(avatar)]
+    filter_parts.append(
+        "[0:v]scale=" + str(width) + ":" + str(height)
+        + ":force_original_aspect_ratio=increase,crop=" + str(width) + ":" + str(height)
+        + ",setsar=1[base]"
+    )
+    current = "base"
+    for k, w in enumerate(windows):
+        in_idx = k + 1
+        w_start = w["start"]
+        w_dur = w["duration"]
+        fade = min(BROLL_FADE_SECONDS, w_dur / 4)
+        inputs += ["-ss", "%.3f" % w_start, "-t", "%.3f" % w_dur, "-i", str(base_video)]
+        br = "br" + str(k)
+        out = "c" + str(k)
+        filter_parts.append(
+            "[" + str(in_idx) + ":v]"
+            "scale=" + str(width) + ":" + str(height)
+            + ":force_original_aspect_ratio=increase,crop=" + str(width) + ":" + str(height)
+            + ",setsar=1,format=rgba"
+            + ",fade=t=in:st=0:d=%.3f:alpha=1" % fade
+            + ",fade=t=out:st=%.3f:d=%.3f:alpha=1" % (max(w_dur - fade, 0.01), fade)
+            + ",setpts=PTS+%.3f/TB" % w_start
+            + "[" + br + "]"
+        )
+        filter_parts.append(
+            "[" + current + "][" + br + "]"
+            "overlay=format=auto:x=0:y=0"
+            ":enable='between(t,%.3f,%.3f)'" % (w_start, w_start + w_dur)
+            + "[" + out + "]"
+        )
+        current = out
+    cmd = ["ffmpeg"] + inputs + [
+        "-filter_complex", ";".join(filter_parts),
+        "-map", "[" + current + "]",
+        "-r", str(RENDER_FPS),
+        "-t", "%.3f" % duration,
+        "-an",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
+        str(out_path),
+    ]
+    run_logged(cmd, timeout=1200)
+
+
+def ffmpeg_overlay_captions(base_video, frames_dir, out_path):
+    # Overlay de captions (chroma-keyed PNG sequence) sobre o video base.
+    pngs = sorted(frames_dir.rglob("*.png"))
+    if not pngs:
+        print("Aviso: sem frames de caption; copiando base diretamente.")
+        shutil.copy2(str(base_video), str(out_path))
+        return
+    if list(frames_dir.glob("*.png")):
+        cap_input = ["-pattern_type", "glob", "-framerate", str(RENDER_FPS), "-i", str(frames_dir / "*.png")]
+    else:
+        manifest = Path("/kaggle/working/caption_frames.txt")
+        lines = ["file '" + str(f).replace("'", "'\\''") + "'" for f in pngs]
+        manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        cap_input = ["-r", str(RENDER_FPS), "-f", "concat", "-safe", "0", "-i", str(manifest)]
+    run_logged(
+        [
+            "ffmpeg", "-y",
+            "-i", str(base_video),
+        ] + cap_input + [
+            "-filter_complex",
+            "[1:v]colorkey=" + OVERLAY_CHROMA_KEY + ":0.15:0.05[keyed];"
+            "[0:v][keyed]overlay=format=auto:x=0:y=0:shortest=1[out]",
+            "-map", "[out]",
+            "-an",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
+            str(out_path),
+        ],
+        timeout=1200,
+    )
+
+
+def write_hyperframes_project(base_video, project_dir, edit_plan=None, narration=None, avatar=None, avatar_mode="none", text_overlay_only=False):
     import html as html_escape_mod
     if project_dir.exists():
         shutil.rmtree(project_dir)
@@ -793,36 +886,38 @@ def write_hyperframes_project(base_video, project_dir, edit_plan=None, narration
     windows = []
 
     if avatar_mode == "base":
-        # camada 0: avatar em tela cheia e a base do video inteiro
-        body.append(
-            '<video id="avatar-base" class="clip avatar-base" src="./assets/' + avatar_name + '"'
-            + ' data-start="0" data-duration="' + dur_s + '" data-track-index="0"'
-            + ' data-media-start="0" data-volume="0" data-has-audio="false" muted playsinline preload="auto"></video>'
-        )
-        # camada 1: janelas de b-roll por cima do avatar, com fade + motion
+        # Calcula janelas de b-roll (usadas pelo FFmpeg no modo text_overlay_only,
+        # ou pelo HyperFrames no modo legado com video elements)
         windows = enforce_avatar_solo_guard(
             broll_windows(scenes, duration, base_dur), duration, base_dur
         )
-        for k, w in enumerate(windows, 1):
-            wid = "broll-" + str(k)
-            w_start = "%.3f" % w["start"]
-            w_dur = "%.3f" % w["duration"]
-            fade = min(BROLL_FADE_SECONDS, w["duration"] / 4)
+        if not text_overlay_only:
+            # Modo legado: video elements no browser (lento)
             body.append(
-                '<video id="' + wid + '" class="clip broll-clip" src="./assets/' + BASE_VIDEO_NAME + '"'
-                + ' data-start="' + w_start + '" data-duration="' + w_dur + '" data-track-index="1"'
-                + ' data-media-start="' + w_start + '" data-volume="0" data-has-audio="false"'
-                + ' muted playsinline preload="auto"></video>'
+                '<video id="avatar-base" class="clip avatar-base" src="./assets/' + avatar_name + '"'
+                + ' data-start="0" data-duration="' + dur_s + '" data-track-index="0"'
+                + ' data-media-start="0" data-volume="0" data-has-audio="false" muted playsinline preload="auto"></video>'
             )
-            tl.append(
-                'tl.fromTo("#' + wid + '", { opacity: 0 }, { opacity: 1, duration: ' + ("%.3f" % fade)
-                + ', ease: "power2.out", immediateRender: false }, ' + w_start + ");"
-            )
-            tl.append(
-                'tl.to("#' + wid + '", { opacity: 0, duration: ' + ("%.3f" % fade)
-                + ', ease: "power2.in" }, ' + ("%.3f" % max(w["start"] + w["duration"] - fade, w["start"])) + ");"
-            )
-            tl.extend(motion_tweens("#" + wid, w.get("scenes") or []))
+            for k, w in enumerate(windows, 1):
+                wid = "broll-" + str(k)
+                w_start = "%.3f" % w["start"]
+                w_dur = "%.3f" % w["duration"]
+                fade = min(BROLL_FADE_SECONDS, w["duration"] / 4)
+                body.append(
+                    '<video id="' + wid + '" class="clip broll-clip" src="./assets/' + BASE_VIDEO_NAME + '"'
+                    + ' data-start="' + w_start + '" data-duration="' + w_dur + '" data-track-index="1"'
+                    + ' data-media-start="' + w_start + '" data-volume="0" data-has-audio="false"'
+                    + ' muted playsinline preload="auto"></video>'
+                )
+                tl.append(
+                    'tl.fromTo("#' + wid + '", { opacity: 0 }, { opacity: 1, duration: ' + ("%.3f" % fade)
+                    + ', ease: "power2.out", immediateRender: false }, ' + w_start + ");"
+                )
+                tl.append(
+                    'tl.to("#' + wid + '", { opacity: 0, duration: ' + ("%.3f" % fade)
+                    + ', ease: "power2.in" }, ' + ("%.3f" % max(w["start"] + w["duration"] - fade, w["start"])) + ");"
+                )
+                tl.extend(motion_tweens("#" + wid, w.get("scenes") or []))
     else:
         # camada 0: video base dentro do wrapper de motion
         body.append('<div id="motion-wrap">')
@@ -854,7 +949,7 @@ def write_hyperframes_project(base_video, project_dir, edit_plan=None, narration
         )
 
     # avatar de canto (modo legado, sem avatar como base)
-    if avatar_name and avatar_mode == "corner":
+    if avatar_name and avatar_mode == "corner" and not text_overlay_only:
         plan_avatar = (edit_plan or {}).get("avatar") or {}
         pos = "left" if str(plan_avatar.get("position") or "right") == "left" else "right"
         try:
@@ -870,10 +965,9 @@ def write_hyperframes_project(base_video, project_dir, edit_plan=None, narration
             + ' muted playsinline preload="auto"></video>'
         )
 
-    # fades de transicao entre cenas (so no modo legado; no modo base os
-    # proprios overlays de b-roll fazem fade, sem flash preto sobre o avatar)
+    # fades de transicao entre cenas
     fade_idx = 0
-    if avatar_mode != "base":
+    if avatar_mode != "base" or text_overlay_only:
         for s in scenes:
             if s["transition_out"] != "fade":
                 continue
@@ -935,12 +1029,13 @@ def write_hyperframes_project(base_video, project_dir, edit_plan=None, narration
         encoding="utf-8",
     )
 
+    css = OVERLAY_ONLY_CSS if text_overlay_only else COMPOSITION_CSS
     head = [
         "<!doctype html>",
         "<html>",
         "<head>",
         '<meta charset="utf-8">',
-        "<style>" + COMPOSITION_CSS + "</style>",
+        "<style>" + css + "</style>",
         "</head>",
         "<body>",
         '<div id="root" data-composition-id="nwrch-master" data-start="0" data-duration="' + dur_s
@@ -962,11 +1057,12 @@ def write_hyperframes_project(base_video, project_dir, edit_plan=None, narration
     ]
     (project_dir / "index.html").write_text(NL.join(head + body + tail), encoding="utf-8")
     print(
-        "Composicao: modo avatar=" + avatar_mode + ", " + str(len(scenes)) + " cenas, "
-        + str(len(windows)) + " janelas de b-roll, " + str(cap_idx) + " captions, "
-        + str(fade_idx) + " fades, audio=" + ("sim" if narration_name else "nao")
-        + ", avatar=" + ("sim" if avatar_name else "nao")
+        "Composicao: modo avatar=" + avatar_mode + ("(overlay)" if text_overlay_only else "") + ", "
+        + str(len(scenes)) + " cenas, " + str(len(windows)) + " janelas de b-roll, "
+        + str(cap_idx) + " captions, " + str(fade_idx) + " fades"
     )
+    if text_overlay_only:
+        return {"duration": duration, "windows": windows, "base_dur": base_dur, "cap_idx": cap_idx}
     return duration
 
 
@@ -1122,51 +1218,108 @@ def plan_avatar_mode(edit_plan, avatar):
     return "corner" if str(plan_avatar.get("mode") or "base") == "corner" else "base"
 
 
-def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar=None):
-    project_dir = Path("/kaggle/working/hyperframes_master")
-    master_out = Path("/kaggle/working") / MASTER_VIDEO_NAME
-    frames_dir = Path("/kaggle/working/hyperframes_frames")
-    assert_node_runtime()
-    avatar_mode = plan_avatar_mode(edit_plan, avatar)
-    duration = write_hyperframes_project(
-        base_video, project_dir, edit_plan, None, avatar, avatar_mode=avatar_mode
-    )
+def _make_hyperframes_env():
     env = os.environ.copy()
     env["CI"] = "1"
     env["HYPERFRAMES_NO_UPDATE_CHECK"] = "1"
     env["PUPPETEER_SKIP_CHROMIUM_DOWNLOAD"] = "true"
-    install_chrome_libs()
-    system_chrome = ensure_system_chrome()
-    if system_chrome:
-        env["HYPERFRAMES_BROWSER_PATH"] = system_chrome
-        env["PUPPETEER_EXECUTABLE_PATH"] = system_chrome
     env["PRODUCER_PUPPETEER_LAUNCH_TIMEOUT_MS"] = "180000"
     env["PRODUCER_PUPPETEER_PROTOCOL_TIMEOUT_MS"] = "900000"
     env["PRODUCER_PLAYER_READY_TIMEOUT_MS"] = "180000"
-    print(f"HyperFrames project: {project_dir} ({duration:.2f}s)")
-    try:
-        run_logged(HYPERFRAMES_CMD + ["lint", "."], cwd=project_dir, timeout=600, env=env)
-    except Exception as lint_exc:
-        print("Aviso: hyperframes lint reportou erros (continuando para render):", lint_exc)
-    render_mode = "mp4"
-    png_count = 0
-    try:
-        run_logged(hyperframes_render_args(master_out), cwd=project_dir, timeout=3600, env=env)
-    except Exception as first_exc:
-        print("HyperFrames MP4 falhou; tentando png-sequence + ffmpeg:", first_exc)
-        if frames_dir.exists():
-            shutil.rmtree(frames_dir)
-        run_logged(
-            hyperframes_render_args(frames_dir, "png-sequence"),
-            cwd=project_dir,
-            timeout=3600,
-            env=env,
+    return env
+
+
+def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar=None):
+    master_out = Path("/kaggle/working") / MASTER_VIDEO_NAME
+    project_dir = Path("/kaggle/working/hyperframes_master")
+    frames_dir = Path("/kaggle/working/hyperframes_frames")
+    avatar_mode = plan_avatar_mode(edit_plan, avatar)
+    width, height = plan_resolution(edit_plan)
+
+    if avatar_mode == "base" and avatar:
+        # Pipeline rapido: FFmpeg compoe video, HyperFrames renderiza so texto
+        result = write_hyperframes_project(
+            base_video, project_dir, edit_plan, None, avatar,
+            avatar_mode=avatar_mode, text_overlay_only=True
         )
-        png_count = encode_png_sequence(frames_dir, master_out)
-        render_mode = "png-sequence+ffmpeg"
-    if not master_out.exists():
-        raise RuntimeError("HyperFrames terminou sem gerar " + str(master_out))
-    postprocess = apply_master_postprocess(master_out, narration, avatar, edit_plan, avatar_mode=avatar_mode)
+        duration = result["duration"]
+        windows = result["windows"]
+        has_captions = result["cap_idx"] > 0
+
+        # Etapa 1: FFmpeg compoe avatar + b-rolls (rapido, sem browser)
+        composed_base = Path("/kaggle/working/composed_base.mp4")
+        print("FFmpeg: compondo base (avatar + %d b-rolls)..." % len(windows))
+        ffmpeg_compose_base_layers(base_video, avatar, windows, composed_base, duration, width, height)
+        print("FFmpeg base pronto: " + str(composed_base))
+
+        render_mode = "ffmpeg+hyperframes-overlay"
+        png_count = 0
+
+        if has_captions:
+            # Etapa 2: HyperFrames renderiza apenas captions (sem video elements = rapido)
+            assert_node_runtime()
+            env = _make_hyperframes_env()
+            install_chrome_libs()
+            system_chrome = ensure_system_chrome()
+            if system_chrome:
+                env["HYPERFRAMES_BROWSER_PATH"] = system_chrome
+                env["PUPPETEER_EXECUTABLE_PATH"] = system_chrome
+            print("HyperFrames: renderizando captions (overlay apenas)...")
+            try:
+                run_logged(HYPERFRAMES_CMD + ["lint", "."], cwd=project_dir, timeout=600, env=env)
+            except Exception as lint_exc:
+                print("Aviso: lint:", lint_exc)
+            if frames_dir.exists():
+                shutil.rmtree(frames_dir)
+            run_logged(
+                hyperframes_render_args(frames_dir, "png-sequence"),
+                cwd=project_dir, timeout=3600, env=env,
+            )
+            png_count = len(list(frames_dir.rglob("*.png")))
+            # Etapa 3: FFmpeg overlay captions sobre o base
+            ffmpeg_overlay_captions(composed_base, frames_dir, master_out)
+        else:
+            import shutil as _sh
+            _sh.copy2(str(composed_base), str(master_out))
+
+        if not master_out.exists():
+            raise RuntimeError("Pipeline nao gerou " + str(master_out))
+        postprocess = apply_master_postprocess(master_out, narration, avatar, edit_plan, avatar_mode=avatar_mode)
+    else:
+        # Modo legado (corner / sem avatar): HyperFrames renderiza tudo
+        assert_node_runtime()
+        duration = write_hyperframes_project(
+            base_video, project_dir, edit_plan, None, avatar, avatar_mode=avatar_mode
+        )
+        env = _make_hyperframes_env()
+        install_chrome_libs()
+        system_chrome = ensure_system_chrome()
+        if system_chrome:
+            env["HYPERFRAMES_BROWSER_PATH"] = system_chrome
+            env["PUPPETEER_EXECUTABLE_PATH"] = system_chrome
+        print("HyperFrames project: " + str(project_dir) + " (%.2fs)" % duration)
+        try:
+            run_logged(HYPERFRAMES_CMD + ["lint", "."], cwd=project_dir, timeout=600, env=env)
+        except Exception as lint_exc:
+            print("Aviso: lint:", lint_exc)
+        render_mode = "mp4"
+        png_count = 0
+        try:
+            run_logged(hyperframes_render_args(master_out), cwd=project_dir, timeout=3600, env=env)
+        except Exception as first_exc:
+            print("HyperFrames MP4 falhou; tentando png-sequence:", first_exc)
+            if frames_dir.exists():
+                shutil.rmtree(frames_dir)
+            run_logged(
+                hyperframes_render_args(frames_dir, "png-sequence"),
+                cwd=project_dir, timeout=3600, env=env,
+            )
+            png_count = encode_png_sequence(frames_dir, master_out)
+            render_mode = "png-sequence+ffmpeg"
+        if not master_out.exists():
+            raise RuntimeError("HyperFrames terminou sem gerar " + str(master_out))
+        postprocess = apply_master_postprocess(master_out, narration, avatar, edit_plan, avatar_mode=avatar_mode)
+
     write_status(
         {
             "status": "complete",
