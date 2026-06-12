@@ -777,6 +777,7 @@ class DeployContractsTest(unittest.TestCase):
         self.assertIn("RENDER_WORKERS = 1", kaggle_service._RUNNER)
         self.assertIn('"PRODUCER_LOW_MEMORY_MODE"', kaggle_service._RUNNER)
         self.assertIn('"PRODUCER_HF_RENDER_MODE"', kaggle_service._RUNNER)
+        self.assertIn('"PRODUCER_HF_ENABLE_OVERLAY"', kaggle_service._RUNNER)
         self.assertIn('"PRODUCER_HF_MP4_TIMEOUT_SECONDS"', kaggle_service._RUNNER)
         self.assertIn('"PRODUCER_HF_PNG_TIMEOUT_SECONDS"', kaggle_service._RUNNER)
         self.assertIn('"PRODUCER_PLAYER_READY_TIMEOUT_MS"', kaggle_service._RUNNER)
@@ -836,6 +837,9 @@ class DeployContractsTest(unittest.TestCase):
         self.assertIn('avatar_mode in ("base", "corner") and avatar', runner)
         self.assertIn("ffmpeg_compose_corner_layers", runner)
         self.assertIn("has_overlays = result", runner)
+        self.assertIn('overlay_enabled = env_enabled("PRODUCER_HF_ENABLE_OVERLAY", False)', runner)
+        self.assertIn("if has_overlays and overlay_enabled:", runner)
+        self.assertIn('"ffmpeg-compose"', runner)
         self.assertIn('elif text_overlay_only:', runner)
 
     def test_edit_plan_builder_is_deterministic(self) -> None:

@@ -524,6 +524,13 @@ def hyperframes_timeout(duration, mode):
     return timeout_from_env("PRODUCER_HF_PNG_TIMEOUT_SECONDS", default_seconds)
 
 
+def env_enabled(name, default=False):
+    raw = os.environ.get(name)
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
 def assert_node_runtime():
     print("Node do sistema:", optional_command_output(["node", "--version"]))
     print("npm:", optional_command_output(["npm", "--version"]))
@@ -1379,10 +1386,11 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
         mark_timing("ffmpeg_compose_base", compose_start, avatar_mode=avatar_mode, broll_windows=len(windows))
         print("FFmpeg base pronto: " + str(composed_base))
 
-        render_mode = "ffmpeg+hyperframes-overlay"
+        render_mode = "ffmpeg-compose"
         png_count = 0
+        overlay_enabled = env_enabled("PRODUCER_HF_ENABLE_OVERLAY", False)
 
-        if has_overlays:
+        if has_overlays and overlay_enabled:
             # Etapa 2: HyperFrames renderiza apenas overlays (sem video elements = rapido)
             hf_start = time.monotonic()
             assert_node_runtime()
@@ -1409,11 +1417,17 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
             overlay_start = time.monotonic()
             ffmpeg_overlay_captions(composed_base, frames_dir, master_out)
             mark_timing("ffmpeg_overlay_captions", overlay_start, png_frames=png_count)
+            render_mode = "ffmpeg+hyperframes-overlay"
         else:
             import shutil as _sh
             copy_start = time.monotonic()
             _sh.copy2(str(composed_base), str(master_out))
-            mark_timing("copy_composed_base", copy_start)
+            mark_timing(
+                "copy_composed_base",
+                copy_start,
+                overlays_available=has_overlays,
+                overlay_enabled=overlay_enabled,
+            )
 
         if not master_out.exists():
             raise RuntimeError("Pipeline nao gerou " + str(master_out))
@@ -1494,6 +1508,7 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
                 "output_fps": OUTPUT_FPS,
                 "workers": RENDER_WORKERS,
                 "low_memory": True,
+                "overlay_enabled": env_enabled("PRODUCER_HF_ENABLE_OVERLAY", False),
             },
         }
     )
