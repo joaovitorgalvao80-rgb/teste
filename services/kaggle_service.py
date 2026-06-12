@@ -1296,6 +1296,7 @@ def push_kernel(
             "kernel_type": "script",
             "is_private": True,
             "enable_gpu": True,
+            "accelerator": "nvidiagputeslat4x2",
             "enable_internet": True,
             "dataset_sources": [f"{username}/{ds_slug}"],
             "competition_sources": [],
