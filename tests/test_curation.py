@@ -147,6 +147,18 @@ class VisionAdapterTest(unittest.TestCase):
         result = vision.HeuristicVisionProvider().analyze(vertical, scene, CONFIG)
         self.assertIn("retrato", result.flags)
 
+    def test_get_provider_groq_uses_groq_endpoint(self) -> None:
+        p = vision.get_provider("groq", api_key="gsk_x")
+        self.assertIsInstance(p, vision.LLMVisionProvider)
+        self.assertEqual(p.url, vision.GROQ_VISION_URL)
+        self.assertEqual(p.name, "groq-vision")
+        self.assertIn("llama-4", p.model)
+
+    def test_low_vision_score_or_offtopic_flag_is_discard(self) -> None:
+        self.assertEqual(vision._verdict_for(10, []), "descartar")
+        self.assertEqual(vision._verdict_for(90, ["fora_do_tema"]), "descartar")
+        self.assertEqual(vision._verdict_for(75, []), "ótimo")
+
     def test_get_provider_defaults_to_heuristic_without_key(self) -> None:
         self.assertIsInstance(vision.get_provider("llm"), vision.HeuristicVisionProvider)
         self.assertIsInstance(
@@ -414,7 +426,7 @@ class VisionJobTest(unittest.TestCase):
         user_id, project_id = self._seed()
         job_id = db.create_job(user_id, "vision", project_id, "")
         # sem chave OpenRouter -> provedor heurístico offline
-        webapp.run_vision_job(job_id, project_id, user_id, openrouter_key="")
+        webapp.run_vision_job(job_id, project_id, user_id, groq_key="", openrouter_key="")
         job = db.get_job(job_id, user_id)
         self.assertEqual(job["status"], "complete")
         self.assertEqual(job["result"]["analyzed"], 2)
@@ -430,7 +442,7 @@ class VisionJobTest(unittest.TestCase):
 
         # segunda execução não reanalisa nada
         job_id2 = db.create_job(user_id, "vision", project_id, "")
-        webapp.run_vision_job(job_id2, project_id, user_id, openrouter_key="")
+        webapp.run_vision_job(job_id2, project_id, user_id, groq_key="", openrouter_key="")
         self.assertEqual(db.get_job(job_id2, user_id)["result"]["analyzed"], 0)
 
     def test_search_job_auto_analyzes_vision(self) -> None:
@@ -490,7 +502,7 @@ class VisionJobTest(unittest.TestCase):
         user_id, project_id = self._seed()
         # roda a visão para popular scores
         webapp.run_vision_job(db.create_job(user_id, "vision", project_id, ""),
-                              project_id, user_id, openrouter_key="")
+                              project_id, user_id, groq_key="", openrouter_key="")
         scene_db_id = db.list_scenes(project_id)[0]["id"]
         annotated = webapp.annotate_assets_with_vision(
             db.get_scene(scene_db_id),

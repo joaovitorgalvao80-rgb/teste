@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field, asdict
 from typing import Optional, Protocol
 
@@ -27,6 +28,12 @@ import requests
 from . import scoring
 
 logger = logging.getLogger("nwrch.vision")
+
+# Free tiers (Groq/OpenRouter) limitam requisicoes; sem tratar o 429 a visao
+# cairia em silencio na heuristica. Tentamos de novo respeitando o backoff.
+_VISION_RETRY_STATUSES = {429, 500, 502, 503}
+_VISION_MAX_RETRIES = 3
+_VISION_BACKOFF = (2.0, 5.0, 10.0)
 
 
 @dataclass
@@ -44,8 +51,17 @@ class VisionAnalysis:
         return asdict(self)
 
 
+# Flags que sozinhas reprovam o asset (imagem fora do contexto da cena).
+_DISCARD_FLAGS = {
+    "irrelevante", "conteudo_proibido", "fora_do_tema",
+    "pessoa_errada", "ambiente_errado", "tom_incompativel",
+}
+# Abaixo disso, mesmo sem flag, a imagem nao representa a cena -> descartar.
+DISCARD_SCORE = 35.0
+
+
 def _verdict_for(score: float, flags: list[str]) -> str:
-    if "irrelevante" in flags or "conteudo_proibido" in flags:
+    if _DISCARD_FLAGS & set(flags) or score < DISCARD_SCORE:
         return "descartar"
     if score >= 70:
         return "ótimo"
@@ -157,11 +173,13 @@ class LLMVisionProvider:
         model: str = "",
         url: str = "",
         timeout: int = 60,
+        name: str = "",
     ) -> None:
         self.api_key = api_key or ""
         self.model = model or self.DEFAULT_MODEL
         self.url = url or self.DEFAULT_URL
         self.timeout = timeout
+        self.name = name or type(self).name
         self._fallback = HeuristicVisionProvider()
 
     def analyze(self, asset: dict, scene: dict, config: dict) -> VisionAnalysis:
@@ -183,37 +201,54 @@ class LLMVisionProvider:
 
     def _analyze_remote(self, asset: dict, scene: dict, config: dict, thumb: str) -> VisionAnalysis:
         prompt = (
-            "You are a B-roll curator. Judge if this image fits the scene.\n"
+            "You are a strict B-roll curator for a YouTube video. Look at the IMAGE "
+            "and judge how well it ACTUALLY DEPICTS the scene below — by its visible "
+            "content, not by hope.\n"
             f'Scene narration (pt-BR): {scene.get("narration", "")}\n'
-            f'Visual goal: {scene.get("visual_goal", "")}\n'
-            f'Must NOT show: {", ".join(scene.get("must_not_show") or []) or "-"}\n'
-            "Return JSON only: {\"score\": 0-100, \"reasons\": [\"pt-BR\"], "
-            "\"flags\": [\"irrelevante\"|\"baixa_qualidade\"|\"texto_logo\"|"
-            "\"fora_do_tema\"|\"pessoa_errada\"|\"ambiente_errado\"|"
-            "\"tom_incompativel\"|\"conteudo_proibido\"]}"
+            f'What the footage should show: {scene.get("visual_goal", "")}\n'
+            f'Must NOT show: {", ".join(scene.get("must_not_show") or []) or "-"}\n\n"'
+            "Scoring (be harsh): 85-100 = clearly shows it; 60-84 = related/works; "
+            "35-59 = weak/tangential; 0-34 = does NOT show it / off-topic / wrong "
+            "subject or place. If the visible content is off-topic, score under 35 "
+            "and add the flag 'fora_do_tema'.\n"
+            'Return JSON only: {"desc": "what the image literally shows, pt-BR, max 8 words", '
+            '"score": 0-100, "reasons": ["pt-BR, why it fits or not"], '
+            '"flags": ["irrelevante"|"fora_do_tema"|"baixa_qualidade"|"texto_logo"|'
+            '"pessoa_errada"|"ambiente_errado"|"tom_incompativel"|"conteudo_proibido"]}'
         )
-        resp = requests.post(
-            self.url,
-            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-            json={
-                "model": self.model,
-                "messages": [{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": thumb}},
-                    ],
-                }],
-                "temperature": 0.2,
-                "response_format": {"type": "json_object"},
-            },
-            timeout=self.timeout,
-        )
+        payload = {
+            "model": self.model,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": thumb}},
+                ],
+            }],
+            "temperature": 0.2,
+            "response_format": {"type": "json_object"},
+        }
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        resp = None
+        for attempt in range(_VISION_MAX_RETRIES + 1):
+            resp = requests.post(self.url, headers=headers, json=payload, timeout=self.timeout)
+            if resp.status_code not in _VISION_RETRY_STATUSES:
+                break
+            if attempt < _VISION_MAX_RETRIES:
+                # respeita Retry-After do provedor quando presente
+                try:
+                    wait = float(resp.headers.get("retry-after", ""))
+                except (TypeError, ValueError):
+                    wait = _VISION_BACKOFF[attempt]
+                time.sleep(max(wait, _VISION_BACKOFF[attempt]))
         resp.raise_for_status()
         data = json.loads(resp.json()["choices"][0]["message"]["content"])
         score = max(0.0, min(100.0, float(data.get("score") or 0)))
         flags = [str(f).strip() for f in (data.get("flags") or []) if str(f).strip()]
         reasons = [str(r).strip() for r in (data.get("reasons") or []) if str(r).strip()]
+        desc = str(data.get("desc") or "").strip()
+        if desc:
+            reasons.insert(0, f"mostra: {desc}")
         return VisionAnalysis(
             asset_id=int(asset.get("id") or 0),
             score=round(score, 1),
@@ -225,8 +260,21 @@ class LLMVisionProvider:
         )
 
 
+# Visão pelo Groq (chave que o usuário já tem e que funciona): modelo Llama-4
+# multimodal, gratuito no free tier e bom para julgar relevância de thumbnail.
+GROQ_VISION_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+
+
 def get_provider(name: str = "heuristic", **kwargs) -> VisionProvider:
     """Fábrica de provedores. Default heurístico (offline, sem chave)."""
+    if name == "groq" and kwargs.get("api_key"):
+        return LLMVisionProvider(
+            api_key=kwargs.get("api_key", ""),
+            model=kwargs.get("model") or GROQ_VISION_MODEL,
+            url=GROQ_VISION_URL,
+            name="groq-vision",
+        )
     if name in {"llm", "llm-vision", "openrouter"} and kwargs.get("api_key"):
         return LLMVisionProvider(
             api_key=kwargs.get("api_key", ""),

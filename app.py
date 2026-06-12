@@ -1197,7 +1197,7 @@ def run_search_job(
         vision_provider = ""
         try:
             db.update_job(job_id, status="running", message="Analisando visao dos assets")
-            analyzed, vision_provider = analyze_pending_vision(project_id, user_id, openrouter_key)
+            analyzed, vision_provider = analyze_pending_vision(project_id, user_id, groq_key, openrouter_key)
         except Exception as vexc:  # noqa: BLE001
             logger.warning("Analise de visao automatica falhou (busca mantida): %s", vexc)
 
@@ -1436,17 +1436,18 @@ def auto_select_route(
 def analyze_pending_vision(
     project_id: int,
     user_id: int,
-    openrouter_key: str,
+    groq_key: str = "",
+    openrouter_key: str = "",
     progress: Optional[callable] = None,
 ) -> tuple[int, str]:
     """Analisa (e persiste) os assets ainda nao analisados do projeto.
 
-    Visao por IA por padrao: quando ha chave OpenRouter, o LLMVisionProvider
-    interpreta a thumbnail (inclusive o poster de videos) dos MELHORES candidatos
-    de cada cena (top-N pela heuristica), limitando custo/tempo; o restante e
-    pontuado pela heuristica offline. Sem chave, tudo cai na heuristica.
-    Idempotente: so toca assets com vision_analyzed=0. Retorna
-    (quantos_analisados, nome_do_provedor_principal).
+    Visao por IA por padrao: a IA olha a thumbnail (inclusive o poster de
+    videos) dos MELHORES candidatos de cada cena (top-N pela heuristica) e julga
+    se a imagem REALMENTE representa a cena. Provedor preferido: Groq (chave que
+    o usuario ja tem e que funciona); cai para OpenRouter se houver; senao
+    heuristica offline. Idempotente: so toca assets com vision_analyzed=0.
+    Retorna (quantos_analisados, nome_do_provedor_principal).
     """
     project = db.get_project(project_id, user_id)
     if not project:
@@ -1455,8 +1456,13 @@ def analyze_pending_vision(
     scenes = db.list_scenes(project_id)
     assets_by_scene = db.list_assets_for_project(project_id)
 
-    use_llm = bool(openrouter_key)
-    llm = vision.get_provider("llm", api_key=openrouter_key) if use_llm else None
+    if groq_key:
+        llm = vision.get_provider("groq", api_key=groq_key)
+    elif openrouter_key:
+        llm = vision.get_provider("llm", api_key=openrouter_key)
+    else:
+        llm = None
+    use_llm = llm is not None
     heuristic = vision.HeuristicVisionProvider()
     primary_name = (llm.name if llm else heuristic.name)
 
@@ -1500,6 +1506,7 @@ def run_vision_job(
     job_id: int,
     project_id: int,
     user_id: int,
+    groq_key: str,
     openrouter_key: str,
 ) -> None:
     """Job dedicado de analise de visao (botao 'Analisar visao')."""
@@ -1510,7 +1517,7 @@ def run_vision_job(
             db.update_job(job_id, status="running", message=f"Analisando assets ({done}/{total})")
 
         analyzed, provider_name = analyze_pending_vision(
-            project_id, user_id, openrouter_key, progress=progress
+            project_id, user_id, groq_key, openrouter_key, progress=progress
         )
         if analyzed == 0:
             db.finish_job(job_id, "Nada novo para analisar", {"analyzed": 0, "provider": provider_name})
@@ -1548,6 +1555,7 @@ def analyze_vision_route(
         job_id,
         project_id,
         user["id"],
+        user.get("groq_key", ""),
         user.get("openrouter_key", ""),
     )
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
@@ -1658,7 +1666,7 @@ def run_research_job(
         # pontua os novos takes antes de escolher, para a selecao usar a visao
         try:
             db.update_job(job_id, status="running", message="Analisando visao dos novos takes")
-            analyze_pending_vision(project_id, user_id, openrouter_key)
+            analyze_pending_vision(project_id, user_id, groq_key, openrouter_key)
         except Exception as vexc:  # noqa: BLE001
             logger.warning("Analise de visao na re-busca falhou: %s", vexc)
 
