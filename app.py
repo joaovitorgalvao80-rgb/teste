@@ -407,6 +407,17 @@ def missing_selected_scene_ids(scenes: list[dict], selected_by_scene: dict[int, 
 
 _VISION_PROVIDER = vision.HeuristicVisionProvider()
 
+# Ordenação da galeria: take escolhido primeiro, depois melhores por visão/relevância.
+_TAKE_STATE_RANK = {"accepted": 3, "selected": 2, "favorite": 1, "pending": 0, "rejected": -1}
+
+
+def _take_sort_key(asset: dict) -> tuple:
+    return (
+        _TAKE_STATE_RANK.get(asset.get("state", "pending"), 0),
+        float(asset.get("vision_score") or 0),
+        float(asset.get("relevance") or 0),
+    )
+
 
 def annotate_assets_with_vision(scene: dict, assets: list[dict], config: dict) -> list[dict]:
     """Anexa sinais de curadoria a cada asset para a UI (relevância, alerta, motivo).
@@ -1085,8 +1096,11 @@ def project_page(request: Request, project_id: int):
     scenes = db.list_scenes(project_id)
     assets_by_scene = db.list_assets_for_project(project_id)
     for s in scenes:
-        s["assets"] = annotate_assets_with_vision(s, assets_by_scene.get(s["id"], []), config)
+        annotated = annotate_assets_with_vision(s, assets_by_scene.get(s["id"], []), config)
+        annotated.sort(key=_take_sort_key, reverse=True)
+        s["assets"] = annotated
         s["selected"] = next((a for a in s["assets"] if a["state"] in CHOSEN_ASSET_STATES), None)
+        s["low_relevance_count"] = sum(1 for a in annotated if a.get("low_relevance"))
     asset_count = sum(len(s["assets"]) for s in scenes)
     selected_count = sum(1 for s in scenes if s.get("selected"))
     accepted_count = sum(1 for s in scenes if s.get("selected") and s["selected"]["state"] == "accepted")
@@ -1288,6 +1302,7 @@ def run_search_job(
     pixabay_key: str,
     groq_key: str = "",
     groq_model: str = "",
+    openrouter_key: str = "",
 ) -> None:
     try:
         db.update_job(job_id, status="running", message="Buscando assets")
@@ -1320,6 +1335,17 @@ def run_search_job(
         if total_added <= 0:
             raise RuntimeError("Busca retornou zero assets. Verifique chaves, keywords ou disponibilidade das APIs.")
 
+        # analise de visao automatica: pontua os candidatos recem-buscados para
+        # alimentar a galeria e a selecao automatica. Best-effort: uma falha aqui
+        # nunca derruba a busca em si (que ja teve sucesso).
+        analyzed = 0
+        vision_provider = ""
+        try:
+            db.update_job(job_id, status="running", message="Analisando visao dos assets")
+            analyzed, vision_provider = analyze_pending_vision(project_id, user_id, openrouter_key)
+        except Exception as vexc:  # noqa: BLE001
+            logger.warning("Analise de visao automatica falhou (busca mantida): %s", vexc)
+
         db.set_project_status(project_id, "searched")
         db.finish_job(
             job_id,
@@ -1329,6 +1355,8 @@ def run_search_job(
                 "empty_scenes": empty_scenes,
                 "scenes": len(scenes),
                 "auto_selected": 0,
+                "vision_analyzed": analyzed,
+                "vision_provider": vision_provider,
             },
         )
     except Exception as exc:  # noqa: BLE001
@@ -1366,6 +1394,7 @@ def search_all(
         user.get("pixabay_key", ""),
         user.get("groq_key", ""),
         user.get("groq_model") or groq_service.DEFAULT_MODEL,
+        user.get("openrouter_key", ""),
     )
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
@@ -1549,63 +1578,81 @@ def auto_select_route(
 # ------------------------------------------------------------------
 # Analise de visao: pontua cada candidato comparando imagem x cena
 # ------------------------------------------------------------------
+def analyze_pending_vision(
+    project_id: int,
+    user_id: int,
+    openrouter_key: str,
+    progress: Optional[callable] = None,
+) -> tuple[int, str]:
+    """Analisa (e persiste) os assets ainda nao analisados do projeto.
+
+    Usa o LLMVisionProvider quando ha chave OpenRouter (interpreta a thumbnail
+    de verdade); senao cai no provedor heuristico offline. Idempotente: so toca
+    assets com vision_analyzed=0, entao pode rodar repetidamente apos buscas.
+    Retorna (quantos_analisados, nome_do_provedor). Compartilhado entre o job
+    dedicado e o disparo automatico ao fim da busca.
+    """
+    project = db.get_project(project_id, user_id)
+    if not project:
+        raise RuntimeError("Projeto nao encontrado.")
+    config = project_config(project)
+    scenes = db.list_scenes(project_id)
+    assets_by_scene = db.list_assets_for_project(project_id)
+    provider = vision.get_provider("llm", api_key=openrouter_key) if openrouter_key \
+        else vision.HeuristicVisionProvider()
+
+    pending = [
+        (scene, asset)
+        for scene in scenes
+        for asset in assets_by_scene.get(scene["id"], [])
+        if not asset.get("vision_analyzed")
+    ]
+    if not pending:
+        return 0, provider.name
+
+    # cache por (cena, fonte, id): a analise compara a imagem COM a cena,
+    # entao a chave inclui a cena (nao so o source_id).
+    cache: dict[tuple, object] = {}
+    analyzed = 0
+    for scene, asset in pending:
+        sig = (scene["id"], asset.get("source"), str(asset.get("source_id")))
+        res = cache.get(sig)
+        if res is None:
+            res = provider.analyze(asset, scene, config)
+            cache[sig] = res
+        db.set_asset_vision(
+            asset["id"], res.score, res.verdict,
+            "; ".join(res.reasons)[:300], res.flags, res.provider,
+        )
+        analyzed += 1
+        if progress and analyzed % 10 == 0:
+            progress(analyzed, len(pending))
+    return analyzed, provider.name
+
+
 def run_vision_job(
     job_id: int,
     project_id: int,
     user_id: int,
     openrouter_key: str,
 ) -> None:
-    """Analisa os candidatos de cada cena e persiste score/veredito/flags.
-
-    Usa o LLMVisionProvider quando ha chave OpenRouter (interpreta a thumbnail
-    de verdade); senao cai no provedor heuristico offline. Idempotente: so
-    analisa assets ainda nao analisados, permitindo reexecutar apos novas buscas.
-    """
+    """Job dedicado de analise de visao (botao 'Analisar visao')."""
     try:
         db.update_job(job_id, status="running", message="Analisando assets")
-        project = db.get_project(project_id, user_id)
-        if not project:
-            raise RuntimeError("Projeto nao encontrado.")
-        config = project_config(project)
-        scenes = db.list_scenes(project_id)
-        assets_by_scene = db.list_assets_for_project(project_id)
-        provider = vision.get_provider("llm", api_key=openrouter_key) if openrouter_key \
-            else vision.HeuristicVisionProvider()
 
-        pending = [
-            (scene, asset)
-            for scene in scenes
-            for asset in assets_by_scene.get(scene["id"], [])
-            if not asset.get("vision_analyzed")
-        ]
-        if not pending:
-            db.finish_job(job_id, "Nada novo para analisar", {"analyzed": 0, "provider": provider.name})
+        def progress(done: int, total: int) -> None:
+            db.update_job(job_id, status="running", message=f"Analisando assets ({done}/{total})")
+
+        analyzed, provider_name = analyze_pending_vision(
+            project_id, user_id, openrouter_key, progress=progress
+        )
+        if analyzed == 0:
+            db.finish_job(job_id, "Nada novo para analisar", {"analyzed": 0, "provider": provider_name})
             return
-
-        # cache por (cena, fonte, id): a analise compara a imagem COM a cena,
-        # entao a chave inclui a cena (nao so o source_id).
-        cache: dict[tuple, object] = {}
-        analyzed = 0
-        for scene, asset in pending:
-            sig = (scene["id"], asset.get("source"), str(asset.get("source_id")))
-            res = cache.get(sig)
-            if res is None:
-                res = provider.analyze(asset, scene, config)
-                cache[sig] = res
-            db.set_asset_vision(
-                asset["id"], res.score, res.verdict,
-                "; ".join(res.reasons)[:300], res.flags, res.provider,
-            )
-            analyzed += 1
-            if analyzed % 10 == 0:
-                db.update_job(
-                    job_id, status="running",
-                    message=f"Analisando assets ({analyzed}/{len(pending)})",
-                )
         db.finish_job(
             job_id,
-            f"{analyzed} assets analisados ({provider.name})",
-            {"analyzed": analyzed, "provider": provider.name},
+            f"{analyzed} assets analisados ({provider_name})",
+            {"analyzed": analyzed, "provider": provider_name},
         )
     except Exception as exc:  # noqa: BLE001
         db.fail_job(job_id, "Falha na analise de visao", str(exc))
@@ -1690,6 +1737,7 @@ def run_research_job(
     pixabay_key: str,
     groq_key: str,
     groq_model: str,
+    openrouter_key: str = "",
 ) -> None:
     try:
         db.update_job(job_id, status="running", message="Buscando takes melhores para as cenas rejeitadas")
@@ -1739,6 +1787,13 @@ def run_research_job(
             )
             added_total += db.add_assets(scene["id"], results)
 
+        # pontua os novos takes antes de escolher, para a selecao usar a visao
+        try:
+            db.update_job(job_id, status="running", message="Analisando visao dos novos takes")
+            analyze_pending_vision(project_id, user_id, openrouter_key)
+        except Exception as vexc:  # noqa: BLE001
+            logger.warning("Analise de visao na re-busca falhou: %s", vexc)
+
         db.update_job(job_id, status="running", message="Selecionando os melhores takes novos")
         chosen = auto_select_for_project(
             project_id, config, groq_key, groq_model, job_id=job_id, review_round=new_round,
@@ -1781,6 +1836,7 @@ def research_rejected(
         user.get("pixabay_key", ""),
         user.get("groq_key", ""),
         user.get("groq_model") or groq_service.DEFAULT_MODEL,
+        user.get("openrouter_key", ""),
     )
     return RedirectResponse(f"/projects/{project_id}/review", status_code=303)
 

@@ -286,6 +286,40 @@ class VisionJobTest(unittest.TestCase):
         webapp.run_vision_job(job_id2, project_id, user_id, openrouter_key="")
         self.assertEqual(db.get_job(job_id2, user_id)["result"]["analyzed"], 0)
 
+    def test_search_job_auto_analyzes_vision(self) -> None:
+        from unittest.mock import patch
+
+        user_id, project_id = self._seed()
+        # a busca em si é mockada; queremos provar que a visão roda ao fim dela
+        fake_results = [{
+            "source": "pexels", "source_id": "9", "asset_type": "video",
+            "download_url": "http://x/9.mp4", "keyword": "mosquito close up",
+            "width": 1920, "height": 1080, "duration": 8,
+        }]
+        job_id = db.create_job(user_id, "search_assets", project_id, "")
+        with patch.object(webapp.asset_search, "search_scene", return_value=fake_results):
+            webapp.run_search_job(job_id, project_id, user_id, "pk", "xk", openrouter_key="")
+        job = db.get_job(job_id, user_id)
+        self.assertEqual(job["status"], "complete")
+        self.assertGreaterEqual(job["result"]["vision_analyzed"], 1)
+        scene_db_id = db.list_scenes(project_id)[0]["id"]
+        self.assertTrue(all(a["vision_analyzed"] == 1 for a in db.list_assets(scene_db_id)))
+
+    def test_gallery_sorts_chosen_and_best_first(self) -> None:
+        user_id, project_id = self._seed()
+        # roda a visão para popular scores
+        webapp.run_vision_job(db.create_job(user_id, "vision", project_id, ""),
+                              project_id, user_id, openrouter_key="")
+        scene_db_id = db.list_scenes(project_id)[0]["id"]
+        annotated = webapp.annotate_assets_with_vision(
+            db.get_scene(scene_db_id),
+            db.list_assets(scene_db_id),
+            {"resolution": "1920x1080"},
+        )
+        annotated.sort(key=webapp._take_sort_key, reverse=True)
+        # o asset relevante/HD deve vir antes do genérico/low-res
+        self.assertEqual(annotated[0]["keyword"], "mosquito close up")
+
 
 if __name__ == "__main__":
     unittest.main()

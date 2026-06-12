@@ -410,8 +410,17 @@
 <hr class="rule" style="margin-bottom:var(--sp-5)">
 <div class="row-between" id="curadoria" style="margin-bottom:var(--sp-4)">
   <h2>Curadoria de takes</h2>
-  <span class="t-small t-faint"><kbd>S</kbd> selecionar · <kbd>R</kbd> rejeitar</span>
+  <span class="row" style="gap:var(--sp-3);align-items:center">
+    <label class="t-small t-faint" style="display:flex;gap:var(--sp-1);align-items:center;cursor:pointer">
+      <input type="checkbox" id="hide-low-rel" onchange="document.body.classList.toggle('hide-low-rel', this.checked)">
+      esconder baixa relevância
+    </label>
+    <span class="t-small t-faint"><kbd>S</kbd> selecionar · <kbd>R</kbd> rejeitar</span>
+  </span>
 </div>
+<style>
+  body.hide-low-rel .take[data-low="1"]:not(.is-selected):not(.is-accepted) { display: none; }
+</style>
 {% endif %}
 
 {% for scene in scenes %}
@@ -446,7 +455,8 @@
 
       <div class="takes" id="grid-{{ scene.id }}">
         {% for a in scene.assets %}
-          <article class="take is-{{ a.state }}" id="asset-{{ a.id }}" data-id="{{ a.id }}">
+          <article class="take is-{{ a.state }}" id="asset-{{ a.id }}" data-id="{{ a.id }}"
+                   data-low="{{ '1' if a.low_relevance else '0' }}">
             {% if a.asset_type == 'video' %}
               <video class="take-thumb" muted loop preload="none" poster="{{ a.preview_url }}"
                      src="{{ a.download_url }}"
