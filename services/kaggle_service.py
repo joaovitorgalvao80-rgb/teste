@@ -1407,7 +1407,10 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
 
         render_mode = "ffmpeg-compose"
         png_count = 0
-        overlay_enabled = env_enabled("PRODUCER_HF_ENABLE_OVERLAY", True)
+        # Overlay (legendas HyperFrames) ainda OFF por padrao: a etapa de
+        # chroma-key dos PNGs pretava o video inteiro (PNG sem fundo ciano).
+        # Precisa de fix de transparencia validado antes de religar.
+        overlay_enabled = env_enabled("PRODUCER_HF_ENABLE_OVERLAY", False)
 
         def _copy_base_fallback(reason):
             import shutil as _sh
@@ -1540,7 +1543,7 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
                 "output_fps": OUTPUT_FPS,
                 "workers": RENDER_WORKERS,
                 "low_memory": True,
-                "overlay_enabled": env_enabled("PRODUCER_HF_ENABLE_OVERLAY", True),
+                "overlay_enabled": env_enabled("PRODUCER_HF_ENABLE_OVERLAY", False),
             },
         }
     )

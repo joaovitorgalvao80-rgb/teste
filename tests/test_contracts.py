@@ -837,8 +837,9 @@ class DeployContractsTest(unittest.TestCase):
         self.assertIn('avatar_mode in ("base", "corner") and avatar', runner)
         self.assertIn("ffmpeg_compose_corner_layers", runner)
         self.assertIn("has_overlays = result", runner)
-        # overlay (legendas HyperFrames) ligado por padrao, com fallback seguro
-        self.assertIn('overlay_enabled = env_enabled("PRODUCER_HF_ENABLE_OVERLAY", True)', runner)
+        # overlay (legendas HyperFrames) OFF por padrao (fix de transparencia
+        # pendente), mas o caminho tem fallback seguro pra base composta
+        self.assertIn('overlay_enabled = env_enabled("PRODUCER_HF_ENABLE_OVERLAY", False)', runner)
         self.assertIn("if has_overlays and overlay_enabled:", runner)
         self.assertIn("overlay-fallback", runner)
         self.assertIn('"ffmpeg-compose"', runner)
