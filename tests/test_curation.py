@@ -304,6 +304,24 @@ def _load_runner_func(name: str):
     return ns[name]
 
 
+class MontadorRealignTest(unittest.TestCase):
+    """A base do montador deve ficar no MESMO tempo do edit_plan (cobre pausas)."""
+
+    def test_clips_fill_narration_gaps(self) -> None:
+        import montador
+        scenes = [
+            {"start_time": 0.0, "duration": 7.10, "end_time": 7.10},
+            {"start_time": 7.40, "duration": 6.20, "end_time": 13.60},   # gap 0.30 antes
+            {"start_time": 13.70, "duration": 3.60, "end_time": 17.30},  # gap 0.10 antes
+        ]
+        montador.realign_scene_durations(scenes)
+        self.assertAlmostEqual(scenes[0]["duration"], 7.40, places=2)  # estende p/ cobrir gap
+        self.assertAlmostEqual(scenes[1]["duration"], 6.30, places=2)
+        self.assertAlmostEqual(scenes[2]["duration"], 3.60, places=2)  # ultima mantem
+        # base alinhada: soma == span real (ultimo start + ultima duracao)
+        self.assertAlmostEqual(sum(s["duration"] for s in scenes), 17.30, places=2)
+
+
 class DrawtextCaptionTest(unittest.TestCase):
     """Legendas lower-third via FFmpeg drawtext (substitui o overlay chroma-key)."""
 

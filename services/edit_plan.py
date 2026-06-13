@@ -14,6 +14,27 @@ import math
 import re
 
 from . import llm_service
+from .script_parser import remove_accents
+
+# Frases de apresentacao/saudacao: nessas cenas o apresentador fica na tela
+# (sem b-roll por cima). Ex.: "eu sou", "olá, eu sou", "meu nome é".
+_PRESENT_STRONG = (
+    "eu sou ", "meu nome ", "me chamo ", "quem fala ", "quem te fala ",
+    "aqui e o ", "aqui e a ", "aqui quem fala", "sou o ", "sou a ",
+)
+_PRESENT_GREETING = (
+    "ola", "oi ", "oi,", "oi!", "e ai", "fala galera", "fala pessoal",
+    "bem vindo", "bem-vindo", "seja bem", "sejam bem",
+)
+
+
+def _is_presentation(narration: str) -> bool:
+    """True quando a cena e apresentacao/saudacao (apresentador, sem b-roll)."""
+    text = " " + remove_accents(str(narration or "")).lower().strip() + " "
+    if any(p in text for p in _PRESENT_STRONG):
+        return True
+    head = text[:40]  # saudacao so conta no comeco da fala
+    return any(g in head for g in _PRESENT_GREETING)
 
 EDIT_PLAN_VERSION = 2
 NARRATION_BASENAME = "narration"
@@ -156,6 +177,10 @@ def _broll_flags(scenes: list[dict]) -> list[bool]:
         if i == 0 or i == n - 1:
             run = 0.0
             continue
+        # apresentacao/saudacao fica com o apresentador na tela (sem b-roll)
+        if _is_presentation(scene.get("narration")):
+            run = 0.0
+            continue
         duration = _scene_duration(scene)
         if run >= MAX_BROLL_RUN_SECONDS:
             run = 0.0
@@ -191,6 +216,11 @@ def enforce_broll_policy(plan_scenes: list[dict], source_scenes: list[dict]) -> 
     if n == 0:
         return {"coverage": 0.0, "max_avatar_solo_seconds": MAX_AVATAR_SOLO_SECONDS}
 
+    # apresentacao/saudacao nunca leva b-roll (vale p/ deterministico e LLM)
+    for scene, src in zip(plan_scenes, source_scenes):
+        if _is_presentation(src.get("narration")):
+            scene["broll"] = False
+
     if all(scene.get("broll") for scene in plan_scenes):
         plan_scenes[0]["broll"] = False
 
@@ -203,8 +233,14 @@ def enforce_broll_policy(plan_scenes: list[dict], source_scenes: list[dict]) -> 
                 break
         if not oversized:
             break
-        # vira b-roll a cena mais forte do trecho (sem mexer no gancho inicial)
-        candidates = [i for i in oversized if i != 0] or oversized
+        # vira b-roll a cena mais forte do trecho (sem mexer no gancho inicial
+        # nem em cenas de apresentacao, que devem ficar com o apresentador)
+        candidates = [
+            i for i in oversized
+            if i != 0 and not _is_presentation(source_scenes[i].get("narration"))
+        ]
+        if not candidates:
+            candidates = [i for i in oversized if i != 0] or oversized
         middle = oversized[len(oversized) // 2]
         best = max(
             candidates,

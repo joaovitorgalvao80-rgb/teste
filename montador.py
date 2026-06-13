@@ -222,6 +222,28 @@ def resolve_selected_asset(pack_dir: Path, selected: str) -> Path:
     return src
 
 
+def realign_scene_durations(scenes: list[dict]) -> None:
+    """Alinha a base ao tempo REAL: cada clipe preenche ate o inicio da proxima
+    cena (cobrindo as micro-pausas da narracao). In-place; assume scenes ja
+    ordenadas por start_time.
+
+    Sem isso a base fica 'gapless' (soma das duracoes) enquanto o edit_plan usa
+    start_time real (com pausas). O descasamento acumula e, no fim de uma janela
+    de b-roll, a base ja esta mostrando o clipe da PROXIMA cena (ex.: a do avatar)
+    por ~1s antes do avatar aparecer — o 'flash' de b-roll errado. Estendendo
+    cada clipe ate o proximo start, base e edit_plan ficam na mesma timeline.
+    """
+    for i, s in enumerate(scenes):
+        own = float(s.get("duration") or 0)
+        if own <= 0:
+            own = max(0.1, float(s.get("end_time", 0)) - float(s.get("start_time", 0)))
+        if i + 1 < len(scenes):
+            span = float(scenes[i + 1].get("start_time", 0)) - float(s.get("start_time", 0))
+            s["duration"] = round(max(own, span), 3)
+        else:
+            s["duration"] = round(own, 3)
+
+
 # ----------------------------------------------------------------------------
 # Render de uma cena (clipe normalizado para a timeline)
 # ----------------------------------------------------------------------------
@@ -384,6 +406,8 @@ def montar(
         for i, s in enumerate(scenes, 1):
             s.setdefault("idx", i)
         scenes.sort(key=lambda s: (s.get("start_time", 0), s["idx"]))
+        # base no MESMO tempo do edit_plan (cobre pausas da narracao)
+        realign_scene_durations(scenes)
 
         log(f"Projeto: {guide.get('project_name','(sem nome)')}")
         log(f"Resolucao: {width}x{height} | fps: {fps} | cenas: {len(scenes)}")

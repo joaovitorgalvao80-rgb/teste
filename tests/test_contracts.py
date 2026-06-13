@@ -881,6 +881,29 @@ class DeployContractsTest(unittest.TestCase):
         self.assertEqual(with_media["avatar"]["position"], "right")
         self.assertAlmostEqual(with_media["avatar"]["scale"], 0.25)
 
+    def test_presentation_scenes_never_get_broll(self) -> None:
+        from services import edit_plan as ep
+
+        project = {"name": "V"}
+        config = {"avatar_safe_area": "right", "resolution": "1280x720"}
+        scenes = [
+            {"scene_id": "scene_001", "start_time": 0.0, "end_time": 5.0, "duration": 5.0,
+             "narration": "Olá, eu sou o Valdir e hoje vou te ensinar"},
+            {"scene_id": "scene_002", "start_time": 5.0, "end_time": 10.0, "duration": 5.0,
+             "narration": "O mosquito da dengue se reproduz na agua parada do quintal"},
+            {"scene_id": "scene_003", "start_time": 10.0, "end_time": 15.0, "duration": 5.0,
+             "narration": "Meu nome e Valdir e quero te mostrar uma solucao"},
+            {"scene_id": "scene_004", "start_time": 15.0, "end_time": 20.0, "duration": 5.0,
+             "narration": "Os ovos resistem meses ate a primeira chuva chegar"},
+        ]
+        plan = ep.build_edit_plan(project, config, scenes)
+        broll = {s["scene_id"]: s["broll"] for s in plan["scenes"]}
+        self.assertFalse(broll["scene_001"], "apresentacao nao leva b-roll")
+        self.assertFalse(broll["scene_003"], "'meu nome e' nao leva b-roll")
+        # cenas de conteudo seguem elegiveis a b-roll
+        self.assertTrue(ep._is_presentation("Olá, eu sou o Valdir"))
+        self.assertFalse(ep._is_presentation("O mosquito se reproduz na agua parada"))
+
     def test_caption_falls_back_to_narration_when_overlay_empty(self) -> None:
         from services import edit_plan as ep
 
