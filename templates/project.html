@@ -106,7 +106,7 @@
       <form method="post" action="/projects/{{ project.id }}/analyze-vision" data-busy-submit>
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button class="btn btn-ghost btn-sm" type="submit"
-                title="Pontua cada candidato comparando a imagem com a cena (usa IA de visão se houver chave OpenRouter)"
+                title="Pontua cada candidato comparando a imagem com a cena (IA de visão: Groq + NVIDIA)"
                 {% if asset_count == 0 or project.status in ['searching','packaging','mapping','auto_selecting','researching'] %}disabled{% endif %}>
           Analisar visão
         </button>
@@ -144,16 +144,14 @@
       </div>
     </div>
     <div class="kaggle-row hyperframes-row">
-      <span class="tag">05 Refino HyperFrames</span>
+      <span class="tag">05 Master (FFmpeg)</span>
       <span id="hyperframes-state" class="kaggle-state">
-        {%- if hyperframes_status.get('status') == 'complete' -%}
-          master pronto ({{ hyperframes_status.get('render_mode', 'mp4') }}{% if hyperframes_status.get('audio') %}, com narração{% endif %}{% if hyperframes_status.get('avatar') %}, com avatar{% endif %})
-        {%- elif hyperframes_status.get('status') == 'fallback_complete' -%}
-          master via fallback FFmpeg{% if hyperframes_status.get('audio') %}, com narração{% endif %}{% if hyperframes_status.get('avatar') %}, com avatar{% endif %} (HyperFrames falhou)
+        {%- if hyperframes_status.get('status') in ('complete', 'fallback_complete') -%}
+          master pronto ({{ hyperframes_status.get('render_mode', 'ffmpeg') }}{% if hyperframes_status.get('audio') %}, com narração{% endif %}{% if hyperframes_status.get('avatar') %}, com avatar{% endif %})
         {%- elif hyperframes_status.get('status') == 'error' -%}
-          erro no refino — base preservada
+          erro no master — base preservada
         {%- else -%}
-          roda junto com o render do Kaggle
+          composto junto com o render do Kaggle
         {%- endif -%}
       </span>
     </div>
@@ -231,13 +229,11 @@
 <div class="panel" style="margin-bottom:var(--sp-5)" id="edit-plan-panel">
   <div class="panel-head">
     <span class="tag">Plano de edição · revise antes do render</span>
-    <span class="plan-mode {% if edit_plan.editorial == 'llm' %}plan-mode-llm{% endif %}">
-      {% if edit_plan.editorial == 'llm' %}orquestrado por IA (OpenRouter){% else %}determinístico — cadastre a chave OpenRouter para orquestração por IA{% endif %}
-    </span>
+    <span class="plan-mode">determinístico</span>
   </div>
   <div style="padding:var(--sp-4) var(--sp-5)">
     <p class="t-muted t-small" style="margin-bottom:var(--sp-3)">
-      Este é o plano que o HyperFrames vai executar na etapa <strong>04 Render Kaggle</strong>.
+      Este é o plano que o FFmpeg executa no render da etapa <strong>04 Render Kaggle</strong>.
       {% if edit_plan.avatar %}
         O avatar é a base do vídeo inteiro; os b-rolls entram por cima nas cenas marcadas.
         Regra: o avatar nunca fica mais de {{ edit_plan.broll_policy.max_avatar_solo_seconds|int if edit_plan.broll_policy else 30 }}s sozinho na tela, e o b-roll nunca cobre o vídeo todo.
@@ -247,7 +243,7 @@
     <div class="row" style="gap:var(--sp-5);margin-bottom:var(--sp-3)">
       <span class="t-small">cobertura de b-roll: <strong>{{ (edit_plan.broll_policy.coverage * 100)|round|int }}%</strong></span>
       <span class="t-small">cenas com b-roll: <strong>{{ edit_plan.broll_policy.broll_scenes }}/{{ edit_plan.broll_policy.total_scenes }}</strong></span>
-      {% if edit_plan.caption_policy %}<span class="t-small">captions: <strong>{{ edit_plan.caption_policy.selected }}</strong></span>{% endif %}
+      <span class="t-small t-faint">legendas: <strong>desligadas</strong></span>
     </div>
     {% endif %}
     <table class="plan-table">
@@ -322,7 +318,7 @@
         <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}/download-render-log">Log render</a>
       {% endif %}
       {% if diagnostics.logs.hyperframes_status %}
-        <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}/download-hyperframes-status">Status HyperFrames</a>
+        <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}/download-hyperframes-status">Status do render</a>
       {% endif %}
       {% if diagnostics.logs.validation %}
         <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}/download-validation">Validação JSON</a>
@@ -359,7 +355,7 @@
   </div>
   <div style="padding:var(--sp-4) var(--sp-5)">
     <p class="t-muted t-small" style="margin-bottom:var(--sp-4)">
-      Esses arquivos entram no <code>final_master.mp4</code> renderizado pelo HyperFrames.
+      Esses arquivos entram no <code>final_master.mp4</code> composto no render do Kaggle (FFmpeg).
       Envie antes de <strong>03 Preparar pacote</strong> para que sigam no ZIP.
     </p>
     <div class="refine-grid">

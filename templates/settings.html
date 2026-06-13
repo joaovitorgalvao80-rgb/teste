@@ -67,14 +67,10 @@
     </section>
 
     <section class="settings-section">
-      <p class="tag">OpenRouter</p>
-      <h2 class="settings-heading">Cérebro editorial</h2>
-      <p class="t-muted t-small" style="margin-bottom:var(--sp-4)">Decide motion, transições e captions do master final. Opcional: sem chave, o plano de edição usa o modo determinístico.</p>
-      <label>OpenRouter API Key
-        <input type="password" autocomplete="off" name="openrouter" value="" placeholder="{% if secret_masks.openrouter %}atual: {{ secret_masks.openrouter }}{% else %}sk-or-...{% endif %}">
-      </label>
-      {% if secret_masks.openrouter %}<label class="check"><input type="checkbox" name="clear_openrouter" value="1"> Limpar OpenRouter</label>{% endif %}
-      <label style="margin-top:var(--sp-3)">NVIDIA API Key <span class="t-faint t-small">(visão de B-roll; fallback/2º provedor do Groq)</span>
+      <p class="tag">NVIDIA</p>
+      <h2 class="settings-heading">Visão de B-roll (opcional)</h2>
+      <p class="t-muted t-small" style="margin-bottom:var(--sp-4)">2º provedor de visão, em rodízio com o Groq. Opcional: sem chave, a visão usa só o Groq + heurística.</p>
+      <label>NVIDIA API Key
         <input type="password" autocomplete="off" name="nvidia" value="" placeholder="{% if secret_masks.nvidia %}atual: {{ secret_masks.nvidia }}{% else %}nvapi-...{% endif %}">
       </label>
       {% if secret_masks.nvidia %}<label class="check"><input type="checkbox" name="clear_nvidia" value="1"> Limpar NVIDIA</label>{% endif %}
@@ -108,7 +104,6 @@
         <li><strong>Pexels</strong><code>pexels.com/api</code></li>
         <li><strong>Pixabay</strong><code>pixabay.com/api/docs</code></li>
         <li><strong>Groq</strong><code>console.groq.com</code></li>
-        <li><strong>OpenRouter</strong><code>openrouter.ai/keys</code></li>
         <li><strong>Kaggle</strong><code>kaggle.com/settings</code> → API → Create New Token</li>
       </ul>
     </div>

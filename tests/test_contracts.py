@@ -930,96 +930,6 @@ class DeployContractsTest(unittest.TestCase):
         self.assertEqual(cap0, cap0.upper())  # estilo lower-third em maiuscula
         self.assertLessEqual(len(cap0.split()), 5)
 
-    def test_llm_edit_plan_merges_valid_directives_only(self) -> None:
-        from services import edit_plan as ep
-        from services import llm_service
-
-        project = {"name": "Meu Video"}
-        config = {"avatar_safe_area": "right", "resolution": "1280x720"}
-        scenes = [
-            {"scene_id": "scene_001", "start_time": 0.0, "duration": 4.0, "overlay_text": "Abertura", "narration": "n1"},
-            {"scene_id": "scene_002", "start_time": 4.0, "duration": 5.5, "overlay_text": "", "narration": "n2"},
-            {"scene_id": "scene_003", "start_time": 9.5, "duration": 2.5, "overlay_text": "Fim", "narration": "n3"},
-        ]
-        llm_payload = {
-            "scenes": [
-                # motion invalido (descartado), caption valido (aplicado)
-                {"scene_id": "scene_001", "motion": "spin_360", "transition_out": "none", "caption": "Comece agora"},
-                # tudo valido, incluindo "none" para descansar a camera
-                {"scene_id": "scene_002", "motion": "none", "transition_out": "fade", "caption": ""},
-                # ultima cena: LLM pede fade, mas a regra forca "none"
-                {"scene_id": "scene_003", "motion": "slow_pull_out", "transition_out": "fade", "caption": '"Ate amanha"'},
-            ]
-        }
-        fake_resp = SimpleNamespace(
-            status_code=200,
-            json=lambda: {"choices": [{"message": {"content": json.dumps(llm_payload)}}]},
-        )
-        with patch.object(llm_service.requests, "post", return_value=fake_resp) as mocked:
-            plan = ep.build_edit_plan_with_llm(project, config, scenes, openrouter_key="sk-or-test")
-        self.assertTrue(mocked.called)
-        self.assertEqual(plan["editorial"], "llm")
-        s1, s2, s3 = plan["scenes"]
-        # timing nunca muda
-        self.assertEqual([s1["start"], s2["start"], s3["start"]], [0.0, 4.0, 9.5])
-        # motion invalido mantem o deterministico; caption do LLM entra
-        self.assertEqual(s1["motion"], "slow_push_in")
-        self.assertEqual(s1["transition_out"], "none")
-        self.assertEqual(s1["caption"], "Comece agora")
-        self.assertEqual(s2["motion"], "none")
-        self.assertEqual(s2["transition_out"], "fade")
-        self.assertEqual(s2["caption"], "")
-        self.assertEqual(s3["motion"], "slow_pull_out")
-        self.assertEqual(s3["transition_out"], "none")
-        self.assertEqual(s3["caption"], "Ate amanha")
-
-    def test_llm_edit_plan_falls_back_when_llm_fails(self) -> None:
-        from services import edit_plan as ep
-        from services import llm_service
-
-        project = {"name": "Meu Video"}
-        config = {"avatar_safe_area": "right", "resolution": "1280x720"}
-        scenes = [
-            {"scene_id": "scene_001", "start_time": 0.0, "duration": 4.0, "overlay_text": "Abertura"},
-            {"scene_id": "scene_002", "start_time": 4.0, "duration": 5.5, "overlay_text": ""},
-        ]
-        baseline = ep.build_edit_plan(project, config, scenes)
-
-        with patch.object(llm_service.requests, "post", side_effect=OSError("rede caiu")):
-            plan = ep.build_edit_plan_with_llm(project, config, scenes, openrouter_key="sk-or-test")
-        self.assertNotIn("editorial", plan)
-        self.assertEqual(plan, baseline)
-
-        # sem chave nem tenta chamar a rede
-        with patch.object(llm_service.requests, "post", side_effect=AssertionError("nao deveria chamar")):
-            plan = ep.build_edit_plan_with_llm(project, config, scenes, openrouter_key="")
-        self.assertEqual(plan, baseline)
-
-    def test_llm_edit_plan_can_clear_deterministic_caption(self) -> None:
-        from services import edit_plan as ep
-        from services import llm_service
-
-        project = {"name": "Meu Video"}
-        config = {"avatar_safe_area": "right", "resolution": "1280x720"}
-        scenes = [
-            {"scene_id": "scene_001", "start_time": 0.0, "duration": 4.0, "overlay_text": "Abertura", "narration": "n1"},
-            {"scene_id": "scene_002", "start_time": 4.0, "duration": 4.0, "overlay_text": "Final", "narration": "n2"},
-        ]
-        llm_payload = {
-            "scenes": [
-                {"scene_id": "scene_001", "motion": "hold", "transition_out": "none", "caption": ""},
-                {"scene_id": "scene_002", "motion": "hold", "transition_out": "none", "caption": ""},
-            ]
-        }
-        fake_resp = SimpleNamespace(
-            status_code=200,
-            json=lambda: {"choices": [{"message": {"content": json.dumps(llm_payload)}}]},
-        )
-        with patch.object(llm_service.requests, "post", return_value=fake_resp):
-            plan = ep.build_edit_plan_with_llm(project, config, scenes, openrouter_key="sk-or-test")
-
-        self.assertEqual([scene["caption"] for scene in plan["scenes"]], ["", ""])
-
     def test_edit_plan_broll_rules_with_avatar_base(self) -> None:
         from services import edit_plan as ep
 
@@ -1054,61 +964,10 @@ class DeployContractsTest(unittest.TestCase):
         self.assertGreater(plan["broll_policy"]["coverage"], 0)
         self.assertLess(plan["broll_policy"]["coverage"], 1)
 
-    def test_broll_policy_bounds_llm_extremes(self) -> None:
-        from services import edit_plan as ep
-        from services import llm_service
-
-        scenes = [
-            {
-                "scene_id": f"scene_{i:03d}",
-                "start_time": i * 10.0,
-                "end_time": (i + 1) * 10.0,
-                "duration": 10.0,
-                "narration": f"cena {i}",
-                "overlay_text": "",
-            }
-            for i in range(6)
-        ]
-
-        def fake_resp(broll_value):
-            payload = {
-                "scenes": [
-                    {"scene_id": f"scene_{i:03d}", "motion": "hold", "transition_out": "none",
-                     "caption": "", "broll": broll_value}
-                    for i in range(6)
-                ]
-            }
-            return SimpleNamespace(
-                status_code=200,
-                json=lambda: {"choices": [{"message": {"content": json.dumps(payload)}}]},
-            )
-
-        # LLM tentando avatar o video todo: a regra dos 30s abre janelas de b-roll
-        with patch.object(llm_service.requests, "post", return_value=fake_resp(False)):
-            plan = ep.build_edit_plan_with_llm(
-                {"name": "x"}, {"avatar_safe_area": "right"}, scenes,
-                openrouter_key="sk-or-test", avatar_file="avatar.mp4",
-            )
-        flags = [s["broll"] for s in plan["scenes"]]
-        self.assertTrue(any(flags))
-        solo = 0.0
-        for s in plan["scenes"]:
-            solo = 0.0 if s["broll"] else solo + s["duration"]
-            self.assertLessEqual(solo, ep.MAX_AVATAR_SOLO_SECONDS)
-
-        # LLM tentando b-roll o video todo: o avatar precisa abrir na tela
-        with patch.object(llm_service.requests, "post", return_value=fake_resp(True)):
-            plan = ep.build_edit_plan_with_llm(
-                {"name": "x"}, {"avatar_safe_area": "right"}, scenes,
-                openrouter_key="sk-or-test", avatar_file="avatar.mp4",
-            )
-        self.assertFalse(plan["scenes"][0]["broll"])
-
     def test_detect_api_keys_from_txt_and_kaggle_json(self) -> None:
         pexels_key = "A1" * 28
         pixabay_key = "12345678-" + "a" * 25
         groq_key = "gsk_" + "x" * 30
-        openrouter_key = "sk-or-" + "y" * 30
         kaggle_token = "f" * 32
         content = "\n".join(
             [
@@ -1116,7 +975,6 @@ class DeployContractsTest(unittest.TestCase):
                 f"Pexels: {pexels_key}",
                 f"pixabay = {pixabay_key}",
                 groq_key,
-                f"minha chave openrouter: {openrouter_key}",
                 '{"username": "kg-user", "key": "' + kaggle_token + '"}',
             ]
         )
@@ -1124,7 +982,6 @@ class DeployContractsTest(unittest.TestCase):
         self.assertEqual(detected["pexels"], pexels_key)
         self.assertEqual(detected["pixabay"], pixabay_key)
         self.assertEqual(detected["groq"], groq_key)
-        self.assertEqual(detected["openrouter"], openrouter_key)
         self.assertEqual(detected["kaggle_username"], "kg-user")
         self.assertEqual(detected["kaggle_token"], kaggle_token)
 
@@ -1136,7 +993,7 @@ class DeployContractsTest(unittest.TestCase):
                 data={"username": "import-keys", "password": "password123"},
                 follow_redirects=False,
             )
-            content = "groq: gsk_" + "z" * 30 + "\nopenrouter: sk-or-" + "w" * 30
+            content = "groq: gsk_" + "z" * 30 + "\npexels: " + "A1" * 28
             resp = client.post(
                 "/settings/import-keys",
                 files={"keys_file": ("chaves.txt", content.encode("utf-8"), "text/plain")},
@@ -1149,7 +1006,7 @@ class DeployContractsTest(unittest.TestCase):
         self.assertIn("Groq", resp.json()["detail"])
         user = db.get_user(uid)
         self.assertTrue(user["groq_key"].startswith("gsk_"))
-        self.assertTrue(user["openrouter_key"].startswith("sk-or-"))
+        self.assertTrue(user["pexels_key"].startswith("A1"))
         self.assertEqual(empty.status_code, 400)
 
     def test_edit_plan_route_and_review_panel(self) -> None:
@@ -1187,7 +1044,7 @@ class DeployContractsTest(unittest.TestCase):
         self.assertEqual(ok.json()["version"], 2)
         self.assertEqual(page.status_code, 200)
         self.assertIn("Plano de edição", page.text)
-        self.assertIn("orquestrado por IA (OpenRouter)", page.text)
+        self.assertIn("determinístico", page.text)
         self.assertIn("plan-chip-broll", page.text)
 
     def test_package_job_saves_edit_plan_for_review(self) -> None:
@@ -1213,7 +1070,7 @@ class DeployContractsTest(unittest.TestCase):
             return zp
 
         with patch.object(webapp.packager, "build_zip", side_effect=fake_zip):
-            webapp.run_package_job(job_id, project_id, uid, "")
+            webapp.run_package_job(job_id, project_id, uid)
 
         plan_path = webapp.project_work_dir(project_id) / webapp.EDIT_PLAN_FILENAME
         self.assertTrue(plan_path.exists())
@@ -1230,23 +1087,6 @@ class DeployContractsTest(unittest.TestCase):
         # audio mais longo que o video estende o ultimo frame em vez de cortar
         self.assertIn("tpad=stop_mode=clone", source)
         self.assertNotIn('"-shortest"', source)
-
-    def test_settings_saves_openrouter_key(self) -> None:
-        with TestClient(webapp.app) as client:
-            uid = db.create_user("editor", "password123")
-            client.post(
-                "/login",
-                data={"username": "editor", "password": "password123"},
-                follow_redirects=False,
-            )
-            resp = client.post(
-                "/settings",
-                data={"openrouter": "sk-or-test-123", "groq_model": ""},
-                follow_redirects=False,
-            )
-            self.assertEqual(resp.status_code, 303)
-        user = db.get_user(uid)
-        self.assertEqual(user["openrouter_key"], "sk-or-test-123")
 
     def test_packager_includes_edit_plan_and_extra_files(self) -> None:
         project = {"name": "Plano"}
@@ -1672,7 +1512,8 @@ class HardeningAndOptimizationTest(unittest.TestCase):
             resp = client.get(f"/projects/{project_id}")
 
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("fallback FFmpeg", resp.text)
+        self.assertIn("master pronto", resp.text)
+        self.assertIn("com narração", resp.text)
 
     def test_kaggle_slugs_are_unique_per_project(self) -> None:
         # dois projetos com o mesmo nome nao podem compartilhar dataset/kernel
@@ -1733,7 +1574,7 @@ class HardeningAndOptimizationTest(unittest.TestCase):
     def test_secret_fields_are_encrypted_and_not_rendered_in_settings(self) -> None:
         with TestClient(webapp.app) as client:
             uid = db.create_user("secret-user", "password123")
-            db.update_api_keys(uid, "pexels-secret-123", "pixabay-secret-456", "groq-secret-789", openrouter="or-secret")
+            db.update_api_keys(uid, "pexels-secret-123", "pixabay-secret-456", "groq-secret-789")
             db.update_kaggle_keys(uid, "kg-user", "kaggle-token-abc")
             client.post(
                 "/login",
@@ -1758,7 +1599,7 @@ class HardeningAndOptimizationTest(unittest.TestCase):
     def test_settings_blank_secret_preserves_existing_value_and_clear_removes_it(self) -> None:
         with TestClient(webapp.app) as client:
             uid = db.create_user("preserve", "password123")
-            db.update_api_keys(uid, "pexels-old", "", "", openrouter="or-old")
+            db.update_api_keys(uid, "pexels-old", "", "")
             client.post(
                 "/login",
                 data={"username": "preserve", "password": "password123"},

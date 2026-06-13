@@ -524,8 +524,8 @@ class VisionJobTest(unittest.TestCase):
     def test_vision_job_persists_and_is_idempotent(self) -> None:
         user_id, project_id = self._seed()
         job_id = db.create_job(user_id, "vision", project_id, "")
-        # sem chave OpenRouter -> provedor heurístico offline
-        webapp.run_vision_job(job_id, project_id, user_id, groq_key="", openrouter_key="")
+        # sem chave de visão -> provedor heurístico offline
+        webapp.run_vision_job(job_id, project_id, user_id, groq_key="")
         job = db.get_job(job_id, user_id)
         self.assertEqual(job["status"], "complete")
         self.assertEqual(job["result"]["analyzed"], 2)
@@ -541,7 +541,7 @@ class VisionJobTest(unittest.TestCase):
 
         # segunda execução não reanalisa nada
         job_id2 = db.create_job(user_id, "vision", project_id, "")
-        webapp.run_vision_job(job_id2, project_id, user_id, groq_key="", openrouter_key="")
+        webapp.run_vision_job(job_id2, project_id, user_id, groq_key="")
         self.assertEqual(db.get_job(job_id2, user_id)["result"]["analyzed"], 0)
 
     def test_search_job_auto_analyzes_vision(self) -> None:
@@ -556,7 +556,7 @@ class VisionJobTest(unittest.TestCase):
         }]
         job_id = db.create_job(user_id, "search_assets", project_id, "")
         with patch.object(webapp.asset_search, "search_scene", return_value=fake_results):
-            webapp.run_search_job(job_id, project_id, user_id, "pk", "xk", openrouter_key="")
+            webapp.run_search_job(job_id, project_id, user_id, "pk", "xk")
         job = db.get_job(job_id, user_id)
         self.assertEqual(job["status"], "complete")
         self.assertGreaterEqual(job["result"]["vision_analyzed"], 1)
@@ -601,7 +601,7 @@ class VisionJobTest(unittest.TestCase):
         user_id, project_id = self._seed()
         # roda a visão para popular scores
         webapp.run_vision_job(db.create_job(user_id, "vision", project_id, ""),
-                              project_id, user_id, groq_key="", openrouter_key="")
+                              project_id, user_id, groq_key="")
         scene_db_id = db.list_scenes(project_id)[0]["id"]
         annotated = webapp.annotate_assets_with_vision(
             db.get_scene(scene_db_id),

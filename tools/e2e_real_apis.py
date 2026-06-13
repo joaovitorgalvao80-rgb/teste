@@ -1,7 +1,7 @@
 """E2E com APIs reais (Groq + Pexels + Pixabay + credencial Kaggle).
 
 Chaves vêm de variáveis de ambiente: TEST_PEXELS_KEY, TEST_PIXABAY_KEY,
-TEST_GROQ_KEY, TEST_OPENROUTER_KEY, TEST_KAGGLE_USER, TEST_KAGGLE_TOKEN.
+TEST_GROQ_KEY, TEST_KAGGLE_USER, TEST_KAGGLE_TOKEN.
 
 Fluxo: registra usuário → salva chaves → cria projeto de 4 cenas →
 mapa visual (Groq real) → busca + auto-seleção (Pexels/Pixabay/Groq reais) →
@@ -33,8 +33,8 @@ import app as app_module  # noqa: E402
 import database as db  # noqa: E402
 
 KEYS = {name: os.environ.get(f"TEST_{name}", "") for name in
-        ["PEXELS_KEY", "PIXABAY_KEY", "GROQ_KEY", "OPENROUTER_KEY", "KAGGLE_USER", "KAGGLE_TOKEN"]}
-missing = [k for k, v in KEYS.items() if not v and k not in ("OPENROUTER_KEY",)]
+        ["PEXELS_KEY", "PIXABAY_KEY", "GROQ_KEY", "KAGGLE_USER", "KAGGLE_TOKEN"]}
+missing = [k for k, v in KEYS.items() if not v]
 if missing:
     raise SystemExit(f"defina as variaveis TEST_{', TEST_'.join(missing)}")
 
@@ -59,7 +59,6 @@ with client:
         "pixabay": KEYS["PIXABAY_KEY"],
         "groq": KEYS["GROQ_KEY"],
         "groq_model": "llama-3.3-70b-versatile",
-        "openrouter": KEYS["OPENROUTER_KEY"],
         "kaggle_username": KEYS["KAGGLE_USER"],
         "kaggle_token": KEYS["KAGGLE_TOKEN"],
     })

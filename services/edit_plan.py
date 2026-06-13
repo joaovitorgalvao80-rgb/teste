@@ -1,19 +1,14 @@
-"""Gera o edit_plan.json para o refinamento HyperFrames.
+"""Gera o edit_plan.json que o render (FFmpeg) executa.
 
-build_edit_plan: deterministico, sem IA - motions alternados, fades nos
-limites de cena, captions do overlay_text. E o fallback garantido.
-
-build_edit_plan_with_llm: tenta o cerebro editorial (OpenRouter via
-services/llm_service) e aplica as decisoes validas por cima do plano
-deterministico. start/duration vem sempre das cenas reais do projeto;
-o LLM nunca altera timing.
+build_edit_plan: deterministico, sem IA - decide b-roll vs avatar por cena
+(decide_broll), motions alternados, fades nos limites de cena e captions
+do overlay_text/narracao. start/duration vem sempre das cenas reais.
 """
 from __future__ import annotations
 
 import math
 import re
 
-from . import llm_service
 from .script_parser import remove_accents
 
 # Frases de apresentacao/saudacao: nessas cenas o apresentador fica na tela
@@ -361,53 +356,4 @@ def build_edit_plan(
             "position": safe_area if safe_area in {"left", "right"} else "right",
             "scale": float(config.get("avatar_safe_width_ratio") or 0.30),
         }
-    return plan
-
-
-def build_edit_plan_with_llm(
-    project: dict,
-    config: dict,
-    scenes: list[dict],
-    openrouter_key: str = "",
-    narration_file: str = "",
-    avatar_file: str = "",
-) -> dict:
-    """Plano deterministico + decisoes editoriais do LLM quando disponiveis.
-
-    O LLM so pode alterar motion, transition_out e caption, e somente com
-    valores que o runner suporta (validados em llm_service). Timing e
-    estrutura ficam sempre com o plano deterministico.
-    """
-    plan = build_edit_plan(
-        project, config, scenes, narration_file=narration_file, avatar_file=avatar_file
-    )
-    if not openrouter_key:
-        return plan
-
-    directives = llm_service.generate_scene_directives(project, scenes, openrouter_key)
-    if not directives:
-        return plan
-
-    last_idx = len(plan["scenes"]) - 1
-    for i, scene in enumerate(plan["scenes"]):
-        directive = directives.get(scene["scene_id"])
-        if not directive:
-            continue
-        if directive["motion"]:
-            scene["motion"] = directive["motion"]
-        if directive["transition_out"]:
-            scene["transition_out"] = directive["transition_out"]
-        scene["caption"] = directive["caption"]
-        # o LLM so pode REMOVER b-roll (virar avatar); nunca CRIAR b-roll, pois
-        # a cena pode nao ter asset buscado (decisao avatar-only tomada na busca).
-        if directive.get("broll") is False:
-            scene["broll"] = False
-        # ultima cena nunca tem transicao de saida
-        if i == last_idx:
-            scene["transition_out"] = "none"
-    enforce_caption_policy(plan["scenes"], scenes, fallback_to_source=False)
-    # mesmo com o LLM decidindo, as regras de avatar/b-roll sao inegociaveis
-    plan["broll_policy"] = enforce_broll_policy(plan["scenes"], scenes)
-    plan["caption_policy"]["selected"] = sum(1 for scene in plan["scenes"] if scene["caption"])
-    plan["editorial"] = "llm"
     return plan

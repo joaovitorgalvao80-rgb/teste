@@ -5,7 +5,7 @@ o video final para a pasta de saida. Chaves vem de variaveis TEST_* (nunca
 hardcoded). Uso interno/manual:
 
     TEST_PEXELS_KEY=... TEST_PIXABAY_KEY=... TEST_GROQ_KEY=... \
-    TEST_OPENROUTER_KEY=... TEST_KAGGLE_USER=... TEST_KAGGLE_TOKEN=... \
+    TEST_KAGGLE_USER=... TEST_KAGGLE_TOKEN=... TEST_COVERR_KEY=... TEST_NVIDIA_KEY=... \
     NARRATION=path.mp3 AVATAR=path.mp4 OUTDIR=path \
     python tools/deliver_video.py
 """
@@ -32,7 +32,7 @@ import app as app_module  # noqa: E402
 import database as db  # noqa: E402
 
 K = {n: os.environ.get(f"TEST_{n}", "") for n in
-     ["PEXELS_KEY", "PIXABAY_KEY", "GROQ_KEY", "OPENROUTER_KEY", "KAGGLE_USER", "KAGGLE_TOKEN",
+     ["PEXELS_KEY", "PIXABAY_KEY", "GROQ_KEY", "KAGGLE_USER", "KAGGLE_TOKEN",
       "COVERR_KEY", "NVIDIA_KEY"]}
 NARRATION = Path(os.environ["NARRATION"])
 AVATAR = Path(os.environ["AVATAR"])
@@ -58,7 +58,7 @@ with client:
     client.post("/register", data={"username": "deliver", "password": "deliverpass1"})
     r = client.post("/settings", data={
         "pexels": K["PEXELS_KEY"], "pixabay": K["PIXABAY_KEY"], "groq": K["GROQ_KEY"],
-        "groq_model": "llama-3.3-70b-versatile", "openrouter": K["OPENROUTER_KEY"],
+        "groq_model": "llama-3.3-70b-versatile",
         "coverr": K.get("COVERR_KEY", ""), "nvidia": K.get("NVIDIA_KEY", ""),
         "kaggle_username": K["KAGGLE_USER"], "kaggle_token": K["KAGGLE_TOKEN"],
     })
@@ -108,7 +108,7 @@ with client:
         for s in empties:
             client.post(f"/scenes/{s['id']}/search-more", data={"media": "all"})
         # re-analisa visao dos novos assets e reavalia
-        app_module.analyze_pending_vision(pid, 1, K["GROQ_KEY"], K["OPENROUTER_KEY"], nvidia_key=K["NVIDIA_KEY"])
+        app_module.analyze_pending_vision(pid, 1, K["GROQ_KEY"], nvidia_key=K["NVIDIA_KEY"])
         assets_by_scene = db.list_assets_for_project(pid)
         still_empty = [s["scene_id"] for s in scenes if not assets_by_scene.get(s["id"])]
         log(f"   ainda sem candidato: {still_empty or 'nenhuma'}")

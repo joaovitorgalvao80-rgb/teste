@@ -21,7 +21,7 @@ from services import scoring
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "plataforma.db"
-SECRET_FIELDS = {"pexels_key", "pixabay_key", "groq_key", "openrouter_key", "kaggle_token", "coverr_key", "nvidia_key"}
+SECRET_FIELDS = {"pexels_key", "pixabay_key", "groq_key", "kaggle_token", "coverr_key", "nvidia_key"}
 SECRET_PREFIX = "enc:v1:"
 DEV_SECRET_KEY = "dev-insecure-key-change-in-production-please"
 
@@ -319,7 +319,6 @@ def update_api_keys(
     pixabay: str,
     groq: str,
     groq_model: str = "",
-    openrouter: str = "",
     coverr: str = "",
     nvidia: str = "",
 ) -> None:
@@ -327,13 +326,12 @@ def update_api_keys(
     try:
         conn.execute(
             "UPDATE users SET pexels_key = ?, pixabay_key = ?, groq_key = ?, groq_model = ?, "
-            "openrouter_key = ?, coverr_key = ?, nvidia_key = ? WHERE id = ?",
+            "coverr_key = ?, nvidia_key = ? WHERE id = ?",
             (
                 protect_secret(pexels),
                 protect_secret(pixabay),
                 protect_secret(groq),
                 groq_model or "llama-3.3-70b-versatile",
-                protect_secret(openrouter),
                 protect_secret(coverr),
                 protect_secret(nvidia),
                 user_id,

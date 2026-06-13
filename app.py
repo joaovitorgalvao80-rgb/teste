@@ -732,7 +732,6 @@ def settings_page(request: Request, saved: str = ""):
         "pexels": mask_secret(user.get("pexels_key", "")),
         "pixabay": mask_secret(user.get("pixabay_key", "")),
         "groq": mask_secret(user.get("groq_key", "")),
-        "openrouter": mask_secret(user.get("openrouter_key", "")),
         "coverr": mask_secret(user.get("coverr_key", "")),
         "nvidia": mask_secret(user.get("nvidia_key", "")),
         "kaggle_token": mask_secret(user.get("kaggle_token", "")),
@@ -779,7 +778,6 @@ def settings_save(
     pixabay: str = Form(""),
     groq: str = Form(""),
     groq_model: str = Form(""),
-    openrouter: str = Form(""),
     coverr: str = Form(""),
     nvidia: str = Form(""),
     kaggle_username: str = Form(""),
@@ -787,7 +785,6 @@ def settings_save(
     clear_pexels: str = Form(""),
     clear_pixabay: str = Form(""),
     clear_groq: str = Form(""),
-    clear_openrouter: str = Form(""),
     clear_coverr: str = Form(""),
     clear_nvidia: str = Form(""),
     clear_kaggle_token: str = Form(""),
@@ -801,7 +798,6 @@ def settings_save(
         secret_from_form(user.get("pixabay_key", ""), pixabay, clear_pixabay),
         secret_from_form(user.get("groq_key", ""), groq, clear_groq),
         groq_model.strip(),
-        openrouter=secret_from_form(user.get("openrouter_key", ""), openrouter, clear_openrouter),
         coverr=secret_from_form(user.get("coverr_key", ""), coverr, clear_coverr),
         nvidia=secret_from_form(user.get("nvidia_key", ""), nvidia, clear_nvidia),
     )
@@ -843,7 +839,6 @@ async def import_keys(
         detected.get("pixabay", user.get("pixabay_key", "")),
         detected.get("groq", user.get("groq_key", "")),
         user.get("groq_model", ""),
-        openrouter=detected.get("openrouter", user.get("openrouter_key", "")),
     )
     if detected.get("kaggle_username") or detected.get("kaggle_token"):
         db.update_kaggle_keys(
@@ -1208,7 +1203,6 @@ def run_search_job(
     pixabay_key: str,
     groq_key: str = "",
     groq_model: str = "",
-    openrouter_key: str = "",
     coverr_key: str = "",
     nvidia_key: str = "",
 ) -> None:
@@ -1260,7 +1254,7 @@ def run_search_job(
         vision_provider = ""
         try:
             db.update_job(job_id, status="running", message="Analisando visao dos assets")
-            analyzed, vision_provider = analyze_pending_vision(project_id, user_id, groq_key, openrouter_key, nvidia_key=nvidia_key)
+            analyzed, vision_provider = analyze_pending_vision(project_id, user_id, groq_key, nvidia_key=nvidia_key)
         except Exception as vexc:  # noqa: BLE001
             logger.warning("Analise de visao automatica falhou (busca mantida): %s", vexc)
 
@@ -1312,7 +1306,6 @@ def search_all(
         user.get("pixabay_key", ""),
         user.get("groq_key", ""),
         user.get("groq_model") or groq_service.DEFAULT_MODEL,
-        user.get("openrouter_key", ""),
         user.get("coverr_key", ""),
         user.get("nvidia_key", ""),
     )
@@ -1504,7 +1497,6 @@ def analyze_pending_vision(
     project_id: int,
     user_id: int,
     groq_key: str = "",
-    openrouter_key: str = "",
     progress: Optional[callable] = None,
     nvidia_key: str = "",
 ) -> tuple[int, str]:
@@ -1535,8 +1527,6 @@ def analyze_pending_vision(
         providers.append(vision.get_provider("groq", api_key=groq_key))
     if nvidia_key:
         providers.append(vision.get_provider("nvidia", api_key=nvidia_key))
-    if openrouter_key:
-        providers.append(vision.get_provider("llm", api_key=openrouter_key))
     heuristic = vision.HeuristicVisionProvider()
     primary_name = providers[0].name if providers else heuristic.name
     # Contact-sheet: a IA julga as TOP-N candidatas de cada cena numa unica
@@ -1583,7 +1573,6 @@ def run_vision_job(
     project_id: int,
     user_id: int,
     groq_key: str,
-    openrouter_key: str,
     nvidia_key: str = "",
 ) -> None:
     """Job dedicado de analise de visao (botao 'Analisar visao')."""
@@ -1594,7 +1583,7 @@ def run_vision_job(
             db.update_job(job_id, status="running", message=f"Analisando assets ({done}/{total})")
 
         analyzed, provider_name = analyze_pending_vision(
-            project_id, user_id, groq_key, openrouter_key, progress=progress, nvidia_key=nvidia_key
+            project_id, user_id, groq_key, progress=progress, nvidia_key=nvidia_key
         )
         if analyzed == 0:
             db.finish_job(job_id, "Nada novo para analisar", {"analyzed": 0, "provider": provider_name})
@@ -1633,7 +1622,6 @@ def analyze_vision_route(
         project_id,
         user["id"],
         user.get("groq_key", ""),
-        user.get("openrouter_key", ""),
         user.get("nvidia_key", ""),
     )
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
@@ -1689,7 +1677,6 @@ def run_research_job(
     pixabay_key: str,
     groq_key: str,
     groq_model: str,
-    openrouter_key: str = "",
     coverr_key: str = "",
     nvidia_key: str = "",
 ) -> None:
@@ -1748,7 +1735,7 @@ def run_research_job(
         # pontua os novos takes antes de escolher, para a selecao usar a visao
         try:
             db.update_job(job_id, status="running", message="Analisando visao dos novos takes")
-            analyze_pending_vision(project_id, user_id, groq_key, openrouter_key, nvidia_key=nvidia_key)
+            analyze_pending_vision(project_id, user_id, groq_key, nvidia_key=nvidia_key)
         except Exception as vexc:  # noqa: BLE001
             logger.warning("Analise de visao na re-busca falhou: %s", vexc)
 
@@ -1794,7 +1781,6 @@ def research_rejected(
         user.get("pixabay_key", ""),
         user.get("groq_key", ""),
         user.get("groq_model") or groq_service.DEFAULT_MODEL,
-        user.get("openrouter_key", ""),
         user.get("coverr_key", ""),
         user.get("nvidia_key", ""),
     )
@@ -1875,11 +1861,18 @@ def preview_page(request: Request, project_id: int):
     chosen_rows = db.list_assets_by_state(project_id, CHOSEN_ASSET_STATES)
     chosen_by_scene = {row["scene_id"]: row for row in chosen_rows}
 
+    # cenas avatar-only nao tem (nem precisam de) take: nao contam como "faltando"
+    broll_map = scene_broll_flags(scenes, config)
     cards = []
-    missing = low_rel = discard = 0
+    missing = low_rel = discard = broll_total = 0
     for scene in scenes:
+        is_broll = broll_map.get(scene["scene_id"], True)
         asset = chosen_by_scene.get(scene["id"])
         annotated = annotate_assets_with_vision(scene, [asset], config)[0] if asset else None
+        if not is_broll:
+            cards.append({"scene": scene, "asset": annotated, "avatar_only": True})
+            continue
+        broll_total += 1
         if not annotated:
             missing += 1
         else:
@@ -1887,7 +1880,7 @@ def preview_page(request: Request, project_id: int):
                 low_rel += 1
             if annotated.get("vision_verdict") == "descartar":
                 discard += 1
-        cards.append({"scene": scene, "asset": annotated})
+        cards.append({"scene": scene, "asset": annotated, "avatar_only": False})
 
     return render_template(
         request,
@@ -1897,8 +1890,8 @@ def preview_page(request: Request, project_id: int):
             "project": project,
             "config": config,
             "cards": cards,
-            "total": len(scenes),
-            "with_take": len(scenes) - missing,
+            "total": broll_total,
+            "with_take": broll_total - missing,
             "missing": missing,
             "low_relevance": low_rel,
             "discard": discard,
@@ -2108,7 +2101,6 @@ def run_package_job(
     job_id: int,
     project_id: int,
     user_id: int,
-    openrouter_key: str,
 ) -> None:
     try:
         db.update_job(job_id, status="running", message="Gerando edit_plan e baixando assets")
@@ -2209,11 +2201,10 @@ def run_package_job(
 
         narration_file = find_input_media(project_id, "narration")
         avatar_file = find_input_media(project_id, "avatar")
-        plan = edit_plan.build_edit_plan_with_llm(
+        plan = edit_plan.build_edit_plan(
             project,
             config,
             scenes,
-            openrouter_key=openrouter_key,
             narration_file=narration_file.name if narration_file else "",
             avatar_file=avatar_file.name if avatar_file else "",
         )
@@ -2283,7 +2274,6 @@ def package(
         job_id,
         project_id,
         user["id"],
-        user.get("openrouter_key", ""),
     )
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
