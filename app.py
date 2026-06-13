@@ -2037,6 +2037,31 @@ def _rebase_scenes(scenes: list[dict]) -> list[dict]:
     return rebased
 
 
+def _slice_avatar(avatar_path: Path, start: float, duration: float, out_path: Path) -> Path:
+    """Corta o avatar no intervalo da parte (sem audio) para servir de base no render.
+
+    No modo longo cada parte e um render avatar-base proprio; o avatar e um video
+    unico do apresentador, entao fatiamos o trecho [start, start+duration] e
+    deixamos mudo (a narracao completa entra so na concatenacao final).
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", "%.3f" % max(start, 0.0),
+        "-i", str(avatar_path),
+        "-t", "%.3f" % max(duration, 0.1),
+        "-an",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+        str(out_path),
+    ]
+    res = subprocess.run(cmd, capture_output=True, timeout=1800)
+    if res.returncode != 0 or not out_path.exists() or out_path.stat().st_size == 0:
+        raise RuntimeError(
+            "falha ao cortar o avatar da parte: " + res.stderr.decode(errors="replace")[:300]
+        )
+    return out_path
+
+
 def run_package_job(
     job_id: int,
     project_id: int,
@@ -2064,12 +2089,20 @@ def run_package_job(
         ]
 
         if config.get("long_mode"):
-            # um ZIP por parte; narracao/avatar entram so na concatenacao local
+            # Um ZIP por parte. Cada parte e um render avatar-base proprio: o
+            # avatar (video unico do apresentador) e FATIADO no intervalo da
+            # parte e vai no ZIP junto com um edit_plan base. A narracao completa
+            # entra so na concatenacao final (as partes ficam mudas).
             parts = db.list_parts(project_id)
             if not parts:
                 raise RuntimeError("Projeto longo sem partes; gere o mapa visual novamente.")
             if parts_dir(project_id).exists():
                 shutil.rmtree(parts_dir(project_id), ignore_errors=True)
+            avatar_input = find_input_media(project_id, "avatar")
+            if avatar_input and not shutil.which("ffmpeg"):
+                raise RuntimeError(
+                    "FFmpeg necessario no servidor para fatiar o avatar por parte (modo longo)."
+                )
             zip_names = []
             for part in parts:
                 idx = part["part_idx"]
@@ -2081,14 +2114,32 @@ def run_package_job(
                 if not part_scenes:
                     db.update_part(project_id, idx, status="error", error="parte sem cenas")
                     continue
+                # avatar fatiado para o intervalo desta parte (vira a base do render)
+                extras: list[Path] = []
+                avatar_name = ""
+                if avatar_input and avatar_input.exists():
+                    p_start = min(float(s.get("start_time") or 0) for s in part_scenes)
+                    p_end = max(float(s.get("end_time") or 0) for s in part_scenes)
+                    slice_out = part_dir(project_id, idx) / "avatar.mp4"
+                    _slice_avatar(avatar_input, p_start, p_end - p_start, slice_out)
+                    extras.append(slice_out)
+                    avatar_name = slice_out.name
+                rebased = _rebase_scenes(part_scenes)
+                part_plan = edit_plan.build_edit_plan(
+                    project, config, rebased,
+                    narration_file="",      # narracao entra so no concat final
+                    avatar_file=avatar_name,  # avatar-base por parte
+                )
                 zip_path = packager.build_zip(
                     project=project,
                     config=config,
-                    scenes=_rebase_scenes(part_scenes),
+                    scenes=rebased,
                     selected_by_scene=selected_by_scene,
                     rejected_assets=rejected_payload,
                     work_dir=part_dir(project_id, idx),
                     max_download_mb=config["max_download_mb"],
+                    edit_plan=part_plan,
+                    extra_files=extras,
                     zip_basename=f"{project['name']}_pt{idx:02d}",
                 )
                 db.update_part(
@@ -2103,7 +2154,7 @@ def run_package_job(
             db.clear_kaggle_job(project_id)
             db.finish_job(
                 job_id,
-                f"{len(zip_names)} pacotes prontos (1 por parte)",
+                f"{len(zip_names)} pacotes prontos (1 por parte, avatar-base)",
                 {"parts": len(zip_names), "zips": zip_names, "scenes": len(scenes)},
             )
             return
