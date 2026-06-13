@@ -1814,6 +1814,8 @@ def finish_review(request: Request, project_id: int, csrf_token: str = Form(""))
     scenes = db.list_scenes(project_id)
     if not scenes:
         raise HTTPException(400, "Projeto sem cenas.")
+    # cenas avatar-only nao precisam de take aceito (nao levam b-roll)
+    broll_required = {sid for sid, on in scene_broll_flags(scenes, project_config(project)).items() if on}
     assets_by_scene = db.list_assets_for_project(project_id)
     chosen_by_scene: dict[int, dict] = {}
     not_accepted: list[str] = []
@@ -1822,12 +1824,12 @@ def finish_review(request: Request, project_id: int, csrf_token: str = Form(""))
         accepted = next((a for a in assets if a["state"] == "accepted"), None)
         if accepted:
             chosen_by_scene[scene["id"]] = accepted
-        else:
+        elif scene["scene_id"] in broll_required:
             not_accepted.append(scene["scene_id"])
     if not_accepted:
         preview = ", ".join(not_accepted[:8])
         suffix = "..." if len(not_accepted) > 8 else ""
-        raise HTTPException(400, f"Aceite um take para todas as cenas antes de concluir. Faltando: {preview}{suffix}")
+        raise HTTPException(400, f"Aceite um take para todas as cenas de b-roll antes de concluir. Faltando: {preview}{suffix}")
 
     rejected_by_scene = {
         scene["id"]: [a for a in assets_by_scene.get(scene["id"], []) if a["state"] == "rejected"]

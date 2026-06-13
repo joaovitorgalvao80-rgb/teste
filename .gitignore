@@ -6,6 +6,7 @@ workdir/
 kaggle_work/
 .smoke_runtime/
 *.log
+tools/_run_*.py
 
 .env
 .claude/
