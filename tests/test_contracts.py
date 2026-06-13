@@ -839,7 +839,7 @@ class DeployContractsTest(unittest.TestCase):
         self.assertIn("has_overlays = result", runner)
         # legendas via FFmpeg drawtext (sem Chrome), ligadas por padrao e com
         # fallback seguro pra base composta se algo falhar
-        self.assertIn('captions_enabled = env_enabled("PRODUCER_HF_ENABLE_CAPTIONS", True)', runner)
+        self.assertIn('captions_enabled = env_enabled("PRODUCER_HF_ENABLE_CAPTIONS", False)', runner)
         self.assertIn("ffmpeg_drawtext_captions(composed_base, edit_plan, duration, master_out)", runner)
         self.assertIn("caption-fallback", runner)
         self.assertIn('"ffmpeg-compose"', runner)

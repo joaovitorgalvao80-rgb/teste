@@ -1483,9 +1483,10 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
 
         render_mode = "ffmpeg-compose"
         png_count = 0
-        # Legendas via FFmpeg drawtext (sem Chrome/HyperFrames): seguro e ligado
-        # por padrao. A antiga rota png-sequence + chroma-key pretava o video.
-        captions_enabled = env_enabled("PRODUCER_HF_ENABLE_CAPTIONS", True)
+        # Legendas via FFmpeg drawtext (sem Chrome/HyperFrames). OFF por padrao
+        # por ora (qualidade visual das legendas ainda nao aprovada); liga com
+        # PRODUCER_HF_ENABLE_CAPTIONS=1. O codigo fica pronto, so nao roda.
+        captions_enabled = env_enabled("PRODUCER_HF_ENABLE_CAPTIONS", False)
 
         def _copy_base_fallback(reason):
             import shutil as _sh
@@ -1596,7 +1597,7 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
                 "output_fps": OUTPUT_FPS,
                 "workers": RENDER_WORKERS,
                 "low_memory": True,
-                "captions_enabled": env_enabled("PRODUCER_HF_ENABLE_CAPTIONS", True),
+                "captions_enabled": env_enabled("PRODUCER_HF_ENABLE_CAPTIONS", False),
             },
         }
     )
