@@ -84,7 +84,7 @@ def normalize_project_config(raw_config: Optional[dict] = None) -> dict:
     cfg["image_fallback"] = _coerce_bool(cfg.get("image_fallback"))
     cfg["long_mode"] = _coerce_bool(cfg.get("long_mode"))
     cfg["part_target_seconds"] = _coerce_int(
-        cfg.get("part_target_seconds"), DEFAULT_CONFIG["part_target_seconds"], 60, 300
+        cfg.get("part_target_seconds"), DEFAULT_CONFIG["part_target_seconds"], 30, 300
     )
     visual_style = str(cfg.get("visual_style") or "").strip()
     cfg["visual_style"] = visual_style or DEFAULT_CONFIG["visual_style"]
