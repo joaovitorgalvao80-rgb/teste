@@ -1204,6 +1204,7 @@ def run_search_job(
                 allow_images=bool(config["image_fallback"]),
                 seen_urls=seen,
                 coverr_key=coverr_key,
+                extra_image_banks=True,
             )
             added = db.add_assets(scene["id"], results)
             total_added += added
@@ -1311,6 +1312,7 @@ def search_more(
         seen_urls=existing,
         media=media,
         coverr_key=user.get("coverr_key", ""),
+        extra_image_banks=True,
     )
     added = db.add_assets(scene_db_id, results)
     if added:
@@ -1699,6 +1701,7 @@ def run_research_job(
                 allow_images=True,
                 seen_urls=existing,
                 coverr_key=coverr_key,
+                extra_image_banks=True,
             )
             added_total += db.add_assets(scene["id"], results)
 

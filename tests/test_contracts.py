@@ -1521,6 +1521,34 @@ class HardeningAndOptimizationTest(unittest.TestCase):
             )
         self.assertEqual(results, [])
 
+    def test_extra_banks_fire_only_when_pool_is_thin(self) -> None:
+        def fake(source, kw, n):
+            return [
+                {"source": source, "download_url": f"https://{source}.example/{kw}/{i}", "keyword": kw}
+                for i in range(n)
+            ]
+        wiki = [{"source": "wikimedia", "download_url": "https://commons/w1.jpg", "keyword": "kw1"}]
+
+        # pool MAINSTREAM farto (>= max(4, per_keyword)) -> bancos extras NAO disparam
+        with patch.object(asset_search, "search_pexels_videos", lambda kw, *a, **k: fake("pexels", kw, 6)), \
+             patch.object(asset_search, "search_pixabay_videos", lambda *a, **k: []), \
+             patch.object(asset_search, "search_wikimedia_images", lambda *a, **k: wiki), \
+             patch.object(asset_search, "search_openverse_images", lambda *a, **k: []):
+            results = asset_search.search_scene(
+                ["kw1"], "pk", "bk", max_w=1920, per_keyword=6, media="video", extra_image_banks=True
+            )
+        self.assertNotIn("wikimedia", {r["source"] for r in results})
+
+        # pool MAINSTREAM fraco -> bancos extras entram como fallback
+        with patch.object(asset_search, "search_pexels_videos", lambda kw, *a, **k: fake("pexels", kw, 1)), \
+             patch.object(asset_search, "search_pixabay_videos", lambda *a, **k: []), \
+             patch.object(asset_search, "search_wikimedia_images", lambda *a, **k: wiki), \
+             patch.object(asset_search, "search_openverse_images", lambda *a, **k: []):
+            results = asset_search.search_scene(
+                ["kw1"], "pk", "bk", max_w=1920, per_keyword=6, media="video", extra_image_banks=True
+            )
+        self.assertIn("wikimedia", {r["source"] for r in results})
+
     def test_package_route_fails_job_on_unexpected_error(self) -> None:
         original_build = webapp.packager.build_zip
         try:

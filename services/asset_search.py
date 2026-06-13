@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -24,6 +25,10 @@ PIXABAY_VIDEO_URL = "https://pixabay.com/api/videos/"
 PIXABAY_IMAGE_URL = "https://pixabay.com/api/"
 COVERR_URL = "https://api.coverr.co/videos"
 COVERR_CDN = "https://cdn.coverr.co/videos"
+OPENVERSE_URL = "https://api.openverse.org/v1/images/"
+WIKIMEDIA_URL = "https://commons.wikimedia.org/w/api.php"
+# Wikimedia exige um User-Agent identificavel (politica de etiqueta da API).
+WIKIMEDIA_UA = "NWRCH-Studio/1.0 (b-roll curation; contact via app)"
 REQUEST_TIMEOUT = 25
 
 # Coverr tem limite apertado (~50 req/hora): serializa e usamos so a keyword
@@ -298,6 +303,104 @@ def search_coverr_videos(keyword: str, key: str, max_w: int, per_page: int = 8) 
     return out
 
 
+def search_openverse_images(keyword: str, max_w: int, per_page: int = 5) -> list[dict]:
+    """Imagens CC do Openverse (agregador: Flickr, museus, etc.). Sem chave
+    (uso anonimo, com rate limit). Fallback dirigido para cenas com pool fraco."""
+    per_page = _bounded_per_page(per_page, default=5, minimum=1)
+    try:
+        resp = requests.get(
+            OPENVERSE_URL,
+            params={"q": keyword, "page_size": per_page, "aspect_ratio": "wide",
+                    "mature": "false", "license_type": "all"},
+            headers={"User-Agent": WIKIMEDIA_UA},
+            timeout=REQUEST_TIMEOUT,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Openverse erro: %s", exc)
+        return []
+    if resp.status_code >= 400:
+        logger.warning("Openverse HTTP %s: %s", resp.status_code, resp.text[:160])
+        return []
+    out = []
+    for hit in resp.json().get("results", []):
+        url = hit.get("url")
+        width, height = int(hit.get("width") or 0), int(hit.get("height") or 0)
+        if not url or (width and height and height > width):
+            continue  # so paisagem
+        out.append(
+            {
+                "source": "openverse",
+                "source_id": str(hit.get("id", "")),
+                "asset_type": "image",
+                "preview_url": hit.get("thumbnail") or url,
+                "download_url": url,
+                "page_url": hit.get("foreign_landing_url", ""),
+                "width": width,
+                "height": height,
+                "duration": 0,
+                "keyword": keyword,
+                "author": hit.get("creator", "") or "",
+                "author_url": hit.get("creator_url", "") or "",
+            }
+        )
+    return out
+
+
+def search_wikimedia_images(keyword: str, max_w: int, per_page: int = 5) -> list[dict]:
+    """Fotos do Wikimedia Commons. Excelente para assuntos factuais/cientificos
+    (especies, fenomenos) que os bancos de stock nao cobrem. Sem chave."""
+    per_page = _bounded_per_page(per_page, default=5, minimum=1)
+    iiurlwidth = max(640, min(int(max_w or 1280), 1920))
+    try:
+        resp = requests.get(
+            WIKIMEDIA_URL,
+            params={
+                "action": "query", "format": "json", "generator": "search",
+                "gsrsearch": keyword, "gsrnamespace": 6, "gsrlimit": per_page,
+                "prop": "imageinfo", "iiprop": "url|size|mime|extmetadata",
+                "iiurlwidth": iiurlwidth,
+            },
+            headers={"User-Agent": WIKIMEDIA_UA},
+            timeout=REQUEST_TIMEOUT,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Wikimedia erro: %s", exc)
+        return []
+    if resp.status_code >= 400:
+        logger.warning("Wikimedia HTTP %s: %s", resp.status_code, resp.text[:160])
+        return []
+    pages = (resp.json().get("query") or {}).get("pages") or {}
+    out = []
+    for page in pages.values():
+        info = (page.get("imageinfo") or [{}])[0]
+        mime = str(info.get("mime") or "")
+        if mime not in {"image/jpeg", "image/png", "image/webp"}:
+            continue  # pula SVG/PDF/audio/video
+        width, height = int(info.get("width") or 0), int(info.get("height") or 0)
+        if width and height and height > width:
+            continue  # so paisagem
+        meta = info.get("extmetadata") or {}
+        artist = str((meta.get("Artist") or {}).get("value") or "")
+        artist = re.sub(r"<[^>]+>", "", artist).strip()[:120]
+        out.append(
+            {
+                "source": "wikimedia",
+                "source_id": str(page.get("pageid", "")),
+                "asset_type": "image",
+                "preview_url": info.get("thumburl") or info.get("url", ""),
+                "download_url": info.get("thumburl") or info.get("url", ""),
+                "page_url": info.get("descriptionurl", ""),
+                "width": int(info.get("thumbwidth") or width),
+                "height": int(info.get("thumbheight") or height),
+                "duration": 0,
+                "keyword": keyword,
+                "author": artist or "Wikimedia Commons",
+                "author_url": info.get("descriptionurl", ""),
+            }
+        )
+    return out
+
+
 def search_scene(
     keywords: list[str],
     pexels_key: str,
@@ -308,16 +411,30 @@ def search_scene(
     seen_urls: Optional[set] = None,
     media: str = "all",
     coverr_key: str = "",
+    extra_image_banks: bool = False,
 ) -> list[dict]:
     """Busca todas as keywords de uma cena e devolve candidatos deduplicados.
 
     media: "video" (so videos), "image" (so imagens) ou "all" (videos + imagens
     se allow_images). Quando media == "image", allow_images e ignorado.
+
+    extra_image_banks: habilita Wikimedia Commons + Openverse como FALLBACK
+    DIRIGIDO — so sao consultados quando o pool mainstream da cena vem fraco
+    (poucos candidatos), para nao inchar o pool nem pressionar a visao.
     """
     seen = seen_urls if seen_urls is not None else set()
     results: list[dict] = []
     want_video = media in {"all", "video"}
     want_image = media == "image" or (media == "all" and allow_images)
+
+    def _absorb(batches: list[list[dict]]) -> None:
+        for batch in batches:
+            for item in batch:
+                url = item["download_url"]
+                if url in seen:
+                    continue
+                seen.add(url)
+                results.append(item)
 
     # Monta as buscas em ordem deterministica e executa em paralelo;
     # cada provedor ja devolve [] em caso de erro/chave ausente.
@@ -333,18 +450,18 @@ def search_scene(
             n = per_keyword if media == "image" else (per_keyword // 2 or 1)
             tasks.append(lambda kw=kw, n=n: search_pexels_images(kw, pexels_key, n))
             tasks.append(lambda kw=kw, n=n: search_pixabay_images(kw, pixabay_key, n))
-    if not tasks:
-        return results
+    if tasks:
+        with ThreadPoolExecutor(max_workers=min(8, len(tasks))) as pool:
+            _absorb(list(pool.map(lambda task: task(), tasks)))
 
-    with ThreadPoolExecutor(max_workers=min(8, len(tasks))) as pool:
-        batches = list(pool.map(lambda task: task(), tasks))
+    # Fallback dirigido: so consulta bancos extras (Wikimedia/Openverse) quando o
+    # pool mainstream veio fraco. Mantem o pool enxuto e a visao dentro do limite.
+    if extra_image_banks and keywords and len(results) < max(4, per_keyword):
+        extra_tasks: list[Callable[[], list[dict]]] = []
+        for kw in keywords[:2]:
+            extra_tasks.append(lambda kw=kw: search_wikimedia_images(kw, max_w, 4))
+            extra_tasks.append(lambda kw=kw: search_openverse_images(kw, max_w, 4))
+        with ThreadPoolExecutor(max_workers=min(4, len(extra_tasks))) as pool:
+            _absorb(list(pool.map(lambda task: task(), extra_tasks)))
 
-    # Dedupe sequencial preserva a mesma ordem do fluxo antigo.
-    for batch in batches:
-        for item in batch:
-            url = item["download_url"]
-            if url in seen:
-                continue
-            seen.add(url)
-            results.append(item)
     return results
