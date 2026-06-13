@@ -11,6 +11,7 @@ o LLM nunca altera timing.
 from __future__ import annotations
 
 import math
+import re
 
 from . import llm_service
 
@@ -50,6 +51,23 @@ def _clean_caption(text: str, max_words: int = 6) -> str:
     if not words:
         return ""
     return " ".join(words[:max_words])[:80].strip(" ,.;:-")
+
+
+def _caption_text(scene: dict) -> str:
+    """Texto da legenda da cena.
+
+    Prefere o overlay_text do brief; quando ele vem vazio (caso comum), deriva
+    uma frase curta da narracao (primeira oracao, ate 5 palavras, MAIUSCULA) —
+    garantindo que o lower-third do HyperFrames sempre tenha o que mostrar.
+    """
+    overlay = _clean_caption(scene.get("overlay_text") or "")
+    if overlay:
+        return overlay
+    narration = str(scene.get("narration") or "").strip()
+    if not narration:
+        return ""
+    clause = re.split(r"[.!?;:,]", narration)[0]
+    return _clean_caption(clause, max_words=5).upper()
 
 
 def _scene_score(scene: dict, idx: int, total: int) -> int:
@@ -221,7 +239,7 @@ def enforce_caption_policy(
             continue
         raw_caption = scene.get("caption")
         if fallback_to_source and not raw_caption:
-            raw_caption = source_scenes[idx].get("overlay_text")
+            raw_caption = _caption_text(source_scenes[idx])
         caption = _clean_caption(raw_caption or "")
         scene["caption"] = caption
         start = float(scene.get("start") or 0)
@@ -250,7 +268,7 @@ def build_edit_plan(
     for i, scene in enumerate(scenes):
         duration = _scene_duration(scene)
         start = round(float(scene.get("start_time") or 0), 3)
-        caption = _clean_caption(scene.get("overlay_text") or "") if i in captioned_indexes else ""
+        caption = _caption_text(scene) if i in captioned_indexes else ""
         cap_start, cap_duration = _caption_timing(start, duration)
         next_scene = scenes[i + 1] if i + 1 < len(scenes) else None
         plan_scenes.append(

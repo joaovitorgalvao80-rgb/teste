@@ -837,8 +837,10 @@ class DeployContractsTest(unittest.TestCase):
         self.assertIn('avatar_mode in ("base", "corner") and avatar', runner)
         self.assertIn("ffmpeg_compose_corner_layers", runner)
         self.assertIn("has_overlays = result", runner)
-        self.assertIn('overlay_enabled = env_enabled("PRODUCER_HF_ENABLE_OVERLAY", False)', runner)
+        # overlay (legendas HyperFrames) ligado por padrao, com fallback seguro
+        self.assertIn('overlay_enabled = env_enabled("PRODUCER_HF_ENABLE_OVERLAY", True)', runner)
         self.assertIn("if has_overlays and overlay_enabled:", runner)
+        self.assertIn("overlay-fallback", runner)
         self.assertIn('"ffmpeg-compose"', runner)
         self.assertIn('elif text_overlay_only:', runner)
 
@@ -877,6 +879,24 @@ class DeployContractsTest(unittest.TestCase):
         self.assertEqual(with_media["avatar"]["src"], "avatar.webm")
         self.assertEqual(with_media["avatar"]["position"], "right")
         self.assertAlmostEqual(with_media["avatar"]["scale"], 0.25)
+
+    def test_caption_falls_back_to_narration_when_overlay_empty(self) -> None:
+        from services import edit_plan as ep
+
+        project = {"name": "V"}
+        config = {"avatar_safe_area": "right", "resolution": "1280x720"}
+        # primeira cena SEMPRE e legendada; sem overlay_text, deriva da narracao
+        scenes = [
+            {"scene_id": "scene_001", "start_time": 0.0, "end_time": 4.0, "duration": 4.0,
+             "overlay_text": "", "narration": "O mosquito da dengue se reproduz na agua parada"},
+            {"scene_id": "scene_002", "start_time": 4.0, "end_time": 8.0, "duration": 4.0,
+             "overlay_text": "", "narration": "Outra cena qualquer aqui"},
+        ]
+        plan = ep.build_edit_plan(project, config, scenes)
+        cap0 = plan["scenes"][0]["caption"]
+        self.assertTrue(cap0)  # nao fica vazia
+        self.assertEqual(cap0, cap0.upper())  # estilo lower-third em maiuscula
+        self.assertLessEqual(len(cap0.split()), 5)
 
     def test_llm_edit_plan_merges_valid_directives_only(self) -> None:
         from services import edit_plan as ep

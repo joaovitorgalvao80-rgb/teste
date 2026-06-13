@@ -1084,6 +1084,13 @@ def write_hyperframes_project(base_video, project_dir, edit_plan=None, narration
             'tl.fromTo("#' + cid + '", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.35,'
             + ' ease: "power2.out", immediateRender: false }, ' + cap_start + ");"
         )
+        # saida animada (slide+fade) -> motion design leve, em vez de corte seco
+        cap_end = s["caption_start"] + max(s["caption_duration"], 0.4)
+        cap_out = "%.3f" % max(cap_end - 0.3, s["caption_start"] + 0.1)
+        tl.append(
+            'tl.to("#' + cid + '", { opacity: 0, y: -10, duration: 0.3,'
+            + ' ease: "power2.in" }, ' + cap_out + ");"
+        )
 
     # avatar de canto (modo legado, sem avatar como base)
     if avatar_name and avatar_mode == "corner" and not text_overlay_only:
@@ -1400,37 +1407,9 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
 
         render_mode = "ffmpeg-compose"
         png_count = 0
-        overlay_enabled = env_enabled("PRODUCER_HF_ENABLE_OVERLAY", False)
+        overlay_enabled = env_enabled("PRODUCER_HF_ENABLE_OVERLAY", True)
 
-        if has_overlays and overlay_enabled:
-            # Etapa 2: HyperFrames renderiza apenas overlays (sem video elements = rapido)
-            hf_start = time.monotonic()
-            assert_node_runtime()
-            env = _make_hyperframes_env()
-            install_chrome_libs()
-            system_chrome = ensure_system_chrome()
-            if system_chrome:
-                env["HYPERFRAMES_BROWSER_PATH"] = system_chrome
-                env["PUPPETEER_EXECUTABLE_PATH"] = system_chrome
-            print("HyperFrames: renderizando overlays (captions/fades apenas)...")
-            try:
-                run_logged(HYPERFRAMES_CMD + ["lint", "."], cwd=project_dir, timeout=600, env=env)
-            except Exception as lint_exc:
-                print("Aviso: lint:", lint_exc)
-            if frames_dir.exists():
-                shutil.rmtree(frames_dir)
-            run_logged(
-                hyperframes_render_args(frames_dir, "png-sequence"),
-                cwd=project_dir, timeout=hyperframes_timeout(duration, "png-sequence"), env=env,
-            )
-            png_count = len(list(frames_dir.rglob("*.png")))
-            mark_timing("hyperframes_overlay_frames", hf_start, png_frames=png_count)
-            # Etapa 3: FFmpeg aplica overlays sobre o base
-            overlay_start = time.monotonic()
-            ffmpeg_overlay_captions(composed_base, frames_dir, master_out)
-            mark_timing("ffmpeg_overlay_captions", overlay_start, png_frames=png_count)
-            render_mode = "ffmpeg+hyperframes-overlay"
-        else:
+        def _copy_base_fallback(reason):
             import shutil as _sh
             copy_start = time.monotonic()
             _sh.copy2(str(composed_base), str(master_out))
@@ -1439,7 +1418,48 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
                 copy_start,
                 overlays_available=has_overlays,
                 overlay_enabled=overlay_enabled,
+                reason=reason,
             )
+
+        if has_overlays and overlay_enabled:
+            # Etapa 2: HyperFrames renderiza apenas overlays (sem video elements = rapido).
+            # Envolto em try/except: se o HyperFrames/Chrome falhar no Kaggle, o
+            # master nunca fica sem video -> cai na base composta pelo FFmpeg.
+            try:
+                hf_start = time.monotonic()
+                assert_node_runtime()
+                env = _make_hyperframes_env()
+                install_chrome_libs()
+                system_chrome = ensure_system_chrome()
+                if system_chrome:
+                    env["HYPERFRAMES_BROWSER_PATH"] = system_chrome
+                    env["PUPPETEER_EXECUTABLE_PATH"] = system_chrome
+                print("HyperFrames: renderizando overlays (captions/fades apenas)...")
+                try:
+                    run_logged(HYPERFRAMES_CMD + ["lint", "."], cwd=project_dir, timeout=600, env=env)
+                except Exception as lint_exc:
+                    print("Aviso: lint:", lint_exc)
+                if frames_dir.exists():
+                    shutil.rmtree(frames_dir)
+                run_logged(
+                    hyperframes_render_args(frames_dir, "png-sequence"),
+                    cwd=project_dir, timeout=hyperframes_timeout(duration, "png-sequence"), env=env,
+                )
+                png_count = len(list(frames_dir.rglob("*.png")))
+                mark_timing("hyperframes_overlay_frames", hf_start, png_frames=png_count)
+                # Etapa 3: FFmpeg aplica overlays sobre o base
+                overlay_start = time.monotonic()
+                ffmpeg_overlay_captions(composed_base, frames_dir, master_out)
+                mark_timing("ffmpeg_overlay_captions", overlay_start, png_frames=png_count)
+                render_mode = "ffmpeg+hyperframes-overlay"
+            except Exception as overlay_exc:
+                print("HyperFrames overlay falhou; usando base composta:", overlay_exc)
+                if master_out.exists():
+                    master_out.unlink()
+                _copy_base_fallback("overlay_failed")
+                render_mode = "ffmpeg-compose (overlay-fallback)"
+        else:
+            _copy_base_fallback("overlay_disabled" if not overlay_enabled else "no_overlays")
 
         if not master_out.exists():
             raise RuntimeError("Pipeline nao gerou " + str(master_out))
@@ -1520,7 +1540,7 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
                 "output_fps": OUTPUT_FPS,
                 "workers": RENDER_WORKERS,
                 "low_memory": True,
-                "overlay_enabled": env_enabled("PRODUCER_HF_ENABLE_OVERLAY", False),
+                "overlay_enabled": env_enabled("PRODUCER_HF_ENABLE_OVERLAY", True),
             },
         }
     )

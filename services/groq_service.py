@@ -122,10 +122,14 @@ def infer_video_theme(scenes: list[dict], groq_key: str, model: str = DEFAULT_MO
                     return theme[:160]
         except Exception as exc:  # noqa: BLE001 - fallback intencional
             logger.warning("infer_video_theme erro, usando fallback: %s", exc)
-    # fallback determinístico: tokens significativos mais frequentes
+    # fallback determinístico: palavras significativas MAIS FREQUENTES.
+    # normalize_tokens devolve um set (sem frequência), então contamos as
+    # ocorrências no texto cru, mantendo só os tokens válidos (sem stopwords).
     from collections import Counter
-    tokens = [t for t in scoring.normalize_tokens(narration, min_len=4) if not t.isdigit()]
-    common = [w for w, _ in Counter(tokens).most_common(6)]
+    valid = {t for t in scoring.normalize_tokens(narration, min_len=4) if not t.isdigit()}
+    words = re.findall(r"[a-z0-9]+", remove_accents(narration).lower())
+    counts = Counter(w for w in words if w in valid)
+    common = [w for w, _ in counts.most_common(6)]
     return (" ".join(common)).strip()
 
 
