@@ -335,6 +335,9 @@ _VISION_PROVIDER = vision.HeuristicVisionProvider()
 # Quantos candidatos por cena a IA de visao analisa de fato (os melhores pela
 # heuristica). Limita custo/tempo do LLM; o resto fica na heuristica offline.
 VISION_LLM_TOP_N = int(os.getenv("VISION_LLM_TOP_N", "8"))
+# Tamanho do contact-sheet: candidatas julgadas numa UNICA chamada (multi-imagem).
+# O llama-4 do Groq lida bem com ~5 imagens/requisicao; acima disso degrada.
+VISION_SHEET_N = int(os.getenv("VISION_SHEET_N", "5"))
 
 # Ordenação da galeria: take escolhido primeiro, depois melhores por visão/relevância.
 _TAKE_STATE_RANK = {"accepted": 3, "selected": 2, "favorite": 1, "pending": 0, "rejected": -1}
@@ -1022,6 +1025,13 @@ def run_generate_map_job(
         base_scenes = parse_script(project["script"], config["scene_duration"])
         if not base_scenes:
             raise RuntimeError("Roteiro vazio ou invalido.")
+        # Tema global: ancora keywords e visao no assunto do video inteiro.
+        video_theme = groq_service.infer_video_theme(
+            base_scenes, groq_key, groq_model or groq_service.DEFAULT_MODEL
+        )
+        if video_theme:
+            config["video_theme"] = video_theme
+            db.set_project_config(project_id, config)
         briefs = groq_service.generate_briefs(
             base_scenes,
             groq_key=groq_key,
@@ -1029,6 +1039,7 @@ def run_generate_map_job(
             avatar_safe_area=config["avatar_safe_area"],
             safe_ratio=config["avatar_safe_width_ratio"],
             model=groq_model or groq_service.DEFAULT_MODEL,
+            video_theme=video_theme,
         )
         brief_by_id = {b["scene_id"]: b for b in briefs}
         merged = []
@@ -1470,6 +1481,11 @@ def analyze_pending_vision(
         raise RuntimeError("Projeto nao encontrado.")
     config = project_config(project)
     scenes = db.list_scenes(project_id)
+    # Tema global do video ancora o julgamento da visao (rejeita fora-do-tema).
+    video_theme = str(config.get("video_theme") or "").strip()
+    if video_theme:
+        for s in scenes:
+            s["video_theme"] = video_theme
     assets_by_scene = db.list_assets_for_project(project_id)
 
     providers: list = []
@@ -1481,8 +1497,11 @@ def analyze_pending_vision(
         providers.append(vision.get_provider("llm", api_key=openrouter_key))
     heuristic = vision.HeuristicVisionProvider()
     primary_name = providers[0].name if providers else heuristic.name
-    # Com mais provedores, vetamos mais candidatos por cena sem estourar limites.
-    per_scene_budget = VISION_LLM_TOP_N * max(1, len(providers))
+    # Contact-sheet: a IA julga as TOP-N candidatas de cada cena numa unica
+    # chamada (multi-imagem), comparando-as entre si dentro do tema do video.
+    # Isso da ~1 chamada/cena (em vez de N) -> cabe no rate limit -> mais cenas
+    # vetadas de verdade. O resto da cena fica na heuristica offline.
+    sheet_n = max(2, VISION_SHEET_N)
 
     total_pending = sum(
         1 for scene in scenes
@@ -1491,30 +1510,22 @@ def analyze_pending_vision(
     if total_pending == 0:
         return 0, primary_name
 
-    # cache de conteudo por (cena, thumbnail): a analise compara a imagem COM a
-    # cena, entao a chave inclui a cena; evita reanalisar thumbnails repetidas.
-    cache: dict[tuple, object] = {}
     analyzed = 0
-    rr = 0  # round-robin entre provedores
+    rr = 0  # round-robin entre provedores, por cena
     for scene in scenes:
         pend = [a for a in assets_by_scene.get(scene["id"], []) if not a.get("vision_analyzed")]
         if not pend:
             continue
         # ranqueia pela RELEVANCIA textual: a IA olha primeiro os mais on-topic.
         ranked = sorted(pend, key=lambda a: scoring.keyword_relevance(scene, a), reverse=True)
-        for i, asset in enumerate(ranked):
-            if providers and i < per_scene_budget:
-                provider = providers[rr % len(providers)]
-                rr += 1
-            else:
-                provider = heuristic
-            thumb = asset.get("preview_url") or asset.get("download_url")
-            ckey = (scene["id"], thumb)
-            res = cache.get(ckey) if thumb else None
-            if res is None:
-                res = provider.analyze(asset, scene, config)
-                if thumb:
-                    cache[ckey] = res
+        top, rest = ranked[:sheet_n], ranked[sheet_n:]
+        provider = providers[rr % len(providers)] if providers else heuristic
+        rr += 1
+        results = provider.analyze_batch(top, scene, config)
+        for asset in rest:  # candidatas fora do sheet: heuristica offline
+            results[asset["id"]] = heuristic.analyze(asset, scene, config)
+        for asset in ranked:
+            res = results.get(asset["id"]) or heuristic.analyze(asset, scene, config)
             db.set_asset_vision(
                 asset["id"], res.score, res.verdict,
                 "; ".join(res.reasons)[:300], res.flags, res.provider,

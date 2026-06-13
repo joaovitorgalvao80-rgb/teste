@@ -11,3 +11,8 @@ kaggle_work/
 .claude/
 .pytest_cache/
 docs/CATALOGO_SKILLS_IA.md
+
+# Midia de teste/entrega (binarios grandes, fora do versionamento)
+vídeo teste/
+*.mp4
+*.mp3

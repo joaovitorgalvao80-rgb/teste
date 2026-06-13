@@ -590,6 +590,19 @@ def set_project_status(project_id: int, status: str) -> None:
         conn.close()
 
 
+def set_project_config(project_id: int, config: dict) -> None:
+    """Persiste o config_json completo do projeto (ex.: grava o video_theme)."""
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE projects SET config_json = ? WHERE id = ?",
+            (json.dumps(config, ensure_ascii=False), project_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def mark_project_needs_package(project_id: int) -> None:
     conn = _connect()
     try:

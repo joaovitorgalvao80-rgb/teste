@@ -76,6 +76,10 @@ class VisionProvider(Protocol):
 
     def analyze(self, asset: dict, scene: dict, config: dict) -> VisionAnalysis: ...
 
+    def analyze_batch(
+        self, assets: list[dict], scene: dict, config: dict
+    ) -> dict[int, VisionAnalysis]: ...
+
 
 class HeuristicVisionProvider:
     """Análise offline a partir de metadados + relevância textual."""
@@ -156,6 +160,9 @@ class HeuristicVisionProvider:
             provider=self.name,
         )
 
+    def analyze_batch(self, assets: list[dict], scene: dict, config: dict) -> dict[int, VisionAnalysis]:
+        return {a["id"]: self.analyze(a, scene, config) for a in assets}
+
 
 class LLMVisionProvider:
     """Análise via modelo de visão (API compatível OpenAI, ex.: OpenRouter).
@@ -183,12 +190,17 @@ class LLMVisionProvider:
         self.name = name or type(self).name
         self._fallback = HeuristicVisionProvider()
 
-    def analyze(self, asset: dict, scene: dict, config: dict) -> VisionAnalysis:
+    @staticmethod
+    def _thumb_for(asset: dict) -> str:
         # Para vídeo usamos o poster (preview_url); o download_url de vídeo é o
         # .mp4 e não serve para um endpoint de visão. Imagens têm os dois.
         thumb = asset.get("preview_url")
         if asset.get("asset_type") != "video":
             thumb = thumb or asset.get("download_url")
+        return thumb or ""
+
+    def analyze(self, asset: dict, scene: dict, config: dict) -> VisionAnalysis:
+        thumb = self._thumb_for(asset)
         if not self.api_key or not thumb:
             # sem chave ou sem thumbnail analisável: heurística
             return self._fallback.analyze(asset, scene, config)
@@ -201,12 +213,25 @@ class LLMVisionProvider:
             return base
 
     @staticmethod
-    def _prompt(scene: dict) -> str:
+    def _theme_block(scene: dict) -> str:
+        theme = str(scene.get("video_theme") or "").strip()
+        if not theme:
+            return ""
+        return (
+            f"The WHOLE video is about: {theme}. Judge every image INSIDE this topic. "
+            "An image that only superficially matches a word but is OFF this topic must "
+            "score under 35 with flag 'fora_do_tema' (e.g. chicken eggs in a video about "
+            "mosquito eggs = fora_do_tema; a city street in a video about farming = fora_do_tema).\n"
+        )
+
+    @classmethod
+    def _prompt(cls, scene: dict) -> str:
         return (
             "You are a strict B-roll curator for a YouTube video. Look at the IMAGE "
             "and judge how well it ACTUALLY DEPICTS the scene below — by its visible "
             "content, not by hope.\n"
-            f'Scene narration (pt-BR): {scene.get("narration", "")}\n'
+            + cls._theme_block(scene)
+            + f'Scene narration (pt-BR): {scene.get("narration", "")}\n'
             f'What the footage should show: {scene.get("visual_goal", "")}\n'
             f'Must NOT show: {", ".join(scene.get("must_not_show") or []) or "-"}\n\n'
             "Scoring (be harsh): 85-100 = clearly shows it; 60-84 = related/works; "
@@ -269,6 +294,80 @@ class LLMVisionProvider:
         resp = self._post_with_retry(payload)
         return self._parse(asset, scene, resp.json()["choices"][0]["message"]["content"])
 
+    # --- contact-sheet: julga varias candidatas numa unica chamada -----------
+    @classmethod
+    def _batch_prompt(cls, scene: dict, n: int) -> str:
+        return (
+            "You are a STRICT B-roll curator for a YouTube video.\n"
+            + cls._theme_block(scene)
+            + f"Below are {n} candidate images for ONE scene, in order (image 1 first).\n"
+            f'Scene narration (pt-BR): {scene.get("narration", "")}\n'
+            f'What the footage should show: {scene.get("visual_goal", "")}\n'
+            f'Must NOT show: {", ".join(scene.get("must_not_show") or []) or "-"}\n\n'
+            "For EACH image judge how well it ACTUALLY depicts the scene WITHIN the video topic. "
+            "Be harsh: 85-100 clearly shows it; 60-84 related/works; 35-59 weak/tangential; "
+            "0-34 off-topic / wrong subject or place (add flag 'fora_do_tema').\n"
+            f'Return JSON only, exactly {n} items in the same order: '
+            '{"items":[{"n":1,"desc":"pt-BR max 8 words","score":0-100,'
+            '"reasons":["pt-BR"],"flags":["irrelevante"|"fora_do_tema"|"baixa_qualidade"|'
+            '"texto_logo"|"pessoa_errada"|"ambiente_errado"|"tom_incompativel"|"conteudo_proibido"]}]}'
+        )
+
+    def _parse_item(self, asset: dict, scene: dict, item: dict) -> VisionAnalysis:
+        score = max(0.0, min(100.0, float(item.get("score") or 0)))
+        flags = [str(f).strip() for f in (item.get("flags") or []) if str(f).strip()]
+        reasons = [str(r).strip() for r in (item.get("reasons") or []) if str(r).strip()]
+        desc = str(item.get("desc") or "").strip()
+        if desc:
+            reasons.insert(0, f"mostra: {desc}")
+        return VisionAnalysis(
+            asset_id=int(asset.get("id") or 0),
+            score=round(score, 1),
+            verdict=_verdict_for(score, flags),
+            relevance=round(scoring.keyword_relevance(scene, asset), 3),
+            reasons=reasons or ["avaliado pela IA de visão (lote)"],
+            flags=flags,
+            provider=self.name,
+        )
+
+    def analyze_batch(self, assets: list[dict], scene: dict, config: dict) -> dict[int, VisionAnalysis]:
+        """Julga ate N candidatas de uma cena numa UNICA chamada (contact-sheet).
+
+        Manda o contexto da cena + o tema do video + as N thumbnails numeradas e
+        recebe um veredito por imagem. Compara as candidatas entre si dentro do
+        tema -> mais rigor e ~1 chamada/cena (em vez de N). Qualquer falha cai no
+        analyze() individual para nao deixar a cena sem analise.
+        """
+        usable = [(a, self._thumb_for(a)) for a in assets]
+        usable = [(a, t) for a, t in usable if t]
+        if not self.api_key or len(usable) < 2:
+            return {a["id"]: self.analyze(a, scene, config) for a in assets}
+        try:
+            content = [{"type": "text", "text": self._batch_prompt(scene, len(usable))}]
+            for _, thumb in usable:
+                content.append({"type": "image_url", "image_url": {"url": thumb}})
+            payload = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": content}],
+                "temperature": 0.2,
+                "response_format": {"type": "json_object"},
+            }
+            resp = self._post_with_retry(payload)
+            data = json.loads(resp.json()["choices"][0]["message"]["content"])
+            items = data.get("items") or []
+            out: dict[int, VisionAnalysis] = {}
+            for idx, (asset, _) in enumerate(usable):
+                item = items[idx] if idx < len(items) else {}
+                out[asset["id"]] = self._parse_item(asset, scene, item)
+            # candidatas sem thumbnail caem na heuristica
+            for asset in assets:
+                if asset["id"] not in out:
+                    out[asset["id"]] = self._fallback.analyze(asset, scene, config)
+            return out
+        except Exception as exc:  # noqa: BLE001 - fallback intencional
+            logger.warning("Vision batch erro, caindo no individual: %s", exc)
+            return {a["id"]: self.analyze(a, scene, config) for a in assets}
+
 
 class NvidiaVisionProvider(LLMVisionProvider):
     """Visão via NVIDIA NIM (build.nvidia.com). Os VLMs da NVIDIA exigem a imagem
@@ -303,6 +402,11 @@ class NvidiaVisionProvider(LLMVisionProvider):
         if start >= 0 and end > start:
             raw = raw[start:end + 1]
         return self._parse(asset, scene, raw)
+
+    def analyze_batch(self, assets: list[dict], scene: dict, config: dict) -> dict[int, VisionAnalysis]:
+        # O endpoint da NVIDIA limita a imagem inline (base64); um contact-sheet
+        # com varias imagens estoura o contexto. Mantemos o lane individual.
+        return {a["id"]: self.analyze(a, scene, config) for a in assets}
 
 
 # Visão pelo Groq (chave que o usuário já tem e que funciona): modelo Llama-4

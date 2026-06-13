@@ -84,15 +84,68 @@ def fallback_scene_brief(scene: dict, style: str, avatar_safe_area: str) -> dict
     }
 
 
-def _build_prompt(scenes: list[dict], style: str, avatar_safe_area: str, safe_ratio: float) -> str:
+def infer_video_theme(scenes: list[dict], groq_key: str, model: str = DEFAULT_MODEL) -> str:
+    """Resume o ASSUNTO do vídeo inteiro numa frase curta em inglês.
+
+    Esse tema vira a âncora de contexto: tanto a geração de keywords quanto a IA
+    de visão usam ele para rejeitar imagens que só batem superficialmente com uma
+    palavra mas estão fora do tema (ex.: ovo de galinha num vídeo sobre dengue).
+    Determinístico no fallback (sem chave/erro): junta os tokens mais frequentes.
+    """
+    narration = " ".join(str(s.get("narration") or "") for s in scenes).strip()
+    if not narration:
+        return ""
+    if groq_key:
+        try:
+            resp = requests.post(
+                GROQ_URL,
+                headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
+                json={
+                    "model": resolve_model(model),
+                    "messages": [{
+                        "role": "user",
+                        "content": (
+                            "Read this Brazilian Portuguese video script and state its MAIN SUBJECT "
+                            "in ONE short English sentence (max 14 words). Be concrete and specific "
+                            "(the actual topic, place, domain), not generic.\n"
+                            'Return JSON only: {"theme": "..."}\n\nSCRIPT:\n' + narration[:6000]
+                        ),
+                    }],
+                    "temperature": 0.2,
+                    "response_format": {"type": "json_object"},
+                },
+                timeout=60,
+            )
+            if resp.status_code < 400:
+                theme = str(json.loads(resp.json()["choices"][0]["message"]["content"]).get("theme") or "").strip()
+                if theme:
+                    return theme[:160]
+        except Exception as exc:  # noqa: BLE001 - fallback intencional
+            logger.warning("infer_video_theme erro, usando fallback: %s", exc)
+    # fallback determinístico: tokens significativos mais frequentes
+    from collections import Counter
+    tokens = [t for t in scoring.normalize_tokens(narration, min_len=4) if not t.isdigit()]
+    common = [w for w, _ in Counter(tokens).most_common(6)]
+    return (" ".join(common)).strip()
+
+
+def _build_prompt(
+    scenes: list[dict], style: str, avatar_safe_area: str, safe_ratio: float, video_theme: str = ""
+) -> str:
     blocks = []
     for s in scenes:
         blocks.append(
             f'{s["scene_id"]} [{s["start_time"]:.1f}s-{s["end_time"]:.1f}s]: {s.get("narration","")}'
         )
     joined = "\n".join(blocks)
+    theme_line = (
+        f"\nThe WHOLE video is about: {video_theme}. Every scene must stay strictly ON THIS topic. "
+        "Never let a keyword drift to a superficially-similar but off-topic subject "
+        "(e.g. if the video is about mosquito eggs, NEVER search generic 'eggs' that returns chicken eggs).\n"
+        if video_theme else ""
+    )
     return f"""You are a senior YouTube editor planning a 100% B-roll video from a Brazilian Portuguese script.
-
+{theme_line}
 For EACH scene below, produce concrete visual search intent for Pexels/Pixabay.
 
 Return ONE JSON object only, shape:
@@ -141,11 +194,13 @@ def generate_briefs(
     avatar_safe_area: str,
     safe_ratio: float = 0.30,
     model: str = DEFAULT_MODEL,
+    video_theme: str = "",
 ) -> list[dict]:
     """Devolve uma lista de briefs (1 por cena), sempre completa.
 
     Usa Groq quando ha chave; cai no fallback heuristico cena a cena para
-    qualquer cena que a IA nao tenha coberto.
+    qualquer cena que a IA nao tenha coberto. `video_theme` ancora as keywords
+    no assunto do video inteiro (evita drift de tema).
     """
     by_id: dict[str, dict] = {}
 
@@ -160,7 +215,7 @@ def generate_briefs(
                     json={
                         "model": resolve_model(model),
                         "messages": [
-                            {"role": "user", "content": _build_prompt(chunk, style, avatar_safe_area, safe_ratio)}
+                            {"role": "user", "content": _build_prompt(chunk, style, avatar_safe_area, safe_ratio, video_theme)}
                         ],
                         "temperature": 0.3,
                         "response_format": {"type": "json_object"},

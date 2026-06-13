@@ -205,6 +205,55 @@ class VisionAdapterTest(unittest.TestCase):
         out = vision.analyze_candidates(scene, assets, CONFIG)
         self.assertEqual(set(out), {1, 2})
 
+    def test_prompt_includes_video_theme_when_present(self) -> None:
+        scene = _scene(video_theme="dengue mosquito control in rural Brazil")
+        prompt = vision.LLMVisionProvider._prompt(scene)
+        self.assertIn("dengue mosquito control", prompt)
+        self.assertIn("fora_do_tema", prompt)
+        # sem tema, nao injeta o bloco
+        self.assertNotIn("WHOLE video is about", vision.LLMVisionProvider._prompt(_scene()))
+
+    def test_analyze_batch_maps_each_candidate_to_its_verdict(self) -> None:
+        from unittest.mock import patch
+        scene = _scene()
+        assets = [
+            _asset(1, "mosquito close up", preview_url="http://x/1.jpg"),
+            _asset(2, "chicken eggs cooking", preview_url="http://x/2.jpg"),
+        ]
+
+        class _R:
+            status_code = 200
+            def raise_for_status(self): pass
+            def json(self):
+                return {"choices": [{"message": {"content": (
+                    '{"items":[{"n":1,"desc":"mosquito na agua","score":90,"flags":[]},'
+                    '{"n":2,"desc":"ovos de galinha","score":12,"flags":["fora_do_tema"]}]}'
+                )}}]}
+
+        provider = vision.LLMVisionProvider(api_key="fake-key")
+        with patch.object(vision.requests, "post", return_value=_R()):
+            out = provider.analyze_batch(assets, scene, CONFIG)
+        self.assertEqual(out[1].verdict, "ótimo")
+        self.assertEqual(out[2].verdict, "descartar")  # fora_do_tema reprova
+        self.assertEqual(out[1].provider, "llm-vision")
+
+    def test_analyze_batch_falls_back_to_individual_under_two_thumbs(self) -> None:
+        scene = _scene()
+        # so 1 candidata com thumbnail -> nao monta sheet, cai no individual (heuristica)
+        assets = [_asset(1, "mosquito close up")]  # sem preview_url
+        provider = vision.LLMVisionProvider(api_key="fake-key")
+        out = provider.analyze_batch(assets, scene, CONFIG)
+        self.assertEqual(set(out), {1})
+        self.assertEqual(out[1].provider, "heuristic")
+
+    def test_infer_video_theme_fallback_without_key(self) -> None:
+        scenes = [
+            {"narration": "O mosquito da dengue se reproduz na agua parada"},
+            {"narration": "Os ovos do mosquito resistem meses ate a chuva"},
+        ]
+        theme = groq_service.infer_video_theme(scenes, groq_key="")
+        self.assertIn("mosquito", theme.lower())
+
 
 class KeywordFallbackTest(unittest.TestCase):
     def test_fallback_strips_portuguese_stopwords(self) -> None:
