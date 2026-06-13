@@ -327,8 +327,40 @@ def require_user(request: Request) -> dict:
     return user
 
 
-def missing_selected_scene_ids(scenes: list[dict], selected_by_scene: dict[int, dict]) -> list[str]:
-    return [s["scene_id"] for s in scenes if s["id"] not in selected_by_scene]
+def scene_broll_flags(scenes: list[dict], config: dict) -> dict:
+    """Mapeia scene_id -> bool (leva b-roll?) usando a MESMA decisao do render.
+
+    No modo longo decide por parte (cada parte e um render avatar-base proprio,
+    com seu primeiro/ultimo quadro no avatar). Permite a busca pular as cenas
+    avatar-only (apresentacao, respiros) em vez de buscar imagem a toa.
+    """
+    out: dict = {}
+    if config.get("long_mode"):
+        by_part: dict = {}
+        for s in scenes:
+            by_part.setdefault(int(s.get("part") or 1), []).append(s)
+        for idx in sorted(by_part):
+            grp = by_part[idx]
+            for s, flag in zip(grp, edit_plan.decide_broll(grp)):
+                out[s["scene_id"]] = flag
+    else:
+        for s, flag in zip(scenes, edit_plan.decide_broll(scenes)):
+            out[s["scene_id"]] = flag
+    return out
+
+
+def missing_selected_scene_ids(
+    scenes: list[dict],
+    selected_by_scene: dict[int, dict],
+    required_scene_ids: Optional[set] = None,
+) -> list[str]:
+    """Cenas (que DEVEM ter b-roll) sem take escolhido. Cenas avatar-only nao
+    entram em required_scene_ids, entao nao sao cobradas."""
+    return [
+        s["scene_id"] for s in scenes
+        if s["id"] not in selected_by_scene
+        and (required_scene_ids is None or s["scene_id"] in required_scene_ids)
+    ]
 
 
 _VISION_PROVIDER = vision.HeuristicVisionProvider()
@@ -1193,7 +1225,13 @@ def run_search_job(
         seen: set = set()
         total_added = 0
         empty_scenes: list[str] = []
+        # decide de antemao quais cenas levam b-roll; nao busca imagem para as
+        # cenas avatar-only (apresentacao/respiros) -> menos API, pool mais limpo.
+        broll_map = scene_broll_flags(scenes, config)
+        broll_count = sum(1 for s in scenes if broll_map.get(s["scene_id"], True))
         for scene in scenes:
+            if not broll_map.get(scene["scene_id"], True):
+                continue
             db.update_job(job_id, status="running", message=f"Buscando {scene['scene_id']}")
             results = asset_search.search_scene(
                 scene["keywords"],
@@ -1210,7 +1248,9 @@ def run_search_job(
             total_added += added
             if added == 0:
                 empty_scenes.append(scene["scene_id"])
-        if total_added <= 0:
+        # so e erro se HAVIA cenas de b-roll para buscar e nada veio (chaves/APIs);
+        # um projeto so de avatar (sem b-roll) legitimamente nao busca nada.
+        if broll_count > 0 and total_added <= 0:
             raise RuntimeError("Busca retornou zero assets. Verifique chaves, keywords ou disponibilidade das APIs.")
 
         # analise de visao automatica: pontua os candidatos recem-buscados para
@@ -2075,12 +2115,18 @@ def run_package_job(
             raise RuntimeError("Projeto nao encontrado.")
         config = project_config(project)
         scenes = db.list_scenes(project_id)
+        # decisao de b-roll (mesma da busca/render): anexa em cada cena para o
+        # edit_plan, o guia e o montador saberem quais cenas sao avatar-only.
+        broll_map = scene_broll_flags(scenes, config)
+        for s in scenes:
+            s["broll"] = bool(broll_map.get(s["scene_id"], True))
+        broll_required = {s["scene_id"] for s in scenes if s["broll"]}
         selected_rows = db.list_assets_by_state(project_id, CHOSEN_ASSET_STATES)
         selected_by_scene = {row["scene_id"]: row for row in selected_rows}
         rejected = db.list_assets_by_state(project_id, ["rejected"])
-        missing = missing_selected_scene_ids(scenes, selected_by_scene)
+        missing = missing_selected_scene_ids(scenes, selected_by_scene, broll_required)
         if not selected_by_scene or missing:
-            raise RuntimeError("Selecao incompleta; escolha um asset para cada cena.")
+            raise RuntimeError("Selecao incompleta; escolha um asset para cada cena de b-roll.")
         project_work = project_work_dir(project_id)
         remove_project_artifacts(project_id)
         rejected_payload = [
@@ -2213,18 +2259,19 @@ def package(
         raise HTTPException(404)
     ensure_project_not_busy(project)
     scenes = db.list_scenes(project_id)
+    broll_required = {sid for sid, on in scene_broll_flags(scenes, project_config(project)).items() if on}
     selected_rows = db.list_assets_by_state(project_id, CHOSEN_ASSET_STATES)
     selected_by_scene = {row["scene_id"]: row for row in selected_rows}
 
     if not selected_by_scene:
         raise HTTPException(400, "Selecione ao menos um asset antes de gerar o pacote.")
-    missing = missing_selected_scene_ids(scenes, selected_by_scene)
+    missing = missing_selected_scene_ids(scenes, selected_by_scene, broll_required)
     if missing:
         preview = ", ".join(missing[:8])
         suffix = "..." if len(missing) > 8 else ""
         raise HTTPException(
             400,
-            f"Selecione um asset para todas as cenas antes de gerar o pacote. Faltando: {preview}{suffix}",
+            f"Selecione um asset para todas as cenas de b-roll antes de gerar o pacote. Faltando: {preview}{suffix}",
         )
     ensure_no_active_job(project_id, "package")
     job_id = db.create_job(user["id"], "package", project_id, "Preparando pacote ZIP")

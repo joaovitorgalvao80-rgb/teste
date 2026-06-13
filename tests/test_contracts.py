@@ -93,27 +93,18 @@ class DeployContractsTest(unittest.TestCase):
         with TestClient(webapp.app) as client:
             user_id = db.create_user("partial", "password123")
             project_id = db.create_project(user_id, "partial project", "script", {})
+            # 3 cenas: a do meio (scene_002) leva b-roll; 1a e ultima sao avatar.
+            # Selecionamos scene_001 e deixamos a de b-roll (scene_002) sem take.
             db.replace_scenes(
                 project_id,
                 [
-                    {
-                        "scene_id": "scene_001",
-                        "idx": 1,
-                        "zone": "GANCHO",
-                        "start_time": 0,
-                        "end_time": 4,
-                        "duration": 4,
-                        "narration": "um",
-                    },
-                    {
-                        "scene_id": "scene_002",
-                        "idx": 2,
-                        "zone": "CTA",
-                        "start_time": 4,
-                        "end_time": 8,
-                        "duration": 4,
-                        "narration": "dois",
-                    },
+                    {"scene_id": "scene_001", "idx": 1, "zone": "GANCHO",
+                     "start_time": 0, "end_time": 4, "duration": 4, "narration": "um"},
+                    {"scene_id": "scene_002", "idx": 2, "zone": "DESENVOLVIMENTO",
+                     "start_time": 4, "end_time": 8, "duration": 4,
+                     "narration": "o mosquito se reproduz na agua parada do quintal"},
+                    {"scene_id": "scene_003", "idx": 3, "zone": "CTA",
+                     "start_time": 8, "end_time": 12, "duration": 4, "narration": "tres"},
                 ],
             )
             first_scene = db.list_scenes(project_id)[0]
@@ -903,6 +894,23 @@ class DeployContractsTest(unittest.TestCase):
         # cenas de conteudo seguem elegiveis a b-roll
         self.assertTrue(ep._is_presentation("Olá, eu sou o Valdir"))
         self.assertFalse(ep._is_presentation("O mosquito se reproduz na agua parada"))
+
+    def test_decide_broll_marks_avatar_only_scenes(self) -> None:
+        from services import edit_plan as ep
+        scenes = [
+            {"scene_id": "s1", "start_time": 0, "end_time": 5, "duration": 5,
+             "narration": "Olá, eu sou o Valdir e hoje vou te ensinar"},
+            {"scene_id": "s2", "start_time": 5, "end_time": 10, "duration": 5,
+             "narration": "o mosquito se reproduz na agua parada do quintal"},
+            {"scene_id": "s3", "start_time": 10, "end_time": 15, "duration": 5,
+             "narration": "os ovos resistem meses ate a primeira chuva"},
+            {"scene_id": "s4", "start_time": 15, "end_time": 20, "duration": 5,
+             "narration": "obrigado por assistir, ate a proxima"},
+        ]
+        flags = ep.decide_broll(scenes)
+        self.assertFalse(flags[0], "1a cena (apresentacao) e avatar-only")
+        self.assertFalse(flags[-1], "ultima cena e avatar-only")
+        self.assertTrue(any(flags[1:3]), "cenas de conteudo levam b-roll")
 
     def test_caption_falls_back_to_narration_when_overlay_empty(self) -> None:
         from services import edit_plan as ep
@@ -1890,9 +1898,15 @@ class HardeningAndOptimizationTest(unittest.TestCase):
         db.init_db()
         uid = db.create_user("no-assets", "password123")
         project_id = db.create_project(uid, "proj", "script", {})
+        # 3 cenas: a do meio leva b-roll (1a/ultima sao avatar e nao sao buscadas)
         db.replace_scenes(
             project_id,
-            [{"scene_id": "scene_001", "idx": 1, "start_time": 0, "end_time": 4, "duration": 4, "keywords": ["x"]}],
+            [
+                {"scene_id": "scene_001", "idx": 1, "start_time": 0, "end_time": 4, "duration": 4, "narration": "um"},
+                {"scene_id": "scene_002", "idx": 2, "start_time": 4, "end_time": 8, "duration": 4,
+                 "keywords": ["x"], "narration": "o mosquito na agua parada do quintal"},
+                {"scene_id": "scene_003", "idx": 3, "start_time": 8, "end_time": 12, "duration": 4, "narration": "tres"},
+            ],
         )
         job_id = db.create_job(uid, "search_assets", project_id, "buscando")
         with patch.object(webapp.asset_search, "search_scene", return_value=[]):
@@ -1907,9 +1921,15 @@ class HardeningAndOptimizationTest(unittest.TestCase):
         db.init_db()
         uid = db.create_user("manual-search", "password123")
         project_id = db.create_project(uid, "proj", "script", {})
+        # cena do meio leva b-roll; e a unica buscada (1a/ultima sao avatar)
         db.replace_scenes(
             project_id,
-            [{"scene_id": "scene_001", "idx": 1, "start_time": 0, "end_time": 4, "duration": 4, "keywords": ["x"]}],
+            [
+                {"scene_id": "scene_001", "idx": 1, "start_time": 0, "end_time": 4, "duration": 4, "narration": "um"},
+                {"scene_id": "scene_002", "idx": 2, "start_time": 4, "end_time": 8, "duration": 4,
+                 "keywords": ["x"], "narration": "o mosquito na agua parada do quintal"},
+                {"scene_id": "scene_003", "idx": 3, "start_time": 8, "end_time": 12, "duration": 4, "narration": "tres"},
+            ],
         )
         job_id = db.create_job(uid, "search_assets", project_id, "buscando")
         fake_asset = {

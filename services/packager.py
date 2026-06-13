@@ -133,6 +133,7 @@ def build_guide(project: dict, config: dict, scenes: list[dict], selected_by_sce
             {
                 "id": scene["scene_id"],
                 "zone": scene.get("zone", ""),
+                "broll": bool(scene.get("broll", True)),
                 "start_time": scene["start_time"],
                 "end_time": scene["end_time"],
                 "duration": scene["duration"],
@@ -349,7 +350,11 @@ def build_zip(
             "nenhum asset selecionado conseguiu ser baixado; "
             "verifique URLs expiradas, limite de MB ou conexao com Pexels/Pixabay"
         )
-    missing = [gscene["id"] for gscene in guide["scenes"] if not gscene.get("selected_asset")]
+    # cenas avatar-only (broll=False) nao tem asset de proposito: nao sao "faltando"
+    missing = [
+        gscene["id"] for gscene in guide["scenes"]
+        if not gscene.get("selected_asset") and gscene.get("broll", True)
+    ]
     if missing:
         preview = ", ".join(missing[:8])
         suffix = "..." if len(missing) > 8 else ""

@@ -261,18 +261,34 @@ def build_clip(
     font_file: Optional[str],
     render_cwd: Path,
 ) -> Optional[Path]:
-    selected = scene.get("selected_asset")
-    if not selected:
-        raise RuntimeError(f"{scene['id']} sem selected_asset")
-    src = resolve_selected_asset(pack_dir, selected)
-    if not src.exists():
-        raise RuntimeError(f"{scene['id']} arquivo nao encontrado: {selected}")
-
     duration = float(scene.get("duration") or 0)
     if duration <= 0:
         duration = max(0.1, float(scene.get("end_time", 0)) - float(scene.get("start_time", 0)))
-
     out = (clips_dir / f"{scene['idx']:03d}_{scene['id']}.mp4").resolve()
+
+    selected = scene.get("selected_asset")
+    if not selected:
+        # Cena avatar-only (sem b-roll): clipe PRETO so para preservar a timeline
+        # da base. Na composicao o avatar cobre esse trecho, entao o preto nunca
+        # aparece. Sem isso, cenas sem asset (nao buscadas de proposito) quebrariam
+        # o montador.
+        cmd = [
+            "ffmpeg", "-y", "-f", "lavfi",
+            "-i", f"color=c=black:s={width}x{height}:r={fps}",
+            "-t", f"{duration:.3f}", "-an",
+            "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+            "-pix_fmt", "yuv420p", str(out),
+        ]
+        log(f"  [clip] {scene['id']} <- (avatar-only, base preta) | {duration:.2f}s")
+        result = run(cmd, timeout=600, cwd=render_cwd)
+        if result.returncode != 0:
+            log(f"  [ERRO ffmpeg] {scene['id']} (placeholder):\n{result.stderr[-800:]}")
+            raise RuntimeError(f"FFmpeg falhou em {scene['id']} (placeholder preto)")
+        return out
+
+    src = resolve_selected_asset(pack_dir, selected)
+    if not src.exists():
+        raise RuntimeError(f"{scene['id']} arquivo nao encontrado: {selected}")
     is_video = src.suffix.lower() in {".mp4", ".mov", ".webm"} and ffprobe_is_video(src)
 
     # cadeia de filtros: cobre 16:9 com crop central + fps + sar

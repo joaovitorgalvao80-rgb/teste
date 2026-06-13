@@ -190,6 +190,16 @@ def _broll_flags(scenes: list[dict]) -> list[bool]:
     return flags
 
 
+def decide_broll(scenes: list[dict]) -> list[bool]:
+    """Decisao FINAL de b-roll por cena (a mesma que o render usa): flags base +
+    regra de apresentacao + guarda de avatar-solo. Determinístico, para a busca
+    saber de antemao quais cenas NAO levam imagem (e nem buscar pra elas)."""
+    flags = _broll_flags(scenes)
+    plan = [{"duration": _scene_duration(s), "broll": flags[i]} for i, s in enumerate(scenes)]
+    enforce_broll_policy(plan, scenes)
+    return [bool(p["broll"]) for p in plan]
+
+
 def _avatar_solo_runs(plan_scenes: list[dict]) -> list[list[int]]:
     runs: list[list[int]] = []
     current: list[int] = []
@@ -317,7 +327,9 @@ def build_edit_plan(
                 "caption": caption,
                 "caption_start": cap_start if caption else None,
                 "caption_duration": cap_duration if caption else 0,
-                "broll": broll_flags[i],
+                # usa a decisao ja tomada na cena (busca/mapa) quando presente,
+                # garantindo que render e busca concordem; senao recalcula.
+                "broll": bool(scene["broll"]) if scene.get("broll") is not None else broll_flags[i],
             }
         )
     broll_policy = enforce_broll_policy(plan_scenes, scenes)
@@ -386,8 +398,10 @@ def build_edit_plan_with_llm(
         if directive["transition_out"]:
             scene["transition_out"] = directive["transition_out"]
         scene["caption"] = directive["caption"]
-        if directive.get("broll") is not None:
-            scene["broll"] = directive["broll"]
+        # o LLM so pode REMOVER b-roll (virar avatar); nunca CRIAR b-roll, pois
+        # a cena pode nao ter asset buscado (decisao avatar-only tomada na busca).
+        if directive.get("broll") is False:
+            scene["broll"] = False
         # ultima cena nunca tem transicao de saida
         if i == last_idx:
             scene["transition_out"] = "none"
