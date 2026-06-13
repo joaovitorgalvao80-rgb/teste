@@ -1828,6 +1828,57 @@ class HardeningAndOptimizationTest(unittest.TestCase):
         self.assertEqual(repeat.status_code, 303)
         self.assertEqual(repeat.headers["location"], f"/projects/{project_id}")
 
+    def test_finish_review_does_not_require_avatar_only_assets(self) -> None:
+        with TestClient(webapp.app) as client:
+            uid = db.create_user("review-avatar-only", "password123")
+            project_id = db.create_project(uid, "review avatar-only project", "script", {})
+            db.replace_scenes(
+                project_id,
+                [
+                    {
+                        "scene_id": "scene_001",
+                        "idx": 1,
+                        "zone": "ABERTURA",
+                        "start_time": 0,
+                        "end_time": 4,
+                        "duration": 4,
+                        "narration": "Ola, eu sou o Valdir e hoje vou te mostrar",
+                    },
+                    {
+                        "scene_id": "scene_002",
+                        "idx": 2,
+                        "zone": "CONTEUDO",
+                        "start_time": 4,
+                        "end_time": 10,
+                        "duration": 6,
+                        "narration": "O mosquito da dengue se reproduz na agua parada do quintal",
+                    },
+                    {
+                        "scene_id": "scene_003",
+                        "idx": 3,
+                        "zone": "ENCERRAMENTO",
+                        "start_time": 10,
+                        "end_time": 14,
+                        "duration": 4,
+                        "narration": "Obrigado por assistir, ate a proxima",
+                    },
+                ],
+            )
+            scenes = db.list_scenes(project_id)
+            db.add_assets(scenes[1]["id"], [{"source": "pexels", "download_url": "https://example.com/a.mp4"}])
+            asset = db.list_assets(scenes[1]["id"])[0]
+            db.set_asset_state(asset["id"], "accepted")
+            client.post(
+                "/login",
+                data={"username": "review-avatar-only", "password": "password123"},
+                follow_redirects=False,
+            )
+
+            resp = client.post(f"/projects/{project_id}/finish-review", follow_redirects=False)
+
+        self.assertEqual(resp.status_code, 303)
+        self.assertEqual(db.get_project(project_id, uid)["status"], "reviewed")
+
     def test_reviewed_asset_change_reopens_review_and_invalidates_report(self) -> None:
         with TestClient(webapp.app) as client:
             uid, project_id, scene = self._project_with_scene("review-dirty")
