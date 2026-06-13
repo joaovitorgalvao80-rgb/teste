@@ -304,6 +304,31 @@ def _load_runner_func(name: str):
     return ns[name]
 
 
+class DrawtextCaptionTest(unittest.TestCase):
+    """Legendas lower-third via FFmpeg drawtext (substitui o overlay chroma-key)."""
+
+    def test_build_drawtext_filter_lowerthird(self) -> None:
+        import pathlib
+        import tempfile
+        fn = _load_runner_func("build_drawtext_filter")
+        fn.__globals__["Path"] = pathlib.Path  # a func usa Path(cap_dir)
+        d = tempfile.mkdtemp()
+        caps = [("CONTROLE DE MOSQUITO", 0.55, 2.4), ("OVOS MORRENDO", 14.25, 1.728)]
+
+        vf = fn(caps, "left", 1280, 720, "/font.ttf", d)
+        self.assertEqual(vf.count("drawtext="), 2)
+        self.assertIn("textfile=", vf)               # texto vai em arquivo (sem escape)
+        self.assertNotIn("colorkey", vf)             # nao depende mais de chroma-key
+        self.assertIn("enable='between(t,0.55,2.95)'", vf)
+        self.assertIn("alpha='", vf)                 # fade in/out
+        self.assertEqual(
+            (pathlib.Path(d) / "cap_0.txt").read_text(encoding="utf-8"), "CONTROLE DE MOSQUITO"
+        )
+        # alinhamento muda com a posicao da legenda
+        self.assertIn("x=64", vf)
+        self.assertIn("x=w-tw-", fn(caps, "right", 1280, 720, "/font.ttf", d))
+
+
 class BrollWindowTest(unittest.TestCase):
     """O avatar nao pode 'piscar' entre b-rolls consecutivos (pausas da narracao)."""
 

@@ -977,6 +977,82 @@ def ffmpeg_overlay_captions(base_video, frames_dir, out_path):
     )
 
 
+def _caption_fontfile():
+    for p in [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+    ]:
+        if os.path.exists(p):
+            return p
+    return ""
+
+
+def build_drawtext_filter(caps, pos, width, height, fontfile, cap_dir):
+    # Monta o filtergraph de legendas (lower-third) com fade in/out via alpha.
+    # Usa textfile= para nao precisar escapar o texto da legenda.
+    fontsize = max(28, int(height * 0.05))
+    margin = max(48, int(width * 0.05))
+    bottom = max(60, int(height * 0.10))
+    parts = []
+    for i, (text, start, dur) in enumerate(caps):
+        tf = Path(cap_dir) / ("cap_%d.txt" % i)
+        tf.write_text(text, encoding="utf-8")
+        end = start + dur
+        fin = min(0.30, dur / 3.0)
+        fout = min(0.30, dur / 3.0)
+        x = ("w-tw-%d" % margin) if pos == "right" else ("%d" % margin)
+        y = "h-th-%d" % bottom
+        alpha = ("if(lt(t,%g),(t-%g)/%g,if(gt(t,%g),(%g-t)/%g,1))"
+                 % (start + fin, start, fin, end - fout, end, fout))
+        parts.append(
+            "drawtext=fontfile=" + fontfile + ":textfile=" + str(tf)
+            + ":fontsize=" + str(fontsize)
+            + ":fontcolor=white:box=1:boxcolor=0x050708@0.72:boxborderw=16:line_spacing=6"
+            + ":x=" + x + ":y=" + y
+            + ":alpha='" + alpha + "':enable='between(t," + ("%g" % start) + "," + ("%g" % end) + ")'"
+        )
+    return ",".join(parts)
+
+
+def ffmpeg_drawtext_captions(base_video, edit_plan, duration, out_path):
+    # Legendas/lower-thirds desenhadas direto pelo FFmpeg (sem Chrome/HyperFrames):
+    # deterministico, rapido e sem risco de pretar o video. Substitui o overlay
+    # por png-sequence + chroma-key, que era fragil.
+    scenes = plan_scenes_within(edit_plan, duration)
+    caps = []
+    for s in scenes:
+        if s.get("caption"):
+            caps.append((str(s["caption"]), float(s.get("caption_start") or 0),
+                         max(float(s.get("caption_duration") or 0), 0.4)))
+    if not caps:
+        raise RuntimeError("sem captions para drawtext")
+    fontfile = _caption_fontfile()
+    if not fontfile:
+        raise RuntimeError("nenhuma fonte TTF encontrada para drawtext")
+    pos = "right" if str((edit_plan or {}).get("caption_position") or "left") == "right" else "left"
+    width, height = plan_resolution(edit_plan)
+    cap_dir = Path("/kaggle/working/captions")
+    if cap_dir.exists():
+        shutil.rmtree(cap_dir)
+    cap_dir.mkdir(parents=True, exist_ok=True)
+    vf = build_drawtext_filter(caps, pos, width, height, fontfile, cap_dir)
+    if out_path.exists():
+        out_path.unlink()
+    run_logged(
+        [
+            "ffmpeg", "-y", "-i", str(base_video),
+            "-vf", vf,
+            "-an",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+            str(out_path),
+        ],
+        timeout=1800,
+    )
+    print("Legendas drawtext aplicadas: %d" % len(caps))
+
+
 def write_hyperframes_project(base_video, project_dir, edit_plan=None, narration=None, avatar=None, avatar_mode="none", text_overlay_only=False):
     import html as html_escape_mod
     if project_dir.exists():
@@ -1407,10 +1483,9 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
 
         render_mode = "ffmpeg-compose"
         png_count = 0
-        # Overlay (legendas HyperFrames) ainda OFF por padrao: a etapa de
-        # chroma-key dos PNGs pretava o video inteiro (PNG sem fundo ciano).
-        # Precisa de fix de transparencia validado antes de religar.
-        overlay_enabled = env_enabled("PRODUCER_HF_ENABLE_OVERLAY", False)
+        # Legendas via FFmpeg drawtext (sem Chrome/HyperFrames): seguro e ligado
+        # por padrao. A antiga rota png-sequence + chroma-key pretava o video.
+        captions_enabled = env_enabled("PRODUCER_HF_ENABLE_CAPTIONS", True)
 
         def _copy_base_fallback(reason):
             import shutil as _sh
@@ -1420,49 +1495,27 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
                 "copy_composed_base",
                 copy_start,
                 overlays_available=has_overlays,
-                overlay_enabled=overlay_enabled,
+                captions_enabled=captions_enabled,
                 reason=reason,
             )
 
-        if has_overlays and overlay_enabled:
-            # Etapa 2: HyperFrames renderiza apenas overlays (sem video elements = rapido).
-            # Envolto em try/except: se o HyperFrames/Chrome falhar no Kaggle, o
-            # master nunca fica sem video -> cai na base composta pelo FFmpeg.
+        cap_scenes = [s for s in plan_scenes_within(edit_plan, duration) if s.get("caption")]
+        if cap_scenes and captions_enabled:
+            # Envolto em try/except: qualquer falha do drawtext cai na base
+            # composta, entao o master nunca fica sem video.
             try:
-                hf_start = time.monotonic()
-                assert_node_runtime()
-                env = _make_hyperframes_env()
-                install_chrome_libs()
-                system_chrome = ensure_system_chrome()
-                if system_chrome:
-                    env["HYPERFRAMES_BROWSER_PATH"] = system_chrome
-                    env["PUPPETEER_EXECUTABLE_PATH"] = system_chrome
-                print("HyperFrames: renderizando overlays (captions/fades apenas)...")
-                try:
-                    run_logged(HYPERFRAMES_CMD + ["lint", "."], cwd=project_dir, timeout=600, env=env)
-                except Exception as lint_exc:
-                    print("Aviso: lint:", lint_exc)
-                if frames_dir.exists():
-                    shutil.rmtree(frames_dir)
-                run_logged(
-                    hyperframes_render_args(frames_dir, "png-sequence"),
-                    cwd=project_dir, timeout=hyperframes_timeout(duration, "png-sequence"), env=env,
-                )
-                png_count = len(list(frames_dir.rglob("*.png")))
-                mark_timing("hyperframes_overlay_frames", hf_start, png_frames=png_count)
-                # Etapa 3: FFmpeg aplica overlays sobre o base
-                overlay_start = time.monotonic()
-                ffmpeg_overlay_captions(composed_base, frames_dir, master_out)
-                mark_timing("ffmpeg_overlay_captions", overlay_start, png_frames=png_count)
-                render_mode = "ffmpeg+hyperframes-overlay"
-            except Exception as overlay_exc:
-                print("HyperFrames overlay falhou; usando base composta:", overlay_exc)
+                cap_start = time.monotonic()
+                ffmpeg_drawtext_captions(composed_base, edit_plan, duration, master_out)
+                mark_timing("ffmpeg_drawtext_captions", cap_start, captions=len(cap_scenes))
+                render_mode = "ffmpeg-compose+drawtext"
+            except Exception as cap_exc:
+                print("Legendas drawtext falharam; usando base composta:", cap_exc)
                 if master_out.exists():
                     master_out.unlink()
-                _copy_base_fallback("overlay_failed")
-                render_mode = "ffmpeg-compose (overlay-fallback)"
+                _copy_base_fallback("captions_failed")
+                render_mode = "ffmpeg-compose (caption-fallback)"
         else:
-            _copy_base_fallback("overlay_disabled" if not overlay_enabled else "no_overlays")
+            _copy_base_fallback("captions_disabled" if not captions_enabled else "no_captions")
 
         if not master_out.exists():
             raise RuntimeError("Pipeline nao gerou " + str(master_out))
@@ -1543,7 +1596,7 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
                 "output_fps": OUTPUT_FPS,
                 "workers": RENDER_WORKERS,
                 "low_memory": True,
-                "overlay_enabled": env_enabled("PRODUCER_HF_ENABLE_OVERLAY", False),
+                "captions_enabled": env_enabled("PRODUCER_HF_ENABLE_CAPTIONS", True),
             },
         }
     )

@@ -777,7 +777,7 @@ class DeployContractsTest(unittest.TestCase):
         self.assertIn("RENDER_WORKERS = 1", kaggle_service._RUNNER)
         self.assertIn('"PRODUCER_LOW_MEMORY_MODE"', kaggle_service._RUNNER)
         self.assertIn('"PRODUCER_HF_RENDER_MODE"', kaggle_service._RUNNER)
-        self.assertIn('"PRODUCER_HF_ENABLE_OVERLAY"', kaggle_service._RUNNER)
+        self.assertIn('"PRODUCER_HF_ENABLE_CAPTIONS"', kaggle_service._RUNNER)
         self.assertIn('"PRODUCER_HF_MP4_TIMEOUT_SECONDS"', kaggle_service._RUNNER)
         self.assertIn('"PRODUCER_HF_PNG_TIMEOUT_SECONDS"', kaggle_service._RUNNER)
         self.assertIn('"PRODUCER_PLAYER_READY_TIMEOUT_MS"', kaggle_service._RUNNER)
@@ -837,11 +837,11 @@ class DeployContractsTest(unittest.TestCase):
         self.assertIn('avatar_mode in ("base", "corner") and avatar', runner)
         self.assertIn("ffmpeg_compose_corner_layers", runner)
         self.assertIn("has_overlays = result", runner)
-        # overlay (legendas HyperFrames) OFF por padrao (fix de transparencia
-        # pendente), mas o caminho tem fallback seguro pra base composta
-        self.assertIn('overlay_enabled = env_enabled("PRODUCER_HF_ENABLE_OVERLAY", False)', runner)
-        self.assertIn("if has_overlays and overlay_enabled:", runner)
-        self.assertIn("overlay-fallback", runner)
+        # legendas via FFmpeg drawtext (sem Chrome), ligadas por padrao e com
+        # fallback seguro pra base composta se algo falhar
+        self.assertIn('captions_enabled = env_enabled("PRODUCER_HF_ENABLE_CAPTIONS", True)', runner)
+        self.assertIn("ffmpeg_drawtext_captions(composed_base, edit_plan, duration, master_out)", runner)
+        self.assertIn("caption-fallback", runner)
         self.assertIn('"ffmpeg-compose"', runner)
         self.assertIn('elif text_overlay_only:', runner)
 
