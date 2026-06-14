@@ -334,10 +334,15 @@
       {% if jobs %}
         <ul class="job-list" id="job-list">
           {% for job in jobs %}
-            <li class="job-{{ job.status }}">
+            <li class="job-{{ job.status }}" data-job-id="{{ job.id }}">
               <b>{{ job.kind }}</b>
               <span>{{ job.status }}</span>
               <small>{{ job.message or job.error or '-' }}</small>
+              {% if job.status in active_job_statuses %}
+                <button class="btn btn-danger btn-sm" type="button" onclick="cancelJob({{ job.id }}, this)">Parar</button>
+              {% else %}
+                <i></i>
+              {% endif %}
             </li>
           {% endfor %}
         </ul>

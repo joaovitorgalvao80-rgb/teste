@@ -357,6 +357,74 @@ function renderJob(job) {
   txt.textContent = `${job.kind}: ${job.status} - ${msg}`;
 }
 
+const ACTIVE_JOB_STATUSES = ["queued", "running", "canceling"];
+
+function jobText(job) {
+  return job.message || job.error || "-";
+}
+
+function renderProjectJobs(jobs) {
+  const list = document.getElementById("job-list");
+  if (!list) return;
+  list.innerHTML = "";
+  (jobs || []).forEach((job) => {
+    const item = document.createElement("li");
+    item.className = "job-" + job.status;
+    item.dataset.jobId = String(job.id);
+
+    const kind = document.createElement("b");
+    kind.textContent = job.kind || "";
+    const status = document.createElement("span");
+    status.textContent = job.status || "";
+    const message = document.createElement("small");
+    message.textContent = jobText(job);
+    item.append(kind, status, message);
+
+    if (ACTIVE_JOB_STATUSES.includes(job.status)) {
+      const stop = document.createElement("button");
+      stop.className = "btn btn-danger btn-sm";
+      stop.type = "button";
+      stop.textContent = job.status === "canceling" ? "Parando..." : "Parar";
+      stop.disabled = job.status === "canceling";
+      stop.addEventListener("click", () => cancelJob(job.id, stop));
+      item.appendChild(stop);
+    } else {
+      item.appendChild(document.createElement("i"));
+    }
+    list.appendChild(item);
+  });
+}
+
+async function refreshProjectJobs(projectId) {
+  const data = await getJSON(`/projects/${projectId}/jobs`);
+  renderProjectJobs(data.jobs || []);
+  return data;
+}
+
+async function cancelJob(jobId, btn) {
+  if (!confirm("Parar esta tarefa?")) return;
+  const old = btn ? btn.textContent : "";
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Parando...";
+  }
+  try {
+    const job = await postForm(`/jobs/${jobId}/cancel`, {});
+    const projectId = window.NWRCH_PROJECT_ID;
+    if (projectId) {
+      await refreshProjectJobs(projectId);
+      startProjectJobRefresh(true);
+    }
+    notify((job.message || "Cancelamento solicitado") + ".", "info");
+  } catch (e) {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = old || "Parar";
+    }
+    notify("Falha ao parar tarefa: " + e.message, "error");
+  }
+}
+
 function startJobPolling(jobId, projectId, btn) {
   let failures = 0;
   const tick = async () => {
@@ -368,6 +436,11 @@ function startJobPolling(jobId, projectId, btn) {
         const kernelUrl = job.result && job.result.kernel_url;
         renderKaggleState({ status: "queued", url: kernelUrl });
         startKagglePolling(projectId);
+        return;
+      }
+      if (job.status === "canceled") {
+        renderKaggleState({ status: "cancelacknowledged" });
+        if (btn) btn.disabled = false;
         return;
       }
       if (job.status === "error") {
@@ -567,36 +640,44 @@ document.addEventListener("DOMContentLoaded", () => {
       startKagglePolling(pid);
     }
   }
-  startProjectJobRefresh();
+  const hasActiveJob = document.querySelector(".job-queued, .job-running, .job-canceling");
+  startProjectJobRefresh(Boolean(hasActiveJob));
 });
 
 const BUSY_PROJECT_STATUSES = ["mapping", "searching", "packaging", "auto_selecting", "researching"];
+let _projectJobRefreshActive = false;
 
-function startProjectJobRefresh() {
+function startProjectJobRefresh(force) {
   const projectId = window.NWRCH_PROJECT_ID;
   if (!projectId) return;
+  if (_projectJobRefreshActive) return;
   const statusBadge = document.querySelector(".head-status .badge");
   const current = statusBadge ? (statusBadge.dataset.status || statusBadge.textContent).trim().toLowerCase() : "";
-  if (!BUSY_PROJECT_STATUSES.includes(current)) return;
+  if (!force && !BUSY_PROJECT_STATUSES.includes(current)) return;
+  _projectJobRefreshActive = true;
   let ticks = 0;
   let failures = 0;
   const poll = async () => {
     ticks += 1;
     try {
-      const data = await getJSON(`/projects/${projectId}/jobs`);
+      const data = await refreshProjectJobs(projectId);
       failures = 0;
       const status = (data.project_status || "").toLowerCase();
-      const activeJob = (data.jobs || []).find((job) => ["queued", "running"].includes(job.status));
+      const activeJob = (data.jobs || []).find((job) => ACTIVE_JOB_STATUSES.includes(job.status));
       if (statusBadge && activeJob && activeJob.message) {
         statusBadge.textContent = activeJob.message;
       }
       const busy = BUSY_PROJECT_STATUSES.includes(status);
-      if (!busy || ticks > 240) location.reload();
+      const hasActiveJob = (data.jobs || []).some((job) => ACTIVE_JOB_STATUSES.includes(job.status));
+      if ((!busy && !hasActiveJob) || ticks > 240) location.reload();
       else setTimeout(poll, 2500);
     } catch (e) {
       failures += 1;
       if (failures < 5) setTimeout(poll, 4000);
-      else notify("Perdi contato com o servidor durante o processamento: " + e.message, "error");
+      else {
+        _projectJobRefreshActive = false;
+        notify("Perdi contato com o servidor durante o processamento: " + e.message, "error");
+      }
     }
   };
   setTimeout(poll, 1200);

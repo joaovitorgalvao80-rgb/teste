@@ -544,24 +544,29 @@ class VisionJobTest(unittest.TestCase):
         webapp.run_vision_job(job_id2, project_id, user_id, groq_key="")
         self.assertEqual(db.get_job(job_id2, user_id)["result"]["analyzed"], 0)
 
-    def test_search_job_auto_analyzes_vision(self) -> None:
+    def test_search_job_does_not_auto_analyze_vision(self) -> None:
         from unittest.mock import patch
 
         user_id, project_id = self._seed()
-        # a busca em si é mockada; queremos provar que a visão roda ao fim dela
+        # a busca NAO deve disparar a visao automaticamente: ela e acao sob
+        # demanda (/analyze-vision). A busca so popula os candidatos.
         fake_results = [{
             "source": "pexels", "source_id": "9", "asset_type": "video",
             "download_url": "http://x/9.mp4", "keyword": "mosquito close up",
             "width": 1920, "height": 1080, "duration": 8,
         }]
         job_id = db.create_job(user_id, "search_assets", project_id, "")
-        with patch.object(webapp.asset_search, "search_scene", return_value=fake_results):
-            webapp.run_search_job(job_id, project_id, user_id, "pk", "xk")
+        with patch.object(webapp.asset_search, "search_scene", return_value=fake_results), \
+                patch.object(webapp, "analyze_pending_vision") as spy_vision:
+            webapp.run_search_job(job_id, project_id, user_id, "pk", "xk", groq_key="gk")
         job = db.get_job(job_id, user_id)
         self.assertEqual(job["status"], "complete")
-        self.assertGreaterEqual(job["result"]["vision_analyzed"], 1)
+        # a visao nunca e chamada na busca
+        spy_vision.assert_not_called()
+        self.assertEqual(job["result"]["vision_analyzed"], 0)
         scene_db_id = db.list_scenes(project_id)[0]["id"]
-        self.assertTrue(all(a["vision_analyzed"] == 1 for a in db.list_assets(scene_db_id)))
+        # candidatos buscados ficam sem analise de visao ate o usuario pedir
+        self.assertTrue(all(a["vision_analyzed"] == 0 for a in db.list_assets(scene_db_id)))
 
     def test_keyword_roles_persist_round_trip(self) -> None:
         user_id = db.create_user("ru", "p")

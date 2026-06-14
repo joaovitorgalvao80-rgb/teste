@@ -1451,7 +1451,7 @@ label.check input { width: auto; accent-color: var(--paper-0); }
 
 .job-list li {
   display: grid;
-  grid-template-columns: 130px 94px 1fr;
+  grid-template-columns: 130px 94px minmax(0, 1fr) auto;
   gap: var(--sp-3);
   align-items: center;
   padding: var(--sp-2) var(--sp-3);
@@ -1467,8 +1467,10 @@ label.check input { width: auto; accent-color: var(--paper-0); }
 .job-list small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--paper-2); }
 
 .job-complete span { color: var(--ok); }
-.job-running span, .job-queued span { color: var(--warn); }
+.job-running span, .job-queued span, .job-canceling span { color: var(--warn); }
 .job-error span { color: var(--err); }
+.job-canceled span { color: var(--paper-2); }
+.job-list li > i { min-width: 1px; }
 
 .empty-grid { padding: var(--sp-4) 0; color: var(--paper-2); font-size: var(--fs-small); }
 

@@ -390,6 +390,9 @@ def clear_kaggle_job(project_id: int) -> None:
 # ----------------------------------------------------------------------------
 # Jobs / operational history
 # ----------------------------------------------------------------------------
+ACTIVE_JOB_STATUSES = {"queued", "running", "canceling"}
+
+
 def _job_to_dict(row: sqlite3.Row) -> dict:
     data = dict(row)
     try:
@@ -471,6 +474,38 @@ def fail_job(job_id: int, message: str, error: str = "") -> None:
     update_job(job_id, status="error", message=message, error=error or message, finished=True)
 
 
+def request_job_cancel(job_id: int, user_id: int) -> Optional[dict]:
+    now = time.time()
+    conn = _connect()
+    try:
+        conn.execute(
+            """UPDATE jobs
+               SET status = 'canceling',
+                   message = 'Parando tarefa...',
+                   detail = 'Cancelamento solicitado pelo usuario',
+                   updated_at = ?
+               WHERE id = ? AND user_id = ? AND status IN ('queued', 'running')""",
+            (now, job_id, user_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return get_job(job_id, user_id)
+
+
+def cancel_job(job_id: int, message: str = "Tarefa cancelada") -> None:
+    update_job(job_id, status="canceled", message=message, error="", finished=True)
+
+
+def is_job_canceling(job_id: int) -> bool:
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT status FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        return bool(row and row["status"] == "canceling")
+    finally:
+        conn.close()
+
+
 def fail_stale_jobs() -> int:
     """Marca como erro jobs 'queued'/'running' herdados de um processo anterior.
 
@@ -486,7 +521,7 @@ def fail_stale_jobs() -> int:
                    message = 'Interrompido por reinicio do servidor',
                    error = 'Interrompido por reinicio do servidor',
                    updated_at = ?, finished_at = ?
-               WHERE status IN ('queued', 'running')""",
+               WHERE status IN ('queued', 'running', 'canceling')""",
             (now, now),
         )
         conn.commit()
@@ -503,8 +538,9 @@ def has_active_job(project_id: int, kind: Optional[str] = None) -> bool:
     """
     conn = _connect()
     try:
-        sql = "SELECT 1 FROM jobs WHERE project_id = ? AND status IN ('queued','running')"
-        params: list[Any] = [project_id]
+        placeholders = ",".join("?" for _ in ACTIVE_JOB_STATUSES)
+        sql = f"SELECT 1 FROM jobs WHERE project_id = ? AND status IN ({placeholders})"
+        params: list[Any] = [project_id, *sorted(ACTIVE_JOB_STATUSES)]
         if kind:
             sql += " AND kind = ?"
             params.append(kind)

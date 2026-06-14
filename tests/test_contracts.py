@@ -146,6 +146,27 @@ class DeployContractsTest(unittest.TestCase):
         self.assertIn("Saúde do projeto", resp.text)
         self.assertIn("Jobs recentes", resp.text)
         self.assertIn("package", resp.text)
+        self.assertIn("Parar", resp.text)
+
+    def test_job_cancel_marks_only_the_requested_active_job(self) -> None:
+        with TestClient(webapp.app) as client:
+            user_id = db.create_user("cancel-owner", "password123")
+            project_id = db.create_project(user_id, "cancel project", "script", {})
+            first_job = db.create_job(user_id, "search_assets", project_id, "Busca na fila")
+            second_job = db.create_job(user_id, "package", project_id, "Pacote na fila")
+            client.post(
+                "/login",
+                data={"username": "cancel-owner", "password": "password123"},
+                follow_redirects=False,
+            )
+            resp = client.post(f"/jobs/{first_job}/cancel")
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.json()
+        self.assertEqual(payload["id"], first_job)
+        self.assertEqual(payload["status"], "canceling")
+        self.assertEqual(db.get_job(first_job, user_id)["status"], "canceling")
+        self.assertEqual(db.get_job(second_job, user_id)["status"], "queued")
 
     @staticmethod
     def _tiny_png(width: int = 1024, height: int = 576) -> bytes:

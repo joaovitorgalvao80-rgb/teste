@@ -78,7 +78,7 @@ INVITE_CODE = os.getenv("INVITE_CODE", "").strip()
 STATIC_VERSION = (
     os.getenv("STATIC_VERSION")
     or os.getenv("RAILWAY_GIT_COMMIT_SHA", "")[:12]
-    or "20260611-curation-fix"
+    or "20260613-job-cancel"
 )
 
 
@@ -101,6 +101,7 @@ def _require_secret() -> str:
 DATA_DIR = Path(os.getenv("DATA_DIR", str(ROOT / "data")))
 WORK_DIR = DATA_DIR / "work"
 BUSY_PROJECT_STATUSES = {"mapping", "searching", "packaging", "auto_selecting", "researching"}
+ACTIVE_JOB_STATUSES = db.ACTIVE_JOB_STATUSES
 # estados de take que contam como "escolhido" para pacote/diagnostico
 CHOSEN_ASSET_STATES = ["selected", "accepted"]
 
@@ -474,6 +475,39 @@ def ensure_no_active_job(project_id: int, kind: str) -> None:
         raise HTTPException(409, "Esse passo ja esta em execucao. Aguarde o job atual terminar.")
 
 
+class JobCanceled(RuntimeError):
+    pass
+
+
+def check_job_canceled(job_id: int) -> None:
+    if db.is_job_canceling(job_id):
+        raise JobCanceled("Tarefa cancelada pelo usuario.")
+
+
+def cancel_project_status(project_id: int, kind: str) -> Optional[str]:
+    if kind == "generate_map":
+        return "mapped" if db.list_scenes(project_id) else "created"
+    if kind == "search_assets":
+        has_assets = any(db.list_assets_for_project(project_id).values())
+        return "searched" if has_assets else ("mapped" if db.list_scenes(project_id) else "created")
+    if kind == "auto_select":
+        return "reviewing" if any(db.list_assets_for_project(project_id).values()) else "searched"
+    if kind == "research_rejected":
+        return "reviewing"
+    if kind == "package":
+        return "reviewed" if curation_report_path(project_id).exists() else "reviewing"
+    return None
+
+
+def finish_canceled_job(job_id: int, project_id: int, kind: str, message: str = "Tarefa cancelada") -> None:
+    next_status = cancel_project_status(project_id, kind)
+    if next_status:
+        db.set_project_status(project_id, next_status)
+    if kind == "kaggle_send":
+        db.update_kaggle_status(project_id, "cancelacknowledged")
+    db.cancel_job(job_id, message)
+
+
 def expected_duration_from_scenes(scenes: list[dict]) -> float:
     return max((float(s.get("end_time") or 0) for s in scenes), default=0.0)
 
@@ -624,19 +658,23 @@ def run_kaggle_send_job(
     zip_path_str: str,
 ) -> None:
     try:
+        check_job_canceled(job_id)
         db.update_job(job_id, status="running", message="Enviando dataset para o Kaggle")
         # copia o ZIP antes do upload: mark_project_dirty pode apagar o original
         # se o usuario alterar o projeto enquanto o envio roda em background
         with tempfile.TemporaryDirectory(prefix="nwrch_kaggle_") as tmp:
             zip_path = Path(tmp) / Path(zip_path_str).name
             shutil.copy2(zip_path_str, zip_path)
+            check_job_canceled(job_id)
             ds_slug = kaggle_service.upload_dataset(zip_path, project_name, username, token, project_id=project_id)
+        check_job_canceled(job_id)
         db.update_job(
             job_id,
             status="running",
             message="Criando kernel de render no Kaggle",
             result={"dataset_slug": ds_slug},
         )
+        check_job_canceled(job_id)
         k_slug, push_out = kaggle_service.push_kernel(ds_slug, project_name, username, token, project_id=project_id)
         db.update_kaggle_job(project_id, ds_slug, k_slug, "queued")
         kernel_url = f"https://www.kaggle.com/code/{username}/{k_slug}"
@@ -650,6 +688,8 @@ def run_kaggle_send_job(
                 "push_out": push_out,
             },
         )
+    except JobCanceled:
+        finish_canceled_job(job_id, project_id, "kaggle_send")
     except Exception as exc:  # noqa: BLE001 - registra falha operacional para a UI
         db.update_kaggle_status(project_id, "error")
         db.fail_job(job_id, "Falha ao enviar para o Kaggle", str(exc))
@@ -1002,7 +1042,7 @@ def project_page(request: Request, project_id: int):
     avatar_file = find_input_media(project_id, "avatar")
     outputs = local_output_videos(project_work)
     jobs = db.list_project_jobs(project_id, user["id"])
-    active_jobs = [job for job in jobs if job.get("status") in {"queued", "running"}]
+    active_jobs = [job for job in jobs if job.get("status") in ACTIVE_JOB_STATUSES]
     return render_template(
         request,
         "project.html",
@@ -1024,9 +1064,10 @@ def project_page(request: Request, project_id: int):
             "diagnostics": project_diagnostics_snapshot(project_id, scenes, selected_count),
             "jobs": jobs,
             "active_jobs": active_jobs,
+            "active_job_statuses": ACTIVE_JOB_STATUSES,
             "parts": db.list_parts(project_id) if config.get("long_mode") else [],
             "parts_job_active": any(
-                j["kind"] in {"kaggle_parts", "concat_parts"} and j["status"] in {"queued", "running"}
+                j["kind"] in {"kaggle_parts", "concat_parts"} and j["status"] in ACTIVE_JOB_STATUSES
                 for j in jobs
             ),
         },
@@ -1044,6 +1085,7 @@ def run_generate_map_job(
     groq_model: str,
 ) -> None:
     try:
+        check_job_canceled(job_id)
         db.update_job(job_id, status="running", message="Gerando mapa visual")
         project = db.get_project(project_id, user_id)
         if not project:
@@ -1052,10 +1094,12 @@ def run_generate_map_job(
         base_scenes = parse_script(project["script"], config["scene_duration"])
         if not base_scenes:
             raise RuntimeError("Roteiro vazio ou invalido.")
+        check_job_canceled(job_id)
         # Tema global: ancora keywords e visao no assunto do video inteiro.
         video_theme = groq_service.infer_video_theme(
             base_scenes, groq_key, groq_model or groq_service.DEFAULT_MODEL
         )
+        check_job_canceled(job_id)
         if video_theme:
             config["video_theme"] = video_theme
             db.set_project_config(project_id, config)
@@ -1068,6 +1112,7 @@ def run_generate_map_job(
             model=groq_model or groq_service.DEFAULT_MODEL,
             video_theme=video_theme,
         )
+        check_job_canceled(job_id)
         brief_by_id = {b["scene_id"]: b for b in briefs}
         merged = []
         for s in base_scenes:
@@ -1105,6 +1150,8 @@ def run_generate_map_job(
         db.set_project_status(project_id, "mapped")
         db.clear_kaggle_job(project_id)
         db.finish_job(job_id, "Mapa visual pronto", {"scenes": len(merged), "parts": total_parts})
+    except JobCanceled:
+        finish_canceled_job(job_id, project_id, "generate_map")
     except Exception as exc:  # noqa: BLE001
         db.set_project_status(project_id, "map_failed")
         db.fail_job(job_id, "Falha ao gerar mapa visual", str(exc))
@@ -1174,6 +1221,7 @@ def auto_select_for_project(
 
     def progress(done: int, total: int) -> None:
         if job_id:
+            check_job_canceled(job_id)
             db.update_job(job_id, status="running", message=f"Selecionando takes ({done}/{total} cenas)")
 
     choices = auto_select.choose_best_takes(
@@ -1184,6 +1232,8 @@ def auto_select_for_project(
         model=groq_model or groq_service.DEFAULT_MODEL,
         progress=progress,
     )
+    if job_id:
+        check_job_canceled(job_id)
     for scene_db_id, (asset_id, score, reason) in choices.items():
         db.set_asset_state(
             asset_id,
@@ -1207,6 +1257,7 @@ def run_search_job(
     nvidia_key: str = "",
 ) -> None:
     try:
+        check_job_canceled(job_id)
         db.update_job(job_id, status="running", message="Buscando assets")
         project = db.get_project(project_id, user_id)
         if not project:
@@ -1224,6 +1275,7 @@ def run_search_job(
         broll_map = scene_broll_flags(scenes, config)
         broll_count = sum(1 for s in scenes if broll_map.get(s["scene_id"], True))
         for scene in scenes:
+            check_job_canceled(job_id)
             if not broll_map.get(scene["scene_id"], True):
                 continue
             db.update_job(job_id, status="running", message=f"Buscando {scene['scene_id']}")
@@ -1238,6 +1290,7 @@ def run_search_job(
                 coverr_key=coverr_key,
                 extra_image_banks=True,
             )
+            check_job_canceled(job_id)
             added = db.add_assets(scene["id"], results)
             total_added += added
             if added == 0:
@@ -1247,17 +1300,16 @@ def run_search_job(
         if broll_count > 0 and total_added <= 0:
             raise RuntimeError("Busca retornou zero assets. Verifique chaves, keywords ou disponibilidade das APIs.")
 
-        # analise de visao automatica: pontua os candidatos recem-buscados para
-        # alimentar a galeria e a selecao automatica. Best-effort: uma falha aqui
-        # nunca derruba a busca em si (que ja teve sucesso).
+        # A analise de visao NAO roda automaticamente na busca: e uma acao sob
+        # demanda (botao "Analisar visao" -> /analyze-vision). Em projetos longos,
+        # analisar centenas de assets dentro da busca era inviavel (lento + rate
+        # limit das APIs de visao). A galeria ja mostra a relevancia por keyword
+        # (heuristica) para a curadoria manual; a visao fica disponivel para quando
+        # o usuario quiser refinar a selecao ou automatizar videos menores.
         analyzed = 0
         vision_provider = ""
-        try:
-            db.update_job(job_id, status="running", message="Analisando visao dos assets")
-            analyzed, vision_provider = analyze_pending_vision(project_id, user_id, groq_key, nvidia_key=nvidia_key)
-        except Exception as vexc:  # noqa: BLE001
-            logger.warning("Analise de visao automatica falhou (busca mantida): %s", vexc)
 
+        check_job_canceled(job_id)
         db.set_project_status(project_id, "searched")
         db.finish_job(
             job_id,
@@ -1271,6 +1323,8 @@ def run_search_job(
                 "vision_provider": vision_provider,
             },
         )
+    except JobCanceled:
+        finish_canceled_job(job_id, project_id, "search_assets")
     except Exception as exc:  # noqa: BLE001
         db.set_project_status(project_id, "search_failed")
         db.fail_job(job_id, "Falha na busca de assets", str(exc))
@@ -1439,6 +1493,7 @@ def run_auto_select_job(
     groq_model: str,
 ) -> None:
     try:
+        check_job_canceled(job_id)
         db.update_job(job_id, status="running", message="Selecionando os melhores takes")
         project = db.get_project(project_id, user_id)
         if not project:
@@ -1452,6 +1507,8 @@ def run_auto_select_job(
             raise RuntimeError("Nenhuma cena com candidatos pendentes para selecionar.")
         db.set_project_status(project_id, "reviewing")
         db.finish_job(job_id, f"{chosen} takes selecionados", {"auto_selected": chosen})
+    except JobCanceled:
+        finish_canceled_job(job_id, project_id, "auto_select")
     except Exception as exc:  # noqa: BLE001
         db.set_project_status(project_id, "searched")
         db.fail_job(job_id, "Falha na selecao automatica", str(exc))
@@ -1577,9 +1634,11 @@ def run_vision_job(
 ) -> None:
     """Job dedicado de analise de visao (botao 'Analisar visao')."""
     try:
+        check_job_canceled(job_id)
         db.update_job(job_id, status="running", message="Analisando assets")
 
         def progress(done: int, total: int) -> None:
+            check_job_canceled(job_id)
             db.update_job(job_id, status="running", message=f"Analisando assets ({done}/{total})")
 
         analyzed, provider_name = analyze_pending_vision(
@@ -1593,6 +1652,8 @@ def run_vision_job(
             f"{analyzed} assets analisados ({provider_name})",
             {"analyzed": analyzed, "provider": provider_name},
         )
+    except JobCanceled:
+        finish_canceled_job(job_id, project_id, "vision")
     except Exception as exc:  # noqa: BLE001
         db.fail_job(job_id, "Falha na analise de visao", str(exc))
 
@@ -1681,6 +1742,7 @@ def run_research_job(
     nvidia_key: str = "",
 ) -> None:
     try:
+        check_job_canceled(job_id)
         db.update_job(job_id, status="running", message="Buscando takes melhores para as cenas rejeitadas")
         project = db.get_project(project_id, user_id)
         if not project:
@@ -1701,6 +1763,7 @@ def run_research_job(
 
         added_total = 0
         for i, scene in enumerate(targets, 1):
+            check_job_canceled(job_id)
             db.update_job(
                 job_id, status="running",
                 message=f"Nova busca {i}/{len(targets)}: {scene['scene_id']}",
@@ -1713,6 +1776,7 @@ def run_research_job(
                 config["visual_style"],
                 model=groq_model or groq_service.DEFAULT_MODEL,
             )
+            check_job_canceled(job_id)
             if kws:
                 roles = scoring.assign_roles(kws)
                 db.update_scene_keywords(scene["id"], kws, roles)
@@ -1730,15 +1794,26 @@ def run_research_job(
                 coverr_key=coverr_key,
                 extra_image_banks=True,
             )
+            check_job_canceled(job_id)
             added_total += db.add_assets(scene["id"], results)
 
         # pontua os novos takes antes de escolher, para a selecao usar a visao
         try:
+            check_job_canceled(job_id)
             db.update_job(job_id, status="running", message="Analisando visao dos novos takes")
-            analyze_pending_vision(project_id, user_id, groq_key, nvidia_key=nvidia_key)
+            analyze_pending_vision(
+                project_id,
+                user_id,
+                groq_key,
+                progress=lambda done, total: check_job_canceled(job_id),
+                nvidia_key=nvidia_key,
+            )
         except Exception as vexc:  # noqa: BLE001
+            if isinstance(vexc, JobCanceled):
+                raise
             logger.warning("Analise de visao na re-busca falhou: %s", vexc)
 
+        check_job_canceled(job_id)
         db.update_job(job_id, status="running", message="Selecionando os melhores takes novos")
         chosen = auto_select_for_project(
             project_id, config, groq_key, groq_model, job_id=job_id, review_round=new_round,
@@ -1749,6 +1824,8 @@ def run_research_job(
             f"Rodada {new_round}: {added_total} takes novos, {chosen} selecionados",
             {"round": new_round, "added": added_total, "selected": chosen, "scenes": len(targets)},
         )
+    except JobCanceled:
+        finish_canceled_job(job_id, project_id, "research_rejected")
     except Exception as exc:  # noqa: BLE001
         db.set_project_status(project_id, "reviewing")
         db.fail_job(job_id, "Falha na nova busca", str(exc))
@@ -2103,6 +2180,7 @@ def run_package_job(
     user_id: int,
 ) -> None:
     try:
+        check_job_canceled(job_id)
         db.update_job(job_id, status="running", message="Gerando edit_plan e baixando assets")
         project = db.get_project(project_id, user_id)
         if not project:
@@ -2146,6 +2224,7 @@ def run_package_job(
             zip_names = []
             for part in parts:
                 idx = part["part_idx"]
+                check_job_canceled(job_id)
                 db.update_job(
                     job_id, status="running",
                     message=f"Baixando assets da parte {idx}/{len(parts)}",
@@ -2164,6 +2243,7 @@ def run_package_job(
                     _slice_avatar(avatar_input, p_start, p_end - p_start, slice_out)
                     extras.append(slice_out)
                     avatar_name = slice_out.name
+                check_job_canceled(job_id)
                 rebased = _rebase_scenes(part_scenes)
                 part_plan = edit_plan.build_edit_plan(
                     project, config, rebased,
@@ -2182,6 +2262,7 @@ def run_package_job(
                     extra_files=extras,
                     zip_basename=f"{project['name']}_pt{idx:02d}",
                 )
+                check_job_canceled(job_id)
                 db.update_part(
                     project_id, idx,
                     zip_name=zip_path.name, status="zipped",
@@ -2201,6 +2282,7 @@ def run_package_job(
 
         narration_file = find_input_media(project_id, "narration")
         avatar_file = find_input_media(project_id, "avatar")
+        check_job_canceled(job_id)
         plan = edit_plan.build_edit_plan(
             project,
             config,
@@ -2213,6 +2295,7 @@ def run_package_job(
         (project_work / EDIT_PLAN_FILENAME).write_text(
             json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        check_job_canceled(job_id)
         zip_path = packager.build_zip(
             project=project,
             config=config,
@@ -2226,6 +2309,7 @@ def run_package_job(
                 f for f in (narration_file, avatar_file, curation_report_path(project_id)) if f and f.exists()
             ],
         )
+        check_job_canceled(job_id)
         db.set_project_status(project_id, "packaged")
         db.clear_kaggle_job(project_id)
         db.finish_job(
@@ -2233,6 +2317,8 @@ def run_package_job(
             "Pacote ZIP pronto",
             {"zip": zip_path.name, "scenes": len(scenes), "selected": len(selected_by_scene)},
         )
+    except JobCanceled:
+        finish_canceled_job(job_id, project_id, "package")
     except Exception as exc:  # noqa: BLE001
         db.set_project_status(project_id, "package_failed")
         db.fail_job(job_id, "Falha ao gerar pacote", str(exc))
@@ -2368,6 +2454,7 @@ def run_kaggle_parts_job(
     token: str,
 ) -> None:
     try:
+        check_job_canceled(job_id)
         project = db.get_project(project_id, user_id)
         if not project:
             raise RuntimeError("Projeto nao encontrado.")
@@ -2378,6 +2465,7 @@ def run_kaggle_parts_job(
         ok = 0
         failed = 0
         for part in parts:
+            check_job_canceled(job_id)
             idx = part["part_idx"]
             label = f"parte {idx}/{total}"
             try:
@@ -2387,9 +2475,12 @@ def run_kaggle_parts_job(
                 db.update_job(job_id, status="running", message=f"Enviando {label} ao Kaggle")
                 db.update_part(project_id, idx, status="uploading", error="")
                 part_name = f"{project['name']} pt{idx:02d}"
+                check_job_canceled(job_id)
                 ds_slug = kaggle_service.upload_dataset(zip_path, part_name, username, token, project_id=project_id)
+                check_job_canceled(job_id)
                 k_slug, _push = kaggle_service.push_kernel(ds_slug, part_name, username, token, project_id=project_id)
                 db.update_part(project_id, idx, dataset_slug=ds_slug, kernel_slug=k_slug, status="running")
+                check_job_canceled(job_id)
 
                 db.update_job(job_id, status="running", message=f"Renderizando {label} no Kaggle")
                 deadline = time.time() + PART_RENDER_TIMEOUT
@@ -2397,6 +2488,7 @@ def run_kaggle_parts_job(
                 error_detail = ""
                 while time.time() < deadline:
                     time.sleep(PART_POLL_SECONDS)
+                    check_job_canceled(job_id)
                     info = kaggle_service.get_status(k_slug, username, token)
                     status = (info.get("status") or "").lower()
                     if status == "complete":
@@ -2417,6 +2509,9 @@ def run_kaggle_parts_job(
                     raise RuntimeError(error_detail or "kernel falhou")
                 else:
                     raise RuntimeError(f"timeout apos {PART_RENDER_TIMEOUT // 60} min")
+            except JobCanceled:
+                db.update_part(project_id, idx, status="error", error="render interrompido pelo usuario")
+                raise
             except Exception as part_exc:  # noqa: BLE001 - uma parte falhar nao derruba as demais
                 logger.warning("parte %s falhou: %s", idx, part_exc)
                 db.update_part(project_id, idx, status="error", error=str(part_exc)[:400])
@@ -2431,6 +2526,8 @@ def run_kaggle_parts_job(
             )
         else:
             raise RuntimeError("Nenhuma parte renderizou com sucesso.")
+    except JobCanceled:
+        finish_canceled_job(job_id, project_id, "kaggle_parts")
     except Exception as exc:  # noqa: BLE001
         db.fail_job(job_id, "Falha no render por partes", str(exc))
 
@@ -2476,6 +2573,7 @@ def render_parts(
 
 def run_concat_job(job_id: int, project_id: int, user_id: int) -> None:
     try:
+        check_job_canceled(job_id)
         db.update_job(job_id, status="running", message="Concatenando partes")
         project = db.get_project(project_id, user_id)
         if not project:
@@ -2485,6 +2583,7 @@ def run_concat_job(job_id: int, project_id: int, user_id: int) -> None:
             raise RuntimeError("Projeto sem partes.")
         videos: list[Path] = []
         for part in sorted(parts, key=lambda p: p["part_idx"]):
+            check_job_canceled(job_id)
             video = Path(part.get("video_path") or "")
             if part["status"] != "done" or not video.exists():
                 raise RuntimeError(f"Parte {part['part_idx']} sem video renderizado.")
@@ -2508,8 +2607,10 @@ def run_concat_job(job_id: int, project_id: int, user_id: int) -> None:
             return subprocess.run(["ffmpeg", "-y", *args], capture_output=True, timeout=timeout)
 
         # stream copy primeiro (partes usam o mesmo preset do montador); re-encode como fallback
+        check_job_canceled(job_id)
         result = _ffmpeg(["-f", "concat", "-safe", "0", "-i", str(concat_list), "-c", "copy", str(base_out)])
         if result.returncode != 0 or not base_out.exists() or base_out.stat().st_size == 0:
+            check_job_canceled(job_id)
             db.update_job(job_id, status="running", message="Stream copy falhou; re-encodando")
             result = _ffmpeg(
                 ["-f", "concat", "-safe", "0", "-i", str(concat_list),
@@ -2522,6 +2623,7 @@ def run_concat_job(job_id: int, project_id: int, user_id: int) -> None:
         master_name = ""
         narration = find_input_media(project_id, "narration")
         if narration:
+            check_job_canceled(job_id)
             db.update_job(job_id, status="running", message="Adicionando narracao ao master")
             master_out = out_dir / kaggle_service.MASTER_VIDEO_NAME
             result = _ffmpeg(
@@ -2534,12 +2636,15 @@ def run_concat_job(job_id: int, project_id: int, user_id: int) -> None:
             else:
                 logger.warning("mux de narracao falhou: %s", result.stderr.decode(errors="replace")[:300])
 
+        check_job_canceled(job_id)
         concat_list.unlink(missing_ok=True)
         db.finish_job(
             job_id,
             "Video final concatenado" + (" com narracao" if master_name else ""),
             {"base": base_out.name, "master": master_name, "parts": len(videos)},
         )
+    except JobCanceled:
+        finish_canceled_job(job_id, project_id, "concat_parts")
     except Exception as exc:  # noqa: BLE001
         db.fail_job(job_id, "Falha na concatenacao", str(exc))
 
@@ -2577,7 +2682,7 @@ def parts_status(request: Request, project_id: int):
         raise HTTPException(404)
     jobs = db.list_project_jobs(project_id, user["id"])
     active = next(
-        (j for j in jobs if j["kind"] in {"kaggle_parts", "concat_parts"} and j["status"] in {"queued", "running"}),
+        (j for j in jobs if j["kind"] in {"kaggle_parts", "concat_parts"} and j["status"] in ACTIVE_JOB_STATUSES),
         None,
     )
     outputs = local_output_videos(project_work_dir(project_id))
@@ -2596,6 +2701,18 @@ def job_status(request: Request, job_id: int):
     job = db.get_job(job_id, user["id"])
     if not job:
         raise HTTPException(404)
+    return JSONResponse(job)
+
+
+@app.post("/jobs/{job_id}/cancel")
+def cancel_job(request: Request, job_id: int, csrf_token: str = Form("")):
+    user = require_user(request)
+    verify_csrf(request, csrf_token)
+    job = db.request_job_cancel(job_id, user["id"])
+    if not job:
+        raise HTTPException(404)
+    if job["status"] not in ACTIVE_JOB_STATUSES:
+        raise HTTPException(409, f"Job ja esta {job['status']}.")
     return JSONResponse(job)
 
 
