@@ -401,7 +401,12 @@ def _job_to_dict(row: sqlite3.Row) -> dict:
         data["result"] = json.loads(data.pop("result_json") or "{}")
     except json.JSONDecodeError:
         data["result"] = {}
-    return data
+    try:
+        from services import ops_status
+
+        return ops_status.decorate_job(data)
+    except Exception:
+        return data
 
 
 def create_job(

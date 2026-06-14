@@ -206,6 +206,7 @@ def build_snapshot(
     selected_count: int,
     scene_count: int,
     expected_duration: float,
+    total_scene_count: Optional[int] = None,
 ) -> dict:
     cached_validation = read_validation(project_work)
     out_dir = project_work / "kaggle_output"
@@ -218,6 +219,7 @@ def build_snapshot(
         "selection": {
             "selected": selected_count,
             "scenes": scene_count,
+            "total_scenes": total_scene_count if total_scene_count is not None else scene_count,
             "complete": scene_count > 0 and selected_count == scene_count,
         },
         "outputs": {

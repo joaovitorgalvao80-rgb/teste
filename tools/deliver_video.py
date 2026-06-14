@@ -102,7 +102,9 @@ with client:
     must(client.post(f"/projects/{pid}/search").status_code == 303,
          f"busca + visao ({time.time()-t:.0f}s)")
     assets_by_scene = db.list_assets_for_project(pid)
-    empties = [s for s in scenes if not assets_by_scene.get(s["id"])]
+    broll_map = app_module.scene_broll_flags(scenes, app_module.project_config(db.get_project(pid, 1)))
+    broll_scenes = [s for s in scenes if broll_map.get(s["scene_id"], True)]
+    empties = [s for s in broll_scenes if not assets_by_scene.get(s["id"])]
     if empties:
         log(f"   {len(empties)} cenas sem candidato; buscando mais (imagens+videos)...")
         for s in empties:
@@ -110,11 +112,11 @@ with client:
         # re-analisa visao dos novos assets e reavalia
         app_module.analyze_pending_vision(pid, 1, K["GROQ_KEY"], nvidia_key=K["NVIDIA_KEY"])
         assets_by_scene = db.list_assets_for_project(pid)
-        still_empty = [s["scene_id"] for s in scenes if not assets_by_scene.get(s["id"])]
+        still_empty = [s["scene_id"] for s in broll_scenes if not assets_by_scene.get(s["id"])]
         log(f"   ainda sem candidato: {still_empty or 'nenhuma'}")
     client.post(f"/projects/{pid}/auto-select")
     chosen = db.list_assets_by_state(pid, ["selected"])
-    must(len(chosen) == len(scenes), f"todas as {len(scenes)} cenas com take ({len(chosen)} selecionados)")
+    must(len(chosen) == len(broll_scenes), f"todos os {len(broll_scenes)} b-rolls com take ({len(chosen)} selecionados)")
 
     # 7) aceita tudo + relatorio
     for c in chosen:

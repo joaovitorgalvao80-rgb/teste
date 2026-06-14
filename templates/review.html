@@ -13,7 +13,7 @@
   </div>
 </div>
 
-{% if total == 0 %}
+{% if scene_count == 0 %}
   <div class="empty">
     <p class="tag">Revisão</p>
     <h2>Nada para revisar ainda.</h2>
@@ -23,18 +23,20 @@
 {% else %}
 
 <p class="t-muted t-small" style="margin-bottom:var(--sp-5)">
-  Confira os takes marcados para cada cena. <strong>Aceitar</strong> trava o take;
-  <strong>Rejeitar</strong> marca a cena para nova busca com keywords diferentes.
+  Confira os takes marcados para cada cena de b-roll. Cenas de avatar ficam apenas como referência e não travam a revisão.
+  <strong>Aceitar</strong> trava o take; <strong>Rejeitar</strong> marca a cena para nova busca com keywords diferentes.
 </p>
 
 <div class="review-grid">
   {% for scene in scenes %}
-    <section class="review-card{% if scene.chosen and scene.chosen.state == 'accepted' %} is-accepted{% elif not scene.chosen %} is-waiting{% endif %}"
-             id="review-{{ scene.id }}" data-scene="{{ scene.id }}">
+    <section class="review-card{% if scene.avatar_only %} is-avatar-only{% elif scene.chosen and scene.chosen.state == 'accepted' %} is-accepted{% elif not scene.chosen %} is-waiting{% endif %}"
+             id="review-{{ scene.id }}" data-scene="{{ scene.id }}" data-broll-required="{{ 1 if scene.broll_required else 0 }}">
       <header class="review-head">
         <span class="tc">{{ scene.scene_id }} · {{ '%.1f'|format(scene.start_time) }}s–{{ '%.1f'|format(scene.end_time) }}s</span>
         <span class="review-state" id="review-state-{{ scene.id }}">
-          {%- if scene.chosen and scene.chosen.state == 'accepted' -%}
+          {%- if scene.avatar_only -%}
+            <span class="tally tally-rec">avatar sem b-roll</span>
+          {%- elif scene.chosen and scene.chosen.state == 'accepted' -%}
             <span class="tally tally-ok">aceito</span>
           {%- elif scene.chosen -%}
             <span class="tally tally-warn">aguardando revisão</span>
@@ -46,7 +48,14 @@
 
       <p class="review-phrase">&ldquo;{{ scene.narration }}&rdquo;</p>
 
-      {% if scene.chosen %}
+      {% if scene.avatar_only %}
+        <div class="review-media review-media-empty review-media-avatar">
+          <p class="t-muted t-small">Cena do apresentador. O render mantém o avatar na tela aqui, sem take de b-roll.</p>
+        </div>
+        <div class="review-actions">
+          <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}#scene-{{ scene.id }}">ver cena no console</a>
+        </div>
+      {% elif scene.chosen %}
         {% set a = scene.chosen %}
         <div class="review-media" data-asset="{{ a.id }}">
           {% if a.asset_type == 'video' %}
@@ -125,7 +134,7 @@
     <span class="tally tally-ok"><span id="rv-accepted">{{ accepted }}</span>&nbsp;aceitas</span>
     <span class="tally tally-warn"><span id="rv-pending">{{ pending_review }}</span>&nbsp;a revisar</span>
     <span class="tally tally-err"><span id="rv-waiting">{{ rejected_waiting }}</span>&nbsp;aguardando nova busca</span>
-    <span class="t-small t-faint">de {{ total }} cenas</span>
+    <span class="t-small t-faint" id="rv-total-label">de {{ total }} cenas de b-roll{% if avatar_only_count %} · {{ avatar_only_count }} no avatar{% endif %}</span>
   </div>
   <div class="review-bar-actions">
     {% if has_report %}
@@ -235,7 +244,8 @@ async function reviewDecision(sceneId, assetId, state, btn) {
 }
 
 function updateReviewBar() {
-  const cards = document.querySelectorAll(".review-card");
+  const cards = document.querySelectorAll('.review-card[data-broll-required="1"]');
+  const avatarOnly = document.querySelectorAll('.review-card[data-broll-required="0"]').length;
   let accepted = 0, waiting = 0;
   cards.forEach((c) => {
     if (c.classList.contains("is-accepted")) accepted++;
@@ -246,6 +256,8 @@ function updateReviewBar() {
   set("rv-accepted", accepted);
   set("rv-pending", pending);
   set("rv-waiting", waiting);
+  const totalLabel = document.getElementById("rv-total-label");
+  if (totalLabel) totalLabel.textContent = `de ${cards.length} cenas de b-roll${avatarOnly ? ` · ${avatarOnly} no avatar` : ""}`;
   const research = document.getElementById("btn-research");
   if (research) research.disabled = waiting === 0;
   const finish = document.getElementById("btn-finish-review");

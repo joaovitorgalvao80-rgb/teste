@@ -85,7 +85,7 @@ with client:  # dispara lifespan (init_db etc.)
     r = client.post(f"/projects/{pid}/auto-select")
     must(r.status_code == 303, "auto-select aceito")
     chosen = db.list_assets_by_state(pid, ["selected"])
-    must(len(chosen) == 3, f"3 takes auto-selecionados (tem {len(chosen)})")
+    must(len(chosen) == 1, f"1 take de b-roll auto-selecionado (tem {len(chosen)})")
     # heurística deve preferir o 1920x1080 com duração que cobre a cena
     must(all(c["width"] == 1920 for c in chosen), "heurística escolheu os takes de maior qualidade")
     must(all(c["auto_reason"] for c in chosen), "auto_reason preenchido")
@@ -95,10 +95,8 @@ with client:  # dispara lifespan (init_db etc.)
     r = client.get(f"/projects/{pid}/review")
     must(r.status_code == 200 and "Revis" in r.text, "tela de revisão renderiza")
 
-    # aceita 2, rejeita 1
-    client.post(f"/assets/{chosen[0]['id']}/state", data={"state": "accepted"})
-    client.post(f"/assets/{chosen[1]['id']}/state", data={"state": "accepted"})
-    client.post(f"/assets/{chosen[2]['id']}/state", data={"state": "rejected"})
+    # rejeita a unica cena que precisa de b-roll; abertura/fechamento ficam no avatar
+    client.post(f"/assets/{chosen[0]['id']}/state", data={"state": "rejected"})
     must(db.get_project(pid, 1)["status"] == "reviewing", "aceitar/rejeitar não derruba o status")
 
     # concluir sem 100% aceito deve falhar
@@ -110,7 +108,7 @@ with client:  # dispara lifespan (init_db etc.)
     must(r.status_code == 400, "research-rejected exige chaves de API")
 
     # seleciona o reserva manualmente (mesma cena do rejeitado) e aceita
-    rejected_scene_id = chosen[2]["scene_id"]
+    rejected_scene_id = chosen[0]["scene_id"]
     others = [a for a in db.list_assets_by_state(pid, ["pending"]) if a["scene_id"] == rejected_scene_id]
     must(len(others) >= 1, "cena rejeitada tem candidato reserva")
     client.post(f"/assets/{others[0]['id']}/state", data={"state": "accepted"})
@@ -129,7 +127,7 @@ with client:  # dispara lifespan (init_db etc.)
 
     # página do projeto mostra pipeline atualizado
     r = client.get(f"/projects/{pid}")
-    must(r.status_code == 200 and "Revisão (3/3)" in r.text, "pipeline mostra revisão 3/3")
+    must(r.status_code == 200 and "Revisão (1/1)" in r.text, "pipeline mostra revisão 1/1")
 
     # editar depois de concluir reabre revisao e remove relatorio obsoleto
     report_path = app_module.curation_report_path(pid)

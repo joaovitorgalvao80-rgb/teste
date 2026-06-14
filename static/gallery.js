@@ -88,9 +88,10 @@ async function setState(assetId, state) {
 function updateSelectedCount() {
   const btn = document.getElementById("btn-package");
   if (!btn) return;
-  const total = document.querySelectorAll("section.scene").length;
+  const scenes = document.querySelectorAll('section.scene[data-broll-required="1"]');
+  const total = scenes.length;
   let selected = 0;
-  document.querySelectorAll("section.scene").forEach((sec) => {
+  scenes.forEach((sec) => {
     if (sec.querySelector(".take.is-selected, .take.is-accepted")) selected++;
   });
   const statusBadge = document.querySelector(".head-status .badge");
@@ -363,6 +364,12 @@ function jobText(job) {
   return job.message || job.error || "-";
 }
 
+function jobMetaText(job) {
+  const elapsed = job.elapsed_label || "";
+  const updated = job.updated_label ? "atualizado " + job.updated_label : "";
+  return [elapsed, updated].filter(Boolean).join(" - ");
+}
+
 function renderProjectJobs(jobs) {
   const list = document.getElementById("job-list");
   if (!list) return;
@@ -377,7 +384,13 @@ function renderProjectJobs(jobs) {
     const status = document.createElement("span");
     status.textContent = job.status || "";
     const message = document.createElement("small");
-    message.textContent = jobText(job);
+    const messageText = document.createElement("span");
+    messageText.className = "job-message";
+    messageText.textContent = jobText(job);
+    const meta = document.createElement("span");
+    meta.className = "job-meta";
+    meta.textContent = jobMetaText(job);
+    message.append(messageText, meta);
     item.append(kind, status, message);
 
     if (ACTIVE_JOB_STATUSES.includes(job.status)) {

@@ -97,7 +97,14 @@ with client:
     r = client.post(f"/projects/{pid}/auto-select")
     must(r.status_code == 303, "auto-select iniciado")
     chosen = db.list_assets_by_state(pid, ["selected"])
-    must(len(chosen) == 4, f"4 takes auto-selecionados (tem {len(chosen)})")
+    expected_broll = sum(
+        1
+        for enabled in app_module.scene_broll_flags(
+            scenes, app_module.project_config(db.get_project(pid, 1))
+        ).values()
+        if enabled
+    )
+    must(len(chosen) == expected_broll, f"{expected_broll} takes de b-roll auto-selecionados (tem {len(chosen)})")
     for c in chosen:
         print(f"   {c['scene_code']}: {c['source']} {c['width']}x{c['height']} {c['duration']}s — {c['auto_reason'][:70]}")
 

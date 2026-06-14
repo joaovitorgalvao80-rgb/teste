@@ -12,7 +12,8 @@
   <div class="head-status">
     <span class="badge status-{{ project.status }}" data-status="{{ project.status }}">{{ status_label(project.status) }}</span>
     <span class="mini-stat"><strong>{{ scenes|length }}</strong>&nbsp;cenas</span>
-    <span class="mini-stat"><strong>{{ selected_count }}</strong>&nbsp;selecionadas</span>
+    <span class="mini-stat"><strong>{{ selected_count }}</strong>/{{ broll_required_count }}&nbsp;b-rolls</span>
+    {% if avatar_only_count %}<span class="mini-stat"><strong>{{ avatar_only_count }}</strong>&nbsp;avatar</span>{% endif %}
   </div>
 </div>
 
@@ -44,17 +45,17 @@
     </form>
     <form method="post" action="/projects/{{ project.id }}/auto-select" style="flex:1;display:contents" data-busy-submit>
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button class="step {% if project.status in ['reviewing','reviewed','packaged','needs_package','packaging','package_failed'] and selected_count == scenes|length and scenes|length > 0 %}is-done{% endif %}"
+      <button class="step {% if project.status in ['reviewing','reviewed','packaged','needs_package','packaging','package_failed'] and selected_count == broll_required_count and broll_required_count > 0 %}is-done{% endif %}"
               type="submit"
-              {% if asset_count == 0 or project.status not in ['searched','reviewing'] or project.status in ['searching','packaging','mapping','auto_selecting','researching'] %}disabled{% endif %}>
+              {% if broll_required_count == 0 or asset_count == 0 or project.status not in ['searched','reviewing'] or project.status in ['searching','packaging','mapping','auto_selecting','researching'] %}disabled{% endif %}>
         <span class="step-idx">02B</span>
         <span class="step-name">Seleção automática</span>
       </button>
     </form>
-    <a class="step {% if project.status == 'reviewed' or (scenes and accepted_count == scenes|length) %}is-done{% endif %} {% if project.status == 'reviewing' %}is-active{% endif %}"
+    <a class="step {% if project.status == 'reviewed' or (broll_required_count > 0 and accepted_count == broll_required_count) %}is-done{% endif %} {% if project.status == 'reviewing' %}is-active{% endif %}"
        href="/projects/{{ project.id }}/review">
       <span class="step-idx">2B</span>
-      <span class="step-name">Revisão ({{ accepted_count }}/{{ scenes|length }})</span>
+      <span class="step-name">Revisão ({{ accepted_count }}/{{ broll_required_count }})</span>
     </a>
     {% endif %}
     <form method="post" action="/projects/{{ project.id }}/package" style="flex:1;display:contents" data-busy-submit>
@@ -63,10 +64,10 @@
               {% if config.long_mode %}
                 {% if not all_parts_curated or project.status in ['mapping','searching','packaging'] %}disabled{% endif %}
               {% else %}
-                {% if scenes|length == 0 or selected_count != scenes|length or project.status in ['mapping','searching','packaging'] %}disabled{% endif %}
+                {% if broll_required_count == 0 or selected_count != broll_required_count or project.status in ['mapping','searching','packaging'] %}disabled{% endif %}
               {% endif %}>
         <span class="step-idx">03</span>
-        <span class="step-name">Pacote ({{ selected_count }}/{{ scenes|length }})</span>
+        <span class="step-name">Pacote ({{ selected_count }}/{{ broll_required_count }})</span>
       </button>
     </form>
     {% if config.long_mode %}
@@ -102,7 +103,7 @@
     <div class="curation-switch-copy">
       <span class="tag">Curadoria</span>
       <strong>Manual ou automatica</strong>
-      <span class="t-small t-faint">{{ asset_count }} assets - {{ selected_count }}/{{ scenes|length }} cenas marcadas</span>
+      <span class="t-small t-faint">{{ asset_count }} assets - {{ selected_count }}/{{ broll_required_count }} b-rolls marcados{% if avatar_only_count %} - {{ avatar_only_count }} cenas no avatar{% endif %}</span>
     </div>
     <div class="curation-switch-actions">
       <a class="btn btn-primary btn-sm" href="{% if scenes %}#curadoria{% else %}#{% endif %}"
@@ -113,7 +114,7 @@
       <form method="post" action="/projects/{{ project.id }}/auto-select" data-busy-submit>
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button class="btn btn-secondary btn-sm" type="submit"
-                {% if asset_count == 0 or project.status not in ['searched','reviewing'] or project.status in ['searching','packaging','mapping','auto_selecting','researching'] %}disabled{% endif %}>
+                {% if broll_required_count == 0 or asset_count == 0 or project.status not in ['searched','reviewing'] or project.status in ['searching','packaging','mapping','auto_selecting','researching'] %}disabled{% endif %}>
           Selecao automatica
         </button>
       </form>
@@ -134,9 +135,18 @@
     </div>
   </div>
 
+  <div class="operational-state operational-{{ operational_state.severity }}">
+    <div>
+      <span class="tag">Estado operacional</span>
+      <strong>{{ operational_state.label }}</strong>
+      <span>{{ operational_state.detail }}</span>
+    </div>
+    <em>Proximo: {{ operational_state.next_action }}</em>
+  </div>
+
   {% if not has_keys %}
     <div style="padding:var(--sp-3) var(--sp-5)">
-      <p class="note note-warn">Cadastre chaves de Pexels/Pixabay em <a href="/settings" style="color:var(--paper-0)">Configurações → APIs</a> para buscar assets.</p>
+      <p class="note note-warn">Cadastre Pexels, Pixabay ou Coverr em <a href="/settings" style="color:var(--paper-0)">Configurações → APIs</a> para buscar assets.</p>
     </div>
   {% endif %}
 
@@ -257,7 +267,7 @@
   {% endif %}
   {% if project.status == 'reviewed' %}
   <div style="padding:var(--sp-3) var(--sp-5);border-top:1px solid var(--line-0)">
-    <p class="note">Revisão concluída — todos os takes aceitos.
+    <p class="note">Revisão concluída — todos os b-rolls necessários aceitos.
       <a href="/projects/{{ project.id }}/curation-report" style="color:var(--paper-0)">Baixar relatório de curadoria</a>
       ou gere a etapa <strong>03 Pacote</strong>.</p>
   </div>
@@ -328,7 +338,7 @@
           <strong class="{% if diagnostics.selection.complete %}ok-text{% else %}warn-text{% endif %}">
             {{ diagnostics.selection.selected }}/{{ diagnostics.selection.scenes }}
           </strong>
-          <small>{% if diagnostics.selection.complete %}pronta para pacote{% else %}faltam cenas{% endif %}</small>
+          <small>{% if diagnostics.selection.complete %}pronta para pacote{% else %}faltam b-rolls{% endif %}</small>
         </div>
         <div class="ops-item">
           <span class="ops-label">Pacote</span>
@@ -377,7 +387,10 @@
             <li class="job-{{ job.status }}" data-job-id="{{ job.id }}">
               <b>{{ job.kind }}</b>
               <span>{{ job.status }}</span>
-              <small>{{ job.message or job.error or '-' }}</small>
+              <small>
+                <span class="job-message">{{ job.message or job.error or '-' }}</span>
+                <span class="job-meta">{{ job.elapsed_label }} - atualizado {{ job.updated_label }}</span>
+              </small>
               {% if job.status in active_job_statuses %}
                 <button class="btn btn-danger btn-sm" type="button" onclick="cancelJob({{ job.id }}, this)">Parar</button>
               {% else %}
@@ -473,7 +486,7 @@
   {% if config.long_mode and (loop.first or scene.part != scenes[loop.index0 - 1].part) %}
     <h3 class="part-divider" id="part-{{ scene.part }}">Parte {{ '%02d'|format(scene.part or 1) }}</h3>
   {% endif %}
-  <section class="scene scene-zone-{{ scene.zone|lower }}" id="scene-{{ scene.id }}" data-scene="{{ scene.id }}">
+  <section class="scene scene-zone-{{ scene.zone|lower }}{% if scene.avatar_only %} is-avatar-only{% endif %}" id="scene-{{ scene.id }}" data-scene="{{ scene.id }}" data-broll-required="{{ 1 if scene.broll_required else 0 }}">
     <div class="scene-rail">
       <span class="tc">{{ '%.1f'|format(scene.start_time) }}s</span>
       <span class="tc tc-end">{{ '%.1f'|format(scene.end_time) }}s</span>
@@ -487,7 +500,9 @@
           {% set role = scene.keyword_roles[loop.index0] if loop.index0 < (scene.keyword_roles|length) else 'fallback' %}
           <span class="kw kw-{{ role }}" title="busca {{ role_label(role) }}">{{ kw }} <small class="t-faint">· {{ role_label(role) }}</small></span>
         {% endfor %}
-        {% if scene.assets | selectattr('state', 'equalto', 'accepted') | list %}
+        {% if scene.avatar_only %}
+          <span class="tally tally-rec" style="margin-left:auto">avatar sem b-roll</span>
+        {% elif scene.assets | selectattr('state', 'equalto', 'accepted') | list %}
           <span class="tally tally-ok" style="margin-left:auto">take aceito</span>
         {% elif scene.assets | selectattr('state', 'equalto', 'selected') | list %}
           <span class="tally tally-ok" style="margin-left:auto">take marcado</span>

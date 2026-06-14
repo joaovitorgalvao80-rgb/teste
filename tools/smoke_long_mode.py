@@ -89,8 +89,17 @@ with client:
             "page_url": "", "width": 1280, "height": 720, "duration": 8,
             "keyword": "farm", "author": "", "author_url": "",
         }])
+    project = db.get_project(pid, 1)
+    broll_map = app_module.scene_broll_flags(scenes, app_module.project_config(project))
+    scene_by_db_id = {scene["id"]: scene for scene in scenes}
     for a in db.list_assets_by_state(pid, ["pending"]):
-        db.set_asset_state(a["id"], "selected")
+        scene = scene_by_db_id[a["scene_id"]]
+        if broll_map.get(scene["scene_id"], True):
+            db.set_asset_state(a["id"], "accepted")
+
+    for p in parts:
+        r = client.post(f"/projects/{pid}/parts/{p['part_idx']}/confirm")
+        must(r.status_code == 303, f"parte {p['part_idx']} curada")
 
     # pacote por partes
     r = client.post(f"/projects/{pid}/package")

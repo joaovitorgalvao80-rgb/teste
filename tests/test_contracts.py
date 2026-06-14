@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import unittest
 import zipfile
@@ -15,8 +16,9 @@ import app as webapp  # noqa: E402
 import database as db  # noqa: E402
 import montador  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
-from services import asset_search, diagnostics, kaggle_service, packager  # noqa: E402
+from services import asset_search, diagnostics, kaggle_service, ops_status, packager  # noqa: E402
 from services.script_parser import parse_script  # noqa: E402
+from tools import preflight  # noqa: E402
 
 
 class DeployContractsTest(unittest.TestCase):
@@ -145,8 +147,42 @@ class DeployContractsTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("Saúde do projeto", resp.text)
         self.assertIn("Jobs recentes", resp.text)
+        self.assertIn("Estado operacional", resp.text)
         self.assertIn("package", resp.text)
         self.assertIn("Parar", resp.text)
+        self.assertIn("atualizado", resp.text)
+
+    def test_settings_integration_status_is_masked(self) -> None:
+        with TestClient(webapp.app) as client:
+            user_id = db.create_user("masked", "password123")
+            db.update_api_keys(
+                user_id,
+                "pexels-secret-value",
+                "pixabay-secret-value",
+                "groq-secret-value",
+                "llama-3.3-70b-versatile",
+                coverr="coverr-secret-value",
+                nvidia="nvidia-secret-value",
+            )
+            db.update_kaggle_keys(user_id, "kaggle-user", "kaggle-secret-token")
+            client.post(
+                "/login",
+                data={"username": "masked", "password": "password123"},
+                follow_redirects=False,
+            )
+            page = client.get("/settings")
+            status = client.get("/settings/integrations-status")
+
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Status das integracoes", page.text)
+        self.assertIn("Pexels: configurado", page.text)
+        self.assertNotIn("pexels-secret-value", page.text)
+        self.assertEqual(status.status_code, 200)
+        payload = status.json()
+        self.assertTrue(payload["ready"])
+        dumped = json.dumps(payload)
+        self.assertNotIn("pexels-secret-value", dumped)
+        self.assertNotIn("kaggle-secret-token", dumped)
 
     def test_job_cancel_marks_only_the_requested_active_job(self) -> None:
         with TestClient(webapp.app) as client:
@@ -253,7 +289,17 @@ class DeployContractsTest(unittest.TestCase):
 
     def test_manual_curation_ui_has_explicit_auto_select_and_review_image_generation(self) -> None:
         with TestClient(webapp.app) as client:
-            _, project_id, scene = self._project_with_scene("manual-ui")
+            uid = db.create_user("manual-ui", "password123")
+            project_id = db.create_project(uid, "manual-ui project", "script", {})
+            db.replace_scenes(
+                project_id,
+                [
+                    {"scene_id": "scene_001", "idx": 1, "zone": "ABERTURA", "start_time": 0, "end_time": 4, "duration": 4, "narration": "abertura"},
+                    {"scene_id": "scene_002", "idx": 2, "zone": "CONTEUDO", "start_time": 4, "end_time": 8, "duration": 4, "narration": "conteudo visual"},
+                    {"scene_id": "scene_003", "idx": 3, "zone": "CTA", "start_time": 8, "end_time": 12, "duration": 4, "narration": "fechamento"},
+                ],
+            )
+            scene = db.list_scenes(project_id)[1]
             db.add_assets(scene["id"], [{"source": "pexels", "download_url": "https://example.com/a.mp4"}])
             asset = db.list_assets(scene["id"])[0]
             db.set_project_status(project_id, "searched")
@@ -314,7 +360,48 @@ class DeployContractsTest(unittest.TestCase):
         payload = resp.json()
         self.assertEqual(payload["project"]["name"], "diag project")
         self.assertIn("diagnostics", payload)
+        self.assertIn("operational_state", payload)
         self.assertIn("jobs", payload)
+
+    def test_project_jobs_endpoint_includes_operational_timing(self) -> None:
+        with TestClient(webapp.app) as client:
+            user_id = db.create_user("jobtime", "password123")
+            project_id = db.create_project(user_id, "jobtime project", "script", {})
+            db.create_job(user_id, "search_assets", project_id, "Busca na fila")
+            client.post(
+                "/login",
+                data={"username": "jobtime", "password": "password123"},
+                follow_redirects=False,
+            )
+            resp = client.get(f"/projects/{project_id}/jobs")
+
+        self.assertEqual(resp.status_code, 200)
+        job = resp.json()["jobs"][0]
+        self.assertIn("elapsed_label", job)
+        self.assertIn("updated_label", job)
+
+    def test_ops_status_project_state_selects_next_action(self) -> None:
+        state = ops_status.project_state(
+            {"status": "created"},
+            scenes=[],
+            asset_count=0,
+            curation_stats={"required": 0, "selected": 0, "accepted": 0},
+            jobs=[],
+            parts=[],
+            outputs={"base": None, "master": None},
+            diagnostics={},
+            has_asset_keys=False,
+        )
+        self.assertEqual(state["code"], "needs_map")
+
+    def test_preflight_lists_release_gates(self) -> None:
+        names = [check.name for check in preflight.planned_checks()]
+        self.assertIn("unit contracts", names)
+        self.assertIn("embedded kaggle runner", names)
+        self.assertIn("smoke review flow", names)
+        self.assertIn("smoke long mode", names)
+        self.assertIn("frontend js syntax", names)
+        self.assertIn("git whitespace", names)
 
     def test_packager_fails_when_no_selected_asset_downloads(self) -> None:
         project = {"name": "Teste"}
@@ -1014,7 +1101,14 @@ class DeployContractsTest(unittest.TestCase):
                 data={"username": "import-keys", "password": "password123"},
                 follow_redirects=False,
             )
-            content = "groq: gsk_" + "z" * 30 + "\npexels: " + "A1" * 28
+            content = "\n".join(
+                [
+                    "groq: gsk_" + "z" * 30,
+                    "pexels: " + "A1" * 28,
+                    "coverr: " + "b" * 32,
+                    "nvidia: nvapi-" + "N" * 32,
+                ]
+            )
             resp = client.post(
                 "/settings/import-keys",
                 files={"keys_file": ("chaves.txt", content.encode("utf-8"), "text/plain")},
@@ -1025,9 +1119,13 @@ class DeployContractsTest(unittest.TestCase):
             )
         self.assertEqual(resp.status_code, 200)
         self.assertIn("Groq", resp.json()["detail"])
+        self.assertIn("Coverr", resp.json()["detail"])
+        self.assertIn("NVIDIA", resp.json()["detail"])
         user = db.get_user(uid)
         self.assertTrue(user["groq_key"].startswith("gsk_"))
         self.assertTrue(user["pexels_key"].startswith("A1"))
+        self.assertEqual(user["coverr_key"], "b" * 32)
+        self.assertTrue(user["nvidia_key"].startswith("nvapi-"))
         self.assertEqual(empty.status_code, 400)
 
     def test_edit_plan_route_and_review_panel(self) -> None:
@@ -1076,9 +1174,11 @@ class DeployContractsTest(unittest.TestCase):
             project_id,
             [
                 {"scene_id": "scene_001", "idx": 1, "start_time": 0, "end_time": 4, "duration": 4, "narration": "a"},
+                {"scene_id": "scene_002", "idx": 2, "start_time": 4, "end_time": 8, "duration": 4, "narration": "b"},
+                {"scene_id": "scene_003", "idx": 3, "start_time": 8, "end_time": 12, "duration": 4, "narration": "c"},
             ],
         )
-        scene = db.list_scenes(project_id)[0]
+        scene = db.list_scenes(project_id)[1]
         db.add_assets(scene["id"], [{"source": "pexels", "download_url": "https://example.com/a.mp4"}])
         asset = db.list_assets(scene["id"])[0]
         db.set_asset_state(asset["id"], "selected")
@@ -1470,9 +1570,13 @@ class HardeningAndOptimizationTest(unittest.TestCase):
                 project_id = db.create_project(uid, "pkg", "script", {})
                 db.replace_scenes(
                     project_id,
-                    [{"scene_id": "scene_001", "idx": 1, "start_time": 0, "end_time": 4, "duration": 4}],
+                    [
+                        {"scene_id": "scene_001", "idx": 1, "start_time": 0, "end_time": 4, "duration": 4},
+                        {"scene_id": "scene_002", "idx": 2, "start_time": 4, "end_time": 8, "duration": 4},
+                        {"scene_id": "scene_003", "idx": 3, "start_time": 8, "end_time": 12, "duration": 4},
+                    ],
                 )
-                scene = db.list_scenes(project_id)[0]
+                scene = db.list_scenes(project_id)[1]
                 db.add_assets(scene["id"], [
                     {"source": "pexels", "download_url": "https://example.com/a.mp4"},
                 ])
@@ -1736,8 +1840,18 @@ class HardeningAndOptimizationTest(unittest.TestCase):
                 follow_redirects=False,
             )
 
+            review_page = client.get(f"/projects/{project_id}/review")
+            project_page = client.get(f"/projects/{project_id}")
             resp = client.post(f"/projects/{project_id}/finish-review", follow_redirects=False)
 
+        self.assertEqual(review_page.status_code, 200)
+        self.assertIn("avatar sem b-roll", review_page.text)
+        self.assertIn("Concluir revis", review_page.text)
+        self.assertNotIn("Concluir revisão (1/3)", review_page.text)
+        self.assertEqual(project_page.status_code, 200)
+        self.assertIn("Revisão (1/1)", project_page.text)
+        self.assertIn("Pacote (1/1)", project_page.text)
+        self.assertIsNone(re.search(r'id="btn-package"[^>]*disabled', project_page.text, re.S))
         self.assertEqual(resp.status_code, 303)
         self.assertEqual(db.get_project(project_id, uid)["status"], "reviewed")
 

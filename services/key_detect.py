@@ -13,6 +13,7 @@ MAX_KEYS_FILE_BYTES = 64 * 1024
 # Formatos conhecidos de cada provedor; usados quando a linha não tem rótulo.
 _KEY_GUESS_PATTERNS = [
     ("groq", re.compile(r"^gsk_[A-Za-z0-9_-]{20,}$")),
+    ("nvidia", re.compile(r"^nvapi-[A-Za-z0-9_-]{20,}$", re.IGNORECASE)),
     ("kaggle_token", re.compile(r"^KGAT[A-Za-z0-9_-]{10,}$", re.IGNORECASE)),
     ("pixabay", re.compile(r"^\d{6,10}-[0-9a-f]{20,40}$", re.IGNORECASE)),
     ("kaggle_token", re.compile(r"^[0-9a-f]{32}$")),
@@ -22,7 +23,9 @@ _KEY_GUESS_PATTERNS = [
 KEY_FIELD_LABELS = {
     "pexels": "Pexels",
     "pixabay": "Pixabay",
+    "coverr": "Coverr",
     "groq": "Groq",
+    "nvidia": "NVIDIA",
     "kaggle_username": "Kaggle username",
     "kaggle_token": "Kaggle token",
 }
@@ -34,8 +37,12 @@ def _key_field_from_label(label: str) -> Optional[str]:
         return "pexels"
     if "pixabay" in low:
         return "pixabay"
+    if "coverr" in low:
+        return "coverr"
     if "groq" in low:
         return "groq"
+    if "nvidia" in low:
+        return "nvidia"
     if "kaggle" in low:
         return "kaggle_username" if "user" in low else "kaggle_token"
     if low.strip() in {"username", "user"}:

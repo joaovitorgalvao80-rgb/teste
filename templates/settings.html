@@ -10,6 +10,38 @@
 </div>
 {% if saved %}<p class="alert ok" style="margin-bottom:var(--sp-5)">Salvo com sucesso.</p>{% endif %}
 
+<div class="panel panel-pad integrations-panel" style="margin-bottom:var(--sp-5)">
+  <div class="row-between">
+    <div>
+      <p class="tag">Status das integracoes</p>
+      <h3 style="margin-top:var(--sp-2)">Prontidao operacional</h3>
+      <p class="t-muted t-small" style="margin-top:var(--sp-2)">
+        Mostra apenas se cada credencial existe ou esta pendente. Nenhum valor de chave e exibido.
+      </p>
+    </div>
+    <button class="btn btn-ghost btn-sm" type="button" onclick="refreshIntegrations(this)">Verificar status local</button>
+  </div>
+  <div class="integration-grid" style="margin-top:var(--sp-4)">
+    {% for group in integration_status.groups %}
+    <section class="integration-row integration-{{ group.status }}">
+      <div>
+        <strong>{{ group.label }}</strong>
+        <small>{{ group.summary }}</small>
+      </div>
+      <div class="integration-items">
+        {% for item in group["items"] %}
+          <span class="integration-chip integration-chip-{{ item.status }}">
+            {{ item.label }}{% if item.kind == 'public' %}: publico{% elif item.configured %}: configurado{% elif item.required %}: pendente{% else %}: opcional{% endif %}
+          </span>
+        {% endfor %}
+      </div>
+    </section>
+    {% endfor %}
+  </div>
+  <p class="note note-warn t-small" style="margin-top:var(--sp-4)">{{ integration_status.security_note }}</p>
+  <p class="t-small" id="integrations-result" style="margin-top:var(--sp-2)"></p>
+</div>
+
 <div class="panel panel-pad" style="margin-bottom:var(--sp-5)">
   <p class="tag">Importação rápida</p>
   <h3 style="margin-top:var(--sp-2)">Importar chaves de um arquivo</h3>
@@ -129,6 +161,25 @@ async function testKaggle(btn) {
     result.style.color = d.ok ? "var(--ok)" : "var(--err)";
   } catch(e) {
     result.textContent = "Erro: " + e.message;
+    result.style.color = "var(--err)";
+  }
+  btn.disabled = false;
+}
+
+async function refreshIntegrations(btn) {
+  const result = document.getElementById("integrations-result");
+  btn.disabled = true;
+  result.textContent = "verificando status local...";
+  result.style.color = "var(--paper-2)";
+  try {
+    const r = await fetch("/settings/integrations-status", { headers: { accept: "application/json" } });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || d.error || ("HTTP " + r.status));
+    const missing = (d.required_missing || []).join(", ");
+    result.textContent = d.ready ? "Integracoes obrigatorias prontas." : "Pendencias: " + missing;
+    result.style.color = d.ready ? "var(--ok)" : "var(--warn)";
+  } catch (e) {
+    result.textContent = "Falha: " + e.message;
     result.style.color = "var(--err)";
   }
   btn.disabled = false;

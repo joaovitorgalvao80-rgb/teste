@@ -26,7 +26,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
 import database as db
-from services import asset_search, auto_select, diagnostics, edit_plan, groq_service, packager, kaggle_service, scoring, vision
+from services import asset_search, auto_select, diagnostics, edit_plan, groq_service, kaggle_service, ops_status, packager, scoring, vision
 from services.project_config import (
     DEFAULT_CONFIG,
     _coerce_bool,
@@ -274,6 +274,10 @@ def secret_from_form(current: str, submitted: str, clear: str = "") -> str:
     return submitted if submitted else (current or "")
 
 
+def has_visual_provider(user: dict) -> bool:
+    return bool(user.get("pexels_key") or user.get("pixabay_key") or user.get("coverr_key"))
+
+
 async def read_upload_limited(upload: UploadFile, max_bytes: int, what: str = "Arquivo") -> bytes:
     chunks: list[bytes] = []
     total = 0
@@ -362,6 +366,37 @@ def missing_selected_scene_ids(
         if s["id"] not in selected_by_scene
         and (required_scene_ids is None or s["scene_id"] in required_scene_ids)
     ]
+
+
+def annotate_broll_requirements(scenes: list[dict], config: dict) -> dict:
+    """Marca cenas que realmente precisam de take e retorna contadores de curadoria."""
+    broll_map = scene_broll_flags(scenes, config) if scenes else {}
+    stats = {
+        "required": 0,
+        "avatar_only": 0,
+        "selected": 0,
+        "accepted": 0,
+        "pending": 0,
+        "waiting": 0,
+    }
+    for scene in scenes:
+        required = bool(broll_map.get(scene["scene_id"], True))
+        scene["broll_required"] = required
+        scene["avatar_only"] = not required
+        if not required:
+            stats["avatar_only"] += 1
+            continue
+        stats["required"] += 1
+        chosen = scene.get("selected") or scene.get("chosen")
+        if chosen and chosen.get("state") in CHOSEN_ASSET_STATES:
+            stats["selected"] += 1
+            if chosen.get("state") == "accepted":
+                stats["accepted"] += 1
+            else:
+                stats["pending"] += 1
+        else:
+            stats["waiting"] += 1
+    return stats
 
 
 _VISION_PROVIDER = vision.HeuristicVisionProvider()
@@ -516,13 +551,15 @@ def project_diagnostics_snapshot(
     project_id: int,
     scenes: list[dict],
     selected_count: int,
+    required_count: Optional[int] = None,
 ) -> dict:
     project_work = project_work_dir(project_id)
     return diagnostics.build_snapshot(
         project_work=project_work,
         zip_path=latest_zip(project_work),
         selected_count=selected_count,
-        scene_count=len(scenes),
+        scene_count=required_count if required_count is not None else len(scenes),
+        total_scene_count=len(scenes),
         expected_duration=expected_duration_from_scenes(scenes),
     )
 
@@ -784,8 +821,15 @@ def settings_page(request: Request, saved: str = ""):
             "saved": saved,
             "groq_models": groq_service.GROQ_MODELS,
             "secret_masks": secret_masks,
+            "integration_status": ops_status.integration_snapshot(user, APP_ENV),
         },
     )
+
+
+@app.get("/settings/integrations-status")
+def integrations_status(request: Request):
+    user = require_user(request)
+    return JSONResponse(ops_status.integration_snapshot(user, APP_ENV))
 
 
 @app.get("/settings/test-kaggle")
@@ -879,6 +923,8 @@ async def import_keys(
         detected.get("pixabay", user.get("pixabay_key", "")),
         detected.get("groq", user.get("groq_key", "")),
         user.get("groq_model", ""),
+        coverr=detected.get("coverr", user.get("coverr_key", "")),
+        nvidia=detected.get("nvidia", user.get("nvidia_key", "")),
     )
     if detected.get("kaggle_username") or detected.get("kaggle_token"):
         db.update_kaggle_keys(
@@ -1034,9 +1080,10 @@ def project_page(request: Request, project_id: int):
         s["assets"] = annotated
         s["selected"] = next((a for a in s["assets"] if a["state"] in CHOSEN_ASSET_STATES), None)
         s["low_relevance_count"] = sum(1 for a in annotated if a.get("low_relevance"))
+    curation_stats = annotate_broll_requirements(scenes, config)
     asset_count = sum(len(s["assets"]) for s in scenes)
-    selected_count = sum(1 for s in scenes if s.get("selected"))
-    accepted_count = sum(1 for s in scenes if s.get("selected") and s["selected"]["state"] == "accepted")
+    selected_count = curation_stats["selected"]
+    accepted_count = curation_stats["accepted"]
     project_work = project_work_dir(project_id)
     narration_file = find_input_media(project_id, "narration")
     avatar_file = find_input_media(project_id, "avatar")
@@ -1044,6 +1091,23 @@ def project_page(request: Request, project_id: int):
     jobs = db.list_project_jobs(project_id, user["id"])
     active_jobs = [job for job in jobs if job.get("status") in ACTIVE_JOB_STATUSES]
     parts = db.list_parts(project_id) if config.get("long_mode") else []
+    diagnostics_snapshot = project_diagnostics_snapshot(
+        project_id,
+        scenes,
+        selected_count,
+        curation_stats["required"],
+    )
+    operational_state = ops_status.project_state(
+        project,
+        scenes=scenes,
+        asset_count=asset_count,
+        curation_stats=curation_stats,
+        jobs=jobs,
+        parts=parts,
+        outputs=outputs,
+        diagnostics=diagnostics_snapshot,
+        has_asset_keys=has_visual_provider(user),
+    )
     return render_template(
         request,
         "project.html",
@@ -1055,14 +1119,17 @@ def project_page(request: Request, project_id: int):
             "asset_count": asset_count,
             "selected_count": selected_count,
             "accepted_count": accepted_count,
-            "has_keys": bool(user["pexels_key"] or user["pixabay_key"]),
+            "broll_required_count": curation_stats["required"],
+            "avatar_only_count": curation_stats["avatar_only"],
+            "has_keys": has_visual_provider(user),
             "narration_name": narration_file.name if narration_file else "",
             "avatar_name": avatar_file.name if avatar_file else "",
             "has_base_video": outputs["base"] is not None,
             "has_master_video": outputs["master"] is not None,
             "edit_plan": local_edit_plan(project_id),
             "hyperframes_status": local_hyperframes_status(project_work) or {},
-            "diagnostics": project_diagnostics_snapshot(project_id, scenes, selected_count),
+            "diagnostics": diagnostics_snapshot,
+            "operational_state": operational_state,
             "jobs": jobs,
             "active_jobs": active_jobs,
             "active_job_statuses": ACTIVE_JOB_STATUSES,
@@ -1218,9 +1285,12 @@ def auto_select_for_project(
     if part_idx is not None:
         scenes = [s for s in scenes if int(s.get("part") or 1) == part_idx]
     assets_by_scene = db.list_assets_for_project(project_id)
+    broll_map = scene_broll_flags(scenes, config)
     target_scenes = []
     candidates_by_scene: dict[int, list[dict]] = {}
     for scene in scenes:
+        if not broll_map.get(scene["scene_id"], True):
+            continue
         assets = assets_by_scene.get(scene["id"], [])
         if any(a["state"] == "accepted" for a in assets):
             continue
@@ -1449,7 +1519,7 @@ def search_part(
     if not project:
         raise HTTPException(404)
     ensure_project_not_busy(project)
-    if not user["pexels_key"] and not user["pixabay_key"]:
+    if not has_visual_provider(user):
         raise HTTPException(400, "Cadastre ao menos uma chave de API em /settings.")
     parts = db.list_parts(project_id)
     if not parts:
@@ -1569,7 +1639,7 @@ def search_all(
     if not project:
         raise HTTPException(404)
     ensure_project_not_busy(project)
-    if not user["pexels_key"] and not user["pixabay_key"]:
+    if not has_visual_provider(user):
         raise HTTPException(400, "Cadastre ao menos uma chave de API em /settings.")
     scenes = db.list_scenes(project_id)
     if not scenes:
@@ -1608,7 +1678,7 @@ def search_more(
     if not project:
         raise HTTPException(404)
     ensure_project_not_busy(project)
-    if not user["pexels_key"] and not user["pixabay_key"]:
+    if not has_visual_provider(user):
         raise HTTPException(400, "Cadastre ao menos uma chave de API em /settings.")
     config = project_config(project)
     if media not in {"all", "video", "image"}:
@@ -1951,19 +2021,13 @@ def review_page(request: Request, project_id: int, part: Optional[int] = None):
         scenes = [s for s in scenes if int(s.get("part") or 1) == part_idx]
     assets_by_scene = db.list_assets_for_project(project_id)
     review_scenes = []
-    accepted = rejected_waiting = pending_review = 0
     for scene in scenes:
         assets = annotate_assets_with_vision(scene, assets_by_scene.get(scene["id"], []), config)
         chosen = next((a for a in assets if a["state"] in CHOSEN_ASSET_STATES), None)
         scene["chosen"] = chosen
         scene["rejected_count"] = sum(1 for a in assets if a["state"] == "rejected")
-        if chosen and chosen["state"] == "accepted":
-            accepted += 1
-        elif chosen:
-            pending_review += 1
-        else:
-            rejected_waiting += 1
         review_scenes.append(scene)
+    curation_stats = annotate_broll_requirements(review_scenes, config)
     return render_template(
         request,
         "review.html",
@@ -1972,10 +2036,12 @@ def review_page(request: Request, project_id: int, part: Optional[int] = None):
             "project": project,
             "config": config,
             "scenes": review_scenes,
-            "accepted": accepted,
-            "pending_review": pending_review,
-            "rejected_waiting": rejected_waiting,
-            "total": len(review_scenes),
+            "accepted": curation_stats["accepted"],
+            "pending_review": curation_stats["pending"],
+            "rejected_waiting": curation_stats["waiting"],
+            "total": curation_stats["required"],
+            "scene_count": len(review_scenes),
+            "avatar_only_count": curation_stats["avatar_only"],
             "review_round": int(project.get("review_round") or 0),
             "has_report": project.get("status") in {"reviewed", "packaging", "packaged", "package_failed"}
             and curation_report_path(project_id).exists(),
@@ -2109,7 +2175,7 @@ def research_rejected(
     if not project:
         raise HTTPException(404)
     ensure_project_not_busy(project)
-    if not user["pexels_key"] and not user["pixabay_key"]:
+    if not has_visual_provider(user):
         raise HTTPException(400, "Cadastre ao menos uma chave de API em /settings.")
     part_idx: Optional[int] = None
     if part.strip():
@@ -2466,11 +2532,17 @@ def run_package_job(
         for s in scenes:
             s["broll"] = bool(broll_map.get(s["scene_id"], True))
         broll_required = {s["scene_id"] for s in scenes if s["broll"]}
+        required_scene_db_ids = {s["id"] for s in scenes if s["broll"]}
         selected_rows = db.list_assets_by_state(project_id, CHOSEN_ASSET_STATES)
         selected_by_scene = {row["scene_id"]: row for row in selected_rows}
         rejected = db.list_assets_by_state(project_id, ["rejected"])
         missing = missing_selected_scene_ids(scenes, selected_by_scene, broll_required)
-        if not selected_by_scene or missing:
+        has_required_selection = any(scene_id in selected_by_scene for scene_id in required_scene_db_ids)
+        if not broll_required:
+            raise RuntimeError("Plano sem cenas de b-roll; ajuste o roteiro ou as regras antes de gerar pacote.")
+        if missing:
+            raise RuntimeError("Selecao incompleta; escolha um asset para cada cena de b-roll.")
+        if not has_required_selection:
             raise RuntimeError("Selecao incompleta; escolha um asset para cada cena de b-roll.")
         project_work = project_work_dir(project_id)
         remove_project_artifacts(project_id)
@@ -2623,10 +2695,11 @@ def package(
     broll_required = {sid for sid, on in scene_broll_flags(scenes, project_config(project)).items() if on}
     selected_rows = db.list_assets_by_state(project_id, CHOSEN_ASSET_STATES)
     selected_by_scene = {row["scene_id"]: row for row in selected_rows}
+    required_scene_db_ids = {s["id"] for s in scenes if s["scene_id"] in broll_required}
 
-    if not selected_by_scene:
-        raise HTTPException(400, "Selecione ao menos um asset antes de gerar o pacote.")
     missing = missing_selected_scene_ids(scenes, selected_by_scene, broll_required)
+    if not broll_required:
+        raise HTTPException(400, "O plano atual nao tem cenas de b-roll para empacotar.")
     if missing:
         preview = ", ".join(missing[:8])
         suffix = "..." if len(missing) > 8 else ""
@@ -2634,6 +2707,8 @@ def package(
             400,
             f"Selecione um asset para todas as cenas de b-roll antes de gerar o pacote. Faltando: {preview}{suffix}",
         )
+    if not any(scene_id in selected_by_scene for scene_id in required_scene_db_ids):
+        raise HTTPException(400, "Selecione ao menos um asset antes de gerar o pacote.")
     ensure_no_active_job(project_id, "package")
     job_id = db.create_job(user["id"], "package", project_id, "Preparando pacote ZIP")
     db.set_project_status(project_id, "packaging")
@@ -3014,7 +3089,19 @@ def project_diagnostics_json(request: Request, project_id: int, refresh: str = "
     if not project:
         raise HTTPException(404)
     scenes = db.list_scenes(project_id)
-    selected = {row["scene_id"] for row in db.list_assets_by_state(project_id, CHOSEN_ASSET_STATES)}
+    assets_by_scene = db.list_assets_for_project(project_id)
+    for scene in scenes:
+        scene_assets = assets_by_scene.get(scene["id"], [])
+        scene["assets"] = scene_assets
+        scene["selected"] = next((a for a in scene_assets if a["state"] in CHOSEN_ASSET_STATES), None)
+    curation_stats = annotate_broll_requirements(scenes, project_config(project))
+    broll_required = {sid for sid, on in scene_broll_flags(scenes, project_config(project)).items() if on}
+    scene_code_by_id = {scene["id"]: scene["scene_id"] for scene in scenes}
+    selected = {
+        row["scene_id"]
+        for row in db.list_assets_by_state(project_id, CHOSEN_ASSET_STATES)
+        if scene_code_by_id.get(row["scene_id"]) in broll_required
+    }
     project_work = project_work_dir(project_id)
     validation = None
     if refresh:
@@ -3026,16 +3113,30 @@ def project_diagnostics_json(request: Request, project_id: int, refresh: str = "
         project_work=project_work,
         zip_path=latest_zip(project_work),
         selected_count=len(selected),
-        scene_count=len(scenes),
+        scene_count=len(broll_required),
+        total_scene_count=len(scenes),
         expected_duration=expected_duration_from_scenes(scenes),
     )
     if validation:
         snapshot["outputs"]["validation"] = validation
+    jobs = db.list_project_jobs(project_id, user["id"])
+    outputs = local_output_videos(project_work)
     return JSONResponse(
         {
             "project": {"id": project_id, "name": project["name"], "status": project["status"]},
             "diagnostics": snapshot,
-            "jobs": db.list_project_jobs(project_id, user["id"]),
+            "operational_state": ops_status.project_state(
+                project,
+                scenes=scenes,
+                asset_count=sum(len(items) for items in assets_by_scene.values()),
+                curation_stats=curation_stats,
+                jobs=jobs,
+                parts=db.list_parts(project_id) if project_config(project).get("long_mode") else [],
+                outputs=outputs,
+                diagnostics=snapshot,
+                has_asset_keys=has_visual_provider(user),
+            ),
+            "jobs": jobs,
         }
     )
 

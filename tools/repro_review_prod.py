@@ -46,7 +46,9 @@ def meta_csrf(html: str) -> str:
 
 SCRIPT = """[00:00.0 - 00:05.0] Primeira frase do roteiro de teste.
 [00:05.0 - 00:10.0] Segunda frase do roteiro de teste.
-[00:10.0 - 00:15.0] Terceira frase do roteiro de teste."""
+[00:10.0 - 00:15.0] Terceira frase do roteiro de teste.
+[00:15.0 - 00:20.0] Quarta frase do roteiro de teste.
+[00:20.0 - 00:25.0] Quinta frase do roteiro de teste."""
 
 with client:
     # registro do primeiro usuario (ALLOW_FIRST_USER) exige csrf da pagina
@@ -79,15 +81,20 @@ with client:
         s["visual_goal"] = "test"
     db.replace_scenes(pid, scenes)
     db.set_project_status(pid, "reviewing")
-    for scene in db.list_scenes(pid):
+    persisted_scenes = db.list_scenes(pid)
+    for scene in persisted_scenes:
         db.add_assets(scene["id"], [{
             "source": "pixabay", "source_id": f"a{scene['id']}", "asset_type": "image",
             "preview_url": "https://example.com/p.jpg", "download_url": "https://example.com/d.jpg",
             "page_url": "", "width": 1920, "height": 1080, "duration": 0,
             "keyword": "test", "author": "tester", "author_url": "",
         }])
+    broll_map = app_module.scene_broll_flags(persisted_scenes, app_module.project_config(db.get_project(pid, 1)))
+    scene_by_db_id = {scene["id"]: scene for scene in persisted_scenes}
     for a in db.list_assets_by_state(pid, ["pending"]):
-        db.set_asset_state(a["id"], "selected", auto_score=5.0, auto_reason="repro")
+        scene = scene_by_db_id[a["scene_id"]]
+        if broll_map.get(scene["scene_id"], True):
+            db.set_asset_state(a["id"], "selected", auto_score=5.0, auto_reason="repro")
 
     # --- abre a tela de revisao como o browser ---
     r = client.get(f"/projects/{pid}/review")
