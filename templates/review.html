@@ -5,7 +5,7 @@
 <div class="page-head">
   <div>
     <a class="back-link" href="/projects/{{ project.id }}">&larr; Console do projeto</a>
-    <p class="tag" style="margin-bottom:var(--sp-2)">Revisão de takes{% if review_round %} · rodada {{ review_round }}{% endif %}</p>
+    <p class="tag" style="margin-bottom:var(--sp-2)">Revisão de takes{% if part_idx %} · parte {{ part_idx }}/{{ total_parts }}{% endif %}{% if review_round %} · rodada {{ review_round }}{% endif %}</p>
     <h1>{{ project.name }}</h1>
   </div>
   <div class="head-status">
@@ -78,7 +78,7 @@
                 data-scene="{{ scene.id }}" data-asset="{{ a.id }}" data-state="accepted" style="display:contents">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="state" value="accepted">
-            <input type="hidden" name="redirect" value="/projects/{{ project.id }}/review">
+            <input type="hidden" name="redirect" value="/projects/{{ project.id }}/review{% if part_idx %}?part={{ part_idx }}{% endif %}">
             <button type="submit" class="btn btn-primary btn-sm review-accept"
                     {% if a.state == 'accepted' %}disabled{% endif %}>
               {% if a.state == 'accepted' %}✓ Aceito{% else %}Aceitar{% endif %}
@@ -88,7 +88,7 @@
                 data-scene="{{ scene.id }}" data-asset="{{ a.id }}" data-state="rejected" style="display:contents">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="state" value="rejected">
-            <input type="hidden" name="redirect" value="/projects/{{ project.id }}/review">
+            <input type="hidden" name="redirect" value="/projects/{{ project.id }}/review{% if part_idx %}?part={{ part_idx }}{% endif %}">
             <button type="submit" class="btn btn-danger btn-sm review-reject">Rejeitar</button>
           </form>
           <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}#scene-{{ scene.id }}">ver alternativas</a>
@@ -133,12 +133,25 @@
     {% endif %}
     <form method="post" action="/projects/{{ project.id }}/research-rejected" data-busy-submit style="display:inline">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      {% if part_idx %}<input type="hidden" name="part" value="{{ part_idx }}">{% endif %}
       <button class="btn btn-secondary btn-sm" id="btn-research" type="submit"
               {% if rejected_waiting == 0 %}disabled{% endif %}>
-        Buscar melhores para as rejeitadas
+        Buscar melhores para as rejeitadas{% if part_idx %} (parte {{ part_idx }}){% endif %}
       </button>
     </form>
-    {% if project.status in ['reviewed', 'needs_package', 'package_failed'] %}
+    {% if part_idx %}
+      {% if part_curated %}
+        <a class="btn btn-primary btn-sm" href="/projects/{{ project.id }}#parts-panel">✓ Parte {{ part_idx }} curada — voltar ao console</a>
+      {% else %}
+        <form method="post" action="/projects/{{ project.id }}/parts/{{ part_idx }}/confirm" data-busy-submit style="display:inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="btn btn-primary btn-sm" id="btn-confirm-part" type="submit"
+                  {% if accepted != total %}disabled{% endif %}>
+            Confirmar parte {{ part_idx }}{% if accepted != total %} ({{ accepted }}/{{ total }}){% endif %}
+          </button>
+        </form>
+      {% endif %}
+    {% elif project.status in ['reviewed', 'needs_package', 'package_failed'] %}
       <form method="post" action="/projects/{{ project.id }}/package" data-busy-submit style="display:inline">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button class="btn btn-primary btn-sm" id="btn-package-review" type="submit"
@@ -239,6 +252,15 @@ function updateReviewBar() {
   if (finish) {
     finish.disabled = accepted !== cards.length;
     finish.textContent = accepted === cards.length ? "Concluir revisão" : `Concluir revisão (${accepted}/${cards.length})`;
+  }
+  const confirmPart = document.getElementById("btn-confirm-part");
+  if (confirmPart) {
+    const base = confirmPart.dataset.label || confirmPart.textContent.trim();
+    confirmPart.dataset.label = base.replace(/\s*\(\d+\/\d+\)\s*$/, "");
+    confirmPart.disabled = accepted !== cards.length;
+    confirmPart.textContent = accepted === cards.length
+      ? confirmPart.dataset.label
+      : `${confirmPart.dataset.label} (${accepted}/${cards.length})`;
   }
 }
 </script>

@@ -1043,6 +1043,7 @@ def project_page(request: Request, project_id: int):
     outputs = local_output_videos(project_work)
     jobs = db.list_project_jobs(project_id, user["id"])
     active_jobs = [job for job in jobs if job.get("status") in ACTIVE_JOB_STATUSES]
+    parts = db.list_parts(project_id) if config.get("long_mode") else []
     return render_template(
         request,
         "project.html",
@@ -1065,10 +1066,19 @@ def project_page(request: Request, project_id: int):
             "jobs": jobs,
             "active_jobs": active_jobs,
             "active_job_statuses": ACTIVE_JOB_STATUSES,
-            "parts": db.list_parts(project_id) if config.get("long_mode") else [],
+            "parts": parts,
             "parts_job_active": any(
                 j["kind"] in {"kaggle_parts", "concat_parts"} and j["status"] in ACTIVE_JOB_STATUSES
                 for j in jobs
+            ),
+            "search_part_active": any(
+                j["kind"] == "search_part" and j["status"] in ACTIVE_JOB_STATUSES for j in jobs
+            ),
+            "all_parts_curated": bool(parts)
+            and all(p.get("curation_status") == "curated" for p in parts),
+            "current_part": next(
+                (p["part_idx"] for p in parts if p.get("curation_status") != "curated"),
+                (parts[-1]["part_idx"] if parts else None),
             ),
         },
     )
@@ -1196,13 +1206,17 @@ def auto_select_for_project(
     groq_model: str,
     job_id: Optional[int] = None,
     review_round: int = 0,
+    part_idx: Optional[int] = None,
 ) -> int:
     """Escolhe o melhor take pendente para cada cena sem take aceito.
 
     Cenas com asset 'accepted' (aprovado na revisao) nunca sao tocadas.
+    Quando ``part_idx`` e informado, so considera as cenas daquela parte.
     Retorna o numero de cenas com take selecionado automaticamente.
     """
     scenes = db.list_scenes(project_id)
+    if part_idx is not None:
+        scenes = [s for s in scenes if int(s.get("part") or 1) == part_idx]
     assets_by_scene = db.list_assets_for_project(project_id)
     target_scenes = []
     candidates_by_scene: dict[int, list[dict]] = {}
@@ -1328,6 +1342,218 @@ def run_search_job(
     except Exception as exc:  # noqa: BLE001
         db.set_project_status(project_id, "search_failed")
         db.fail_job(job_id, "Falha na busca de assets", str(exc))
+
+
+def run_part_search_job(
+    job_id: int,
+    project_id: int,
+    user_id: int,
+    part_idx: int,
+    pexels_key: str,
+    pixabay_key: str,
+    groq_key: str = "",
+    groq_model: str = "",
+    coverr_key: str = "",
+    nvidia_key: str = "",
+) -> None:
+    """Busca assets de UMA parte e ja faz a selecao automatica em seguida.
+
+    Cada parte e um job proprio e independente: se a parte 3 falhar por
+    rate-limit, as partes 1-2 ja confirmadas nao se perdem (era o risco do
+    job unico que varria todas as cenas de uma vez).
+    """
+    try:
+        check_job_canceled(job_id)
+        db.update_part(project_id, part_idx, curation_status="searching")
+        db.update_job(job_id, status="running", message=f"Buscando assets da parte {part_idx}")
+        project = db.get_project(project_id, user_id)
+        if not project:
+            raise RuntimeError("Projeto nao encontrado.")
+        config = project_config(project)
+        max_w = resolution_width(config)
+        all_scenes = db.list_scenes(project_id)
+        scenes = [s for s in all_scenes if int(s.get("part") or 1) == part_idx]
+        if not scenes:
+            raise RuntimeError(f"Parte {part_idx} sem cenas.")
+        seen: set = set()
+        total_added = 0
+        empty_scenes: list[str] = []
+        broll_map = scene_broll_flags(scenes, config)
+        broll_count = sum(1 for s in scenes if broll_map.get(s["scene_id"], True))
+        for scene in scenes:
+            check_job_canceled(job_id)
+            if not broll_map.get(scene["scene_id"], True):
+                continue
+            db.update_job(job_id, status="running", message=f"Buscando {scene['scene_id']}")
+            results = asset_search.search_scene(
+                scene["keywords"],
+                pexels_key,
+                pixabay_key,
+                max_w=max_w,
+                per_keyword=config["per_keyword"],
+                allow_images=bool(config["image_fallback"]),
+                seen_urls=seen,
+                coverr_key=coverr_key,
+                extra_image_banks=True,
+            )
+            check_job_canceled(job_id)
+            added = db.add_assets(scene["id"], results)
+            total_added += added
+            if added == 0:
+                empty_scenes.append(scene["scene_id"])
+        if broll_count > 0 and total_added <= 0:
+            raise RuntimeError("Busca retornou zero assets. Verifique chaves, keywords ou disponibilidade das APIs.")
+
+        # Selecao automatica embutida: ao terminar a busca da parte, a IA ja
+        # escolhe o melhor take de cada cena e a parte cai direto na revisao.
+        check_job_canceled(job_id)
+        db.update_job(job_id, status="running", message="Selecionando os melhores takes")
+        chosen = auto_select_for_project(
+            project_id, config, groq_key, groq_model, job_id=job_id,
+            review_round=int(project.get("review_round") or 0), part_idx=part_idx,
+        )
+
+        check_job_canceled(job_id)
+        db.update_part(project_id, part_idx, curation_status="reviewing")
+        db.set_project_status(project_id, "reviewing")
+        db.finish_job(
+            job_id,
+            f"Parte {part_idx}: {total_added} takes buscados, {chosen} selecionados",
+            {
+                "part": part_idx,
+                "added": total_added,
+                "empty_scenes": empty_scenes,
+                "scenes": len(scenes),
+                "auto_selected": chosen,
+            },
+        )
+    except JobCanceled:
+        db.update_part(project_id, part_idx, curation_status="pending")
+        finish_canceled_job(job_id, project_id, "search_part")
+    except Exception as exc:  # noqa: BLE001
+        db.update_part(project_id, part_idx, curation_status="pending")
+        db.fail_job(job_id, f"Falha na busca da parte {part_idx}", str(exc))
+
+
+@app.post("/projects/{project_id}/parts/{part_idx}/search")
+def search_part(
+    request: Request,
+    project_id: int,
+    part_idx: int,
+    background_tasks: BackgroundTasks,
+    csrf_token: str = Form(""),
+):
+    user = require_user(request)
+    verify_csrf(request, csrf_token)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    ensure_project_not_busy(project)
+    if not user["pexels_key"] and not user["pixabay_key"]:
+        raise HTTPException(400, "Cadastre ao menos uma chave de API em /settings.")
+    parts = db.list_parts(project_id)
+    if not parts:
+        raise HTTPException(400, "Gere o mapa visual antes de buscar assets.")
+    part = db.get_part(project_id, part_idx)
+    if not part:
+        raise HTTPException(404, "Parte nao encontrada.")
+    # Fluxo estritamente sequencial: so libera esta parte se a anterior ja foi curada.
+    if part_idx > 1:
+        prev = db.get_part(project_id, part_idx - 1)
+        if not prev or prev.get("curation_status") != "curated":
+            raise HTTPException(400, f"Conclua a parte {part_idx - 1} antes de buscar a parte {part_idx}.")
+    ensure_no_active_job(project_id, "search_part")
+    job_id = db.create_job(
+        user["id"], "search_part", project_id, f"Busca da parte {part_idx} na fila"
+    )
+    db.set_project_status(project_id, "searching")
+    background_tasks.add_task(
+        run_part_search_job,
+        job_id,
+        project_id,
+        user["id"],
+        part_idx,
+        user.get("pexels_key", ""),
+        user.get("pixabay_key", ""),
+        user.get("groq_key", ""),
+        user.get("groq_model") or groq_service.DEFAULT_MODEL,
+        user.get("coverr_key", ""),
+        user.get("nvidia_key", ""),
+    )
+    return RedirectResponse(f"/projects/{project_id}/review?part={part_idx}", status_code=303)
+
+
+@app.post("/projects/{project_id}/parts/{part_idx}/confirm")
+def confirm_part(
+    request: Request,
+    project_id: int,
+    part_idx: int,
+    csrf_token: str = Form(""),
+):
+    user = require_user(request)
+    verify_csrf(request, csrf_token)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    ensure_project_not_busy(project)
+    part = db.get_part(project_id, part_idx)
+    if not part:
+        raise HTTPException(404, "Parte nao encontrada.")
+    config = project_config(project)
+    scenes = [s for s in db.list_scenes(project_id) if int(s.get("part") or 1) == part_idx]
+    if not scenes:
+        raise HTTPException(400, "Parte sem cenas.")
+    # cenas avatar-only nao precisam de take aceito (nao levam b-roll)
+    broll_required = {sid for sid, on in scene_broll_flags(scenes, config).items() if on}
+    assets_by_scene = db.list_assets_for_project(project_id)
+    not_accepted: list[str] = []
+    for scene in scenes:
+        assets = assets_by_scene.get(scene["id"], [])
+        accepted = next((a for a in assets if a["state"] == "accepted"), None)
+        if not accepted and scene["scene_id"] in broll_required:
+            not_accepted.append(scene["scene_id"])
+    if not_accepted:
+        preview = ", ".join(not_accepted[:8])
+        suffix = "..." if len(not_accepted) > 8 else ""
+        raise HTTPException(400, f"Aceite um take para todas as cenas de b-roll da parte {part_idx}. Faltando: {preview}{suffix}")
+
+    db.update_part(project_id, part_idx, curation_status="curated")
+
+    # Se todas as partes ficaram curadas, gera o relatorio de curadoria completo
+    # e marca o projeto como revisado (libera o Pacote).
+    parts = db.list_parts(project_id)
+    all_curated = all(p.get("curation_status") == "curated" for p in parts)
+    if all_curated:
+        all_scenes = db.list_scenes(project_id)
+        chosen_by_scene: dict[int, dict] = {}
+        for scene in all_scenes:
+            accepted = next(
+                (a for a in assets_by_scene.get(scene["id"], []) if a["state"] == "accepted"), None
+            )
+            if accepted:
+                chosen_by_scene[scene["id"]] = accepted
+        rejected_by_scene = {
+            scene["id"]: [a for a in assets_by_scene.get(scene["id"], []) if a["state"] == "rejected"]
+            for scene in all_scenes
+        }
+        report = packager.build_curation_report(
+            project,
+            all_scenes,
+            chosen_by_scene,
+            rejected_by_scene,
+            review_round=int(project.get("review_round") or 0),
+        )
+        path = curation_report_path(project_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(report, encoding="utf-8")
+        db.set_project_status(project_id, "reviewed")
+        return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+    # Senao, avanca para a proxima parte ainda nao curada.
+    next_part = next(
+        (p["part_idx"] for p in parts if p.get("curation_status") != "curated"), part_idx
+    )
+    return RedirectResponse(f"/projects/{project_id}?part={next_part}#parts-panel", status_code=303)
 
 
 @app.post("/projects/{project_id}/search")
@@ -1456,6 +1682,20 @@ def asset_state(
     updated = db.set_asset_state(asset_id, state)
     if not updated:
         raise HTTPException(404)
+
+    # Modo longo: mexer num take de uma parte ja curada exige re-confirmar a parte.
+    if project_config(project).get("long_mode"):
+        asset = db.get_asset(asset_id)
+        scene = db.get_scene(asset["scene_id"]) if asset else None
+        if scene:
+            p_idx = int(scene.get("part") or 1)
+            part = db.get_part(owner["project_id"], p_idx)
+            if part and part.get("curation_status") == "curated":
+                db.update_part(owner["project_id"], p_idx, curation_status="reviewing")
+                curation_report_path(owner["project_id"]).unlink(missing_ok=True)
+                if project.get("status") == "reviewed":
+                    db.set_project_status(owner["project_id"], "reviewing")
+
     status = project.get("status")
     project_status = status
     if status == "reviewed":
@@ -1689,13 +1929,26 @@ def analyze_vision_route(
 
 
 @app.get("/projects/{project_id}/review", response_class=HTMLResponse)
-def review_page(request: Request, project_id: int):
+def review_page(request: Request, project_id: int, part: Optional[int] = None):
     user = require_user(request)
     project = db.get_project(project_id, user["id"])
     if not project:
         raise HTTPException(404)
     config = project_config(project)
     scenes = db.list_scenes(project_id)
+    parts = db.list_parts(project_id) if config.get("long_mode") else []
+    part_idx = None
+    if parts:
+        valid = {p["part_idx"] for p in parts}
+        # parte explicita ou a primeira ainda nao curada (driver sequencial)
+        if part in valid:
+            part_idx = part
+        else:
+            part_idx = next(
+                (p["part_idx"] for p in parts if p.get("curation_status") != "curated"),
+                parts[0]["part_idx"],
+            )
+        scenes = [s for s in scenes if int(s.get("part") or 1) == part_idx]
     assets_by_scene = db.list_assets_for_project(project_id)
     review_scenes = []
     accepted = rejected_waiting = pending_review = 0
@@ -1726,6 +1979,10 @@ def review_page(request: Request, project_id: int):
             "review_round": int(project.get("review_round") or 0),
             "has_report": project.get("status") in {"reviewed", "packaging", "packaged", "package_failed"}
             and curation_report_path(project_id).exists(),
+            "part_idx": part_idx,
+            "total_parts": len(parts),
+            "part_curated": part_idx is not None
+            and any(p["part_idx"] == part_idx and p.get("curation_status") == "curated" for p in parts),
         },
     )
 
@@ -1740,6 +1997,7 @@ def run_research_job(
     groq_model: str,
     coverr_key: str = "",
     nvidia_key: str = "",
+    part_idx: Optional[int] = None,
 ) -> None:
     try:
         check_job_canceled(job_id)
@@ -1753,6 +2011,8 @@ def run_research_job(
         db.set_project_review_round(project_id, new_round)
 
         scenes = db.list_scenes(project_id)
+        if part_idx is not None:
+            scenes = [s for s in scenes if int(s.get("part") or 1) == part_idx]
         assets_by_scene = db.list_assets_for_project(project_id)
         targets = [
             s for s in scenes
@@ -1797,26 +2057,30 @@ def run_research_job(
             check_job_canceled(job_id)
             added_total += db.add_assets(scene["id"], results)
 
-        # pontua os novos takes antes de escolher, para a selecao usar a visao
-        try:
-            check_job_canceled(job_id)
-            db.update_job(job_id, status="running", message="Analisando visao dos novos takes")
-            analyze_pending_vision(
-                project_id,
-                user_id,
-                groq_key,
-                progress=lambda done, total: check_job_canceled(job_id),
-                nvidia_key=nvidia_key,
-            )
-        except Exception as vexc:  # noqa: BLE001
-            if isinstance(vexc, JobCanceled):
-                raise
-            logger.warning("Analise de visao na re-busca falhou: %s", vexc)
+        # pontua os novos takes antes de escolher, para a selecao usar a visao.
+        # No fluxo por-parte pulamos a visao em massa (e sob demanda e ficaria
+        # cara reanalisando todo o projeto) -> a re-busca da parte fica rapida.
+        if part_idx is None:
+            try:
+                check_job_canceled(job_id)
+                db.update_job(job_id, status="running", message="Analisando visao dos novos takes")
+                analyze_pending_vision(
+                    project_id,
+                    user_id,
+                    groq_key,
+                    progress=lambda done, total: check_job_canceled(job_id),
+                    nvidia_key=nvidia_key,
+                )
+            except Exception as vexc:  # noqa: BLE001
+                if isinstance(vexc, JobCanceled):
+                    raise
+                logger.warning("Analise de visao na re-busca falhou: %s", vexc)
 
         check_job_canceled(job_id)
         db.update_job(job_id, status="running", message="Selecionando os melhores takes novos")
         chosen = auto_select_for_project(
-            project_id, config, groq_key, groq_model, job_id=job_id, review_round=new_round,
+            project_id, config, groq_key, groq_model, job_id=job_id,
+            review_round=new_round, part_idx=part_idx,
         )
         db.set_project_status(project_id, "reviewing")
         db.finish_job(
@@ -1837,6 +2101,7 @@ def research_rejected(
     project_id: int,
     background_tasks: BackgroundTasks,
     csrf_token: str = Form(""),
+    part: str = Form(""),
 ):
     user = require_user(request)
     verify_csrf(request, csrf_token)
@@ -1846,6 +2111,12 @@ def research_rejected(
     ensure_project_not_busy(project)
     if not user["pexels_key"] and not user["pixabay_key"]:
         raise HTTPException(400, "Cadastre ao menos uma chave de API em /settings.")
+    part_idx: Optional[int] = None
+    if part.strip():
+        try:
+            part_idx = int(part)
+        except ValueError:
+            part_idx = None
     ensure_no_active_job(project_id, "research_rejected")
     job_id = db.create_job(user["id"], "research_rejected", project_id, "Nova busca na fila")
     db.set_project_status(project_id, "researching")
@@ -1860,8 +2131,10 @@ def research_rejected(
         user.get("groq_model") or groq_service.DEFAULT_MODEL,
         user.get("coverr_key", ""),
         user.get("nvidia_key", ""),
+        part_idx,
     )
-    return RedirectResponse(f"/projects/{project_id}/review", status_code=303)
+    suffix = f"?part={part_idx}" if part_idx is not None else ""
+    return RedirectResponse(f"/projects/{project_id}/review{suffix}", status_code=303)
 
 
 @app.post("/projects/{project_id}/finish-review")
@@ -2337,6 +2610,15 @@ def package(
     if not project:
         raise HTTPException(404)
     ensure_project_not_busy(project)
+    if project_config(project).get("long_mode"):
+        parts = db.list_parts(project_id)
+        not_curated = [p["part_idx"] for p in parts if p.get("curation_status") != "curated"]
+        if not parts or not_curated:
+            preview = ", ".join(str(i) for i in not_curated[:8])
+            raise HTTPException(
+                400,
+                f"Conclua a curadoria de todas as partes antes de gerar o pacote. Faltando: {preview}",
+            )
     scenes = db.list_scenes(project_id)
     broll_required = {sid for sid, on in scene_broll_flags(scenes, project_config(project)).items() if on}
     selected_rows = db.list_assets_by_state(project_id, CHOSEN_ASSET_STATES)

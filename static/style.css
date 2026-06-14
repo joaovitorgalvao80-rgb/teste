@@ -620,6 +620,13 @@ label.check input { width: auto; accent-color: var(--paper-0); }
 .part-status-done      { color: var(--ok); }
 .part-status-error     { color: var(--err); }
 
+.parts-table tr.is-current { background: color-mix(in srgb, var(--rec) 8%, transparent); }
+.parts-table td.part-curation { white-space: nowrap; }
+.parts-table td.part-curation .btn { margin-left: var(--sp-2); }
+.part-curation-curated  { color: var(--ok); }
+.part-curation-searching,
+.part-curation-reviewing { color: var(--warn); }
+
 .part-divider {
   margin: var(--sp-6) 0 var(--sp-4);
   padding-bottom: var(--sp-2);

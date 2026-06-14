@@ -26,6 +26,14 @@
         <span class="step-name">Mapa visual</span>
       </button>
     </form>
+    {% if config.long_mode %}
+    {% set parts_curated = parts | selectattr('curation_status', 'equalto', 'curated') | list | length %}
+    <a class="step {% if all_parts_curated %}is-done{% elif parts and parts_curated < parts|length and project.status in ['reviewing','searching'] %}is-active{% endif %}"
+       href="#parts-panel">
+      <span class="step-idx">02</span>
+      <span class="step-name">Curadoria por parte ({{ parts_curated }}/{{ parts|length }})</span>
+    </a>
+    {% else %}
     <form method="post" action="/projects/{{ project.id }}/search" style="flex:1;display:contents" data-busy-submit>
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button class="step {% if project.status in ['searched','reviewing','reviewed','packaged','needs_package','packaging','package_failed'] %}is-done{% endif %}" type="submit"
@@ -48,10 +56,15 @@
       <span class="step-idx">2B</span>
       <span class="step-name">Revisão ({{ accepted_count }}/{{ scenes|length }})</span>
     </a>
+    {% endif %}
     <form method="post" action="/projects/{{ project.id }}/package" style="flex:1;display:contents" data-busy-submit>
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button class="step {% if project.status == 'packaged' %}is-done{% endif %}" id="btn-package" type="submit"
-              {% if scenes|length == 0 or selected_count != scenes|length or project.status in ['mapping','searching','packaging'] %}disabled{% endif %}>
+              {% if config.long_mode %}
+                {% if not all_parts_curated or project.status in ['mapping','searching','packaging'] %}disabled{% endif %}
+              {% else %}
+                {% if scenes|length == 0 or selected_count != scenes|length or project.status in ['mapping','searching','packaging'] %}disabled{% endif %}
+              {% endif %}>
         <span class="step-idx">03</span>
         <span class="step-name">Pacote ({{ selected_count }}/{{ scenes|length }})</span>
       </button>
@@ -96,6 +109,7 @@
          {% if not scenes %}aria-disabled="true"{% endif %}>
         Escolher manualmente
       </a>
+      {% if not config.long_mode %}
       <form method="post" action="/projects/{{ project.id }}/auto-select" data-busy-submit>
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button class="btn btn-secondary btn-sm" type="submit"
@@ -103,6 +117,7 @@
           Selecao automatica
         </button>
       </form>
+      {% endif %}
       <form method="post" action="/projects/{{ project.id }}/analyze-vision" data-busy-submit>
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button class="btn btn-ghost btn-sm" type="submit"
@@ -163,19 +178,44 @@
     <div class="row-between" style="margin-bottom:var(--sp-3)">
       <span class="tag">Partes do vídeo ({{ parts|length }})</span>
       <span class="t-small t-faint" id="parts-job-msg">
-        {% if parts_job_active %}processando — mantenha o servidor aberto{% else %}render sequencial; o servidor precisa ficar aberto{% endif %}
+        {% if all_parts_curated %}curadoria concluída — gere o pacote (03)
+        {% elif search_part_active %}buscando assets da parte — mantenha o servidor aberto
+        {% else %}busque e revise uma parte por vez, em ordem{% endif %}
       </span>
     </div>
     <table class="parts-table" id="parts-table">
       <thead>
-        <tr><th>parte</th><th>cenas</th><th>duração</th><th>status</th><th>kernel</th></tr>
+        <tr><th>parte</th><th>cenas</th><th>duração</th><th>curadoria</th><th>status</th><th>kernel</th></tr>
       </thead>
       <tbody>
         {% for p in parts %}
-        <tr data-part="{{ p.part_idx }}">
+        <tr data-part="{{ p.part_idx }}"{% if p.part_idx == current_part and not all_parts_curated %} class="is-current"{% endif %}>
           <td>{{ '%02d'|format(p.part_idx) }}</td>
           <td>{{ p.scene_count }}</td>
           <td>{{ '%.0f'|format(p.duration) }}s</td>
+          <td class="part-curation part-curation-{{ p.curation_status }}">
+            {% if p.curation_status == 'curated' %}
+              <span class="tally tally-ok">✓ curada</span>
+              <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}/review?part={{ p.part_idx }}">rever</a>
+            {% elif search_part_active and p.part_idx == current_part %}
+              <span class="tally tally-warn">buscando…</span>
+            {% elif p.part_idx == current_part %}
+              {% if p.curation_status in ['searched', 'reviewing'] %}
+                <a class="btn btn-primary btn-sm" href="/projects/{{ project.id }}/review?part={{ p.part_idx }}">Revisar parte →</a>
+                <form method="post" action="/projects/{{ project.id }}/parts/{{ p.part_idx }}/search" style="display:inline" data-busy-submit>
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <button class="btn btn-ghost btn-sm" type="submit" {% if search_part_active %}disabled{% endif %}>rebuscar</button>
+                </form>
+              {% else %}
+                <form method="post" action="/projects/{{ project.id }}/parts/{{ p.part_idx }}/search" style="display:inline" data-busy-submit>
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <button class="btn btn-primary btn-sm" type="submit" {% if not has_keys or search_part_active %}disabled{% endif %}>Buscar assets desta parte</button>
+                </form>
+              {% endif %}
+            {% else %}
+              <span class="tally t-faint">🔒 aguardando parte anterior</span>
+            {% endif %}
+          </td>
           <td class="part-status part-status-{{ p.status }}">{{ p.status }}{% if p.error %} — {{ p.error[:80] }}{% endif %}</td>
           <td class="part-kernel">
             {% if p.kernel_slug and user.kaggle_username %}

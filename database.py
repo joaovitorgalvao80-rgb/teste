@@ -185,6 +185,7 @@ CREATE TABLE IF NOT EXISTS render_parts (
     dataset_slug TEXT DEFAULT '',
     kernel_slug  TEXT DEFAULT '',
     status       TEXT DEFAULT 'pending',
+    curation_status TEXT DEFAULT 'pending',
     video_path   TEXT DEFAULT '',
     error        TEXT DEFAULT '',
     updated_at   REAL DEFAULT 0,
@@ -234,6 +235,7 @@ _MIGRATIONS = [
     "ALTER TABLE assets ADD COLUMN vision_flags_json TEXT DEFAULT '[]'",
     "ALTER TABLE assets ADD COLUMN vision_provider TEXT DEFAULT ''",
     "ALTER TABLE assets ADD COLUMN vision_analyzed INTEGER DEFAULT 0",
+    "ALTER TABLE render_parts ADD COLUMN curation_status TEXT DEFAULT 'pending'",
 ]
 
 
@@ -1005,9 +1007,21 @@ def list_parts(project_id: int) -> list[dict]:
         conn.close()
 
 
+def get_part(project_id: int, part_idx: int) -> Optional[dict]:
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM render_parts WHERE project_id = ? AND part_idx = ?",
+            (project_id, part_idx),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
 def update_part(project_id: int, part_idx: int, **fields: Any) -> None:
     allowed = {"scene_count", "duration", "zip_name", "dataset_slug", "kernel_slug",
-               "status", "video_path", "error"}
+               "status", "curation_status", "video_path", "error"}
     sets = []
     values: list[Any] = []
     for key, value in fields.items():
