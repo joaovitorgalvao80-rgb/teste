@@ -101,7 +101,7 @@ class HeuristicScoreTest(unittest.TestCase):
         choices = auto_select.choose_best_takes(
             [scene], {scene["id"]: candidates}, CONFIG, groq_key=""
         )
-        chosen_asset_id, score, reason = choices[scene["id"]]
+        chosen_asset_id, _, reason = choices[scene["id"]]
         self.assertEqual(chosen_asset_id, 11)
         self.assertIn("relevância", reason)
 
@@ -188,7 +188,7 @@ class VisionAdapterTest(unittest.TestCase):
 
         class _R:
             status_code = 200
-            def raise_for_status(self): pass
+            def raise_for_status(self): pass  # stub de resposta HTTP 200: nada a levantar
             def json(self):
                 return {"choices": [{"message": {"content":
                     '{"score": 88, "reasons": ["combina"], "flags": []}'}}]}
@@ -223,7 +223,7 @@ class VisionAdapterTest(unittest.TestCase):
 
         class _R:
             status_code = 200
-            def raise_for_status(self): pass
+            def raise_for_status(self): pass  # stub de resposta HTTP 200: nada a levantar
             def json(self):
                 return {"choices": [{"message": {"content": (
                     '{"items":[{"n":1,"desc":"mosquito na agua","score":90,"flags":[]},'
@@ -259,7 +259,7 @@ class KeywordFallbackTest(unittest.TestCase):
     def test_fallback_strips_portuguese_stopwords(self) -> None:
         scene = {"scene_id": "scene_001", "zone": "GANCHO",
                  "narration": "Voce sabia que quando isso acontece o problema fica pior?"}
-        brief = groq_service.fallback_scene_brief(scene, "documentary", "right")
+        brief = groq_service.fallback_scene_brief(scene, "right")
         joined = " ".join(brief["keywords"]).lower()
         # stopwords PT não devem virar termos de busca
         for stop in ("voce", "quando", "isso", "que"):
@@ -271,7 +271,7 @@ class KeywordFallbackTest(unittest.TestCase):
         # tokens da narracao, sempre devolvendo keywords nao vazias e em ingles.
         scene = {"scene_id": "scene_001", "zone": "CTA",
                  "narration": "Aplique o produto e proteja sua casa hoje"}
-        brief = groq_service.fallback_scene_brief(scene, "documentary", "right")
+        brief = groq_service.fallback_scene_brief(scene, "right")
         joined = " ".join(brief["keywords"]).lower()
         self.assertTrue(brief["keywords"])
         # algum filler de CTA deve aparecer

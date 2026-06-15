@@ -29,7 +29,7 @@ async function getJSON(url) {
   }
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
-    try { const j = await res.json(); msg = j.detail || j.error || msg; } catch (_) {}
+    try { const j = await res.json(); msg = j.detail || j.error || msg; } catch (_) { /* corpo nao-JSON: mantem msg padrao */ }
     throw new Error(msg);
   }
   return res.json();
@@ -43,7 +43,7 @@ async function postForm(url, data) {
   if (!resp.ok) {
     let msg = `HTTP ${resp.status}`;
     try { const j = await resp.json(); msg = j.detail || j.error || msg; }
-    catch (_) { try { msg = (await resp.text()).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 200); } catch (_) {} }
+    catch (_) { try { msg = (await resp.text()).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 200); } catch (_) { /* corpo ilegivel: mantem msg padrao */ } }
     throw new Error(msg);
   }
   return resp.json();
@@ -96,7 +96,7 @@ function updateSelectedCount() {
   });
   const statusBadge = document.querySelector(".head-status .badge");
   const status = statusBadge ? (statusBadge.dataset.status || statusBadge.textContent).trim().toLowerCase() : "";
-  const busy = BUSY_PROJECT_STATUSES.includes(status);
+  const busy = BUSY_PROJECT_STATUSES.has(status);
   // atualiza o texto do step no pipeline
   const nameSpan = btn.querySelector(".step-name");
   if (nameSpan) nameSpan.textContent = `Pacote (${selected}/${total})`;
@@ -200,8 +200,44 @@ function genErrorMessage(e) {
   if (!e) return "erro desconhecido";
   if (typeof e === "string") return e;
   if (e.message) return e.message;
-  if (e.error && e.error.message) return e.error.message;
+  if (e.error?.message) return e.error.message;
   try { return JSON.stringify(e).slice(0, 200); } catch (_) { return String(e); }
+}
+
+async function generatePuterBlob(prompt, status) {
+  await ensurePuterLoaded();
+  if (typeof puter === "undefined" || !puter.ai || typeof puter.ai.txt2img !== "function") {
+    throw new Error("Puter.js não inicializou");
+  }
+  if (status) status.textContent = "gerando imagem (pode levar até 1 min; na primeira vez o Puter pede login)...";
+  const img = await puterTxt2Img(prompt, status);
+  const src = img?.src;
+  if (!src) throw new Error("o gerador não retornou imagem");
+  // garante naturalWidth/Height preenchidos antes de ler
+  if (img.decode) { try { await img.decode(); } catch (_) { /* decode best-effort */ } }
+  const blob = await (await fetch(src)).blob();
+  if (!blob || blob.size === 0) throw new Error("imagem retornou vazia");
+  if (blob.size > GEN_MAX_BYTES) throw new Error("imagem gerada grande demais (>15 MB)");
+  return { img, blob };
+}
+
+async function saveGeneratedImage(sceneId, blob, prompt, img) {
+  const fd = new FormData();
+  fd.append("image", blob, "generated.png");
+  fd.append("prompt", prompt);
+  fd.append("width", String(img.naturalWidth || 0));
+  fd.append("height", String(img.naturalHeight || 0));
+  const token = csrfToken();
+  if (token) fd.append("csrf_token", token);
+  const resp = await fetch(
+    `/scenes/${sceneId}/generated-image`,
+    { method: "POST", body: fd, headers: token ? { "x-csrf-token": token } : {} }
+  );
+  if (!resp.ok) {
+    let msg = `HTTP ${resp.status}`;
+    try { const j = await resp.json(); msg = j.detail || j.error || msg; } catch (_) { /* corpo nao-JSON: mantem msg padrao */ }
+    throw new Error(msg);
+  }
 }
 
 async function generateImage(sceneId, btn) {
@@ -218,37 +254,9 @@ async function generateImage(sceneId, btn) {
   btn.textContent = "gerando...";
   if (status) status.textContent = "carregando gerador externo...";
   try {
-    await ensurePuterLoaded();
-    if (typeof puter === "undefined" || !puter.ai || typeof puter.ai.txt2img !== "function") {
-      throw new Error("Puter.js não inicializou");
-    }
-    if (status) status.textContent = "gerando imagem (pode levar até 1 min; na primeira vez o Puter pede login)...";
-    const img = await puterTxt2Img(prompt, status);
-    const src = img && img.src;
-    if (!src) throw new Error("o gerador não retornou imagem");
-    // garante naturalWidth/Height preenchidos antes de ler
-    if (img.decode) { try { await img.decode(); } catch (_) {} }
-    const blob = await (await fetch(src)).blob();
-    if (!blob || blob.size === 0) throw new Error("imagem retornou vazia");
-    if (blob.size > GEN_MAX_BYTES) throw new Error("imagem gerada grande demais (>15 MB)");
-
+    const { img, blob } = await generatePuterBlob(prompt, status);
     if (status) status.textContent = "salvando no projeto...";
-    const fd = new FormData();
-    fd.append("image", blob, "generated.png");
-    fd.append("prompt", prompt);
-    fd.append("width", String(img.naturalWidth || 0));
-    fd.append("height", String(img.naturalHeight || 0));
-    const token = csrfToken();
-    if (token) fd.append("csrf_token", token);
-    const resp = await fetch(
-      `/scenes/${sceneId}/generated-image`,
-      { method: "POST", body: fd, headers: token ? { "x-csrf-token": token } : {} }
-    );
-    if (!resp.ok) {
-      let msg = `HTTP ${resp.status}`;
-      try { const j = await resp.json(); msg = j.detail || j.error || msg; } catch (_) {}
-      throw new Error(msg);
-    }
+    await saveGeneratedImage(sceneId, blob, prompt, img);
     if (status) status.textContent = "imagem adicionada — recarregando...";
     setTimeout(() => location.reload(), 600);
   } catch (e) {
@@ -278,50 +286,47 @@ const KAGGLE_LABELS = {
   none: "-",
 };
 
+function renderKaggleDot(dot, status) {
+  dot.className = "tally";
+  if (status === "complete")      dot.classList.add("tally-ok");
+  else if (status === "error")    dot.classList.add("tally-err");
+  else if (status === "running")  dot.classList.add("tally-rec");
+  else                            dot.classList.add("tally-warn");
+}
+
+function setDownloadLink(el, url) {
+  if (!el) return;
+  if (url) el.href = url;
+  el.style.display = url ? "" : "none";
+}
+
+function renderHyperframes(hfState, hf) {
+  const extras = [];
+  if (hf.audio) extras.push("com narração");
+  if (hf.avatar) extras.push("com avatar");
+  if (hf.status === "complete") {
+    hfState.textContent = "master pronto (" + (hf.render_mode || "mp4") + (extras.length ? ", " + extras.join(", ") : "") + ")";
+  } else if (hf.status === "fallback_complete") {
+    hfState.textContent = "master via fallback FFmpeg" + (extras.length ? " (" + extras.join(", ") + ")" : "") + " — HyperFrames falhou";
+  } else if (hf.status === "error") {
+    hfState.textContent = "erro no refino — base preservada: " + String(hf.error || "").slice(0, 160);
+  }
+}
+
 function renderKaggleState(data) {
   const txt = document.getElementById("kaggle-status-text");
   const dot = document.getElementById("kaggle-dot");
   const link = document.getElementById("kaggle-link");
-  const dlMaster = document.getElementById("kaggle-master");
-  const dlBase = document.getElementById("kaggle-base");
   const hfState = document.getElementById("hyperframes-state");
   const status = (data.status || "").toLowerCase();
   let label = KAGGLE_LABELS[status] || status || "verificando...";
   if (status === "error" && data.error) label = "erro: " + data.error.slice(0, 200);
   if (txt) txt.textContent = label;
-
-  if (dot) {
-    dot.className = "tally";
-    if (status === "complete")      dot.classList.add("tally-ok");
-    else if (status === "error")    dot.classList.add("tally-err");
-    else if (status === "running")  dot.classList.add("tally-rec");
-    else                            dot.classList.add("tally-warn");
-  }
-
+  if (dot) renderKaggleDot(dot, status);
   if (link && data.url) link.href = data.url;
-  if (dlMaster) {
-    const url = data.master_video_url || "";
-    if (url) dlMaster.href = url;
-    dlMaster.style.display = url ? "" : "none";
-  }
-  if (dlBase) {
-    const url = data.base_video_url || "";
-    if (url) dlBase.href = url;
-    dlBase.style.display = url ? "" : "none";
-  }
-  if (hfState && data.hyperframes) {
-    const hf = data.hyperframes;
-    const extras = [];
-    if (hf.audio) extras.push("com narração");
-    if (hf.avatar) extras.push("com avatar");
-    if (hf.status === "complete") {
-      hfState.textContent = "master pronto (" + (hf.render_mode || "mp4") + (extras.length ? ", " + extras.join(", ") : "") + ")";
-    } else if (hf.status === "fallback_complete") {
-      hfState.textContent = "master via fallback FFmpeg" + (extras.length ? " (" + extras.join(", ") + ")" : "") + " — HyperFrames falhou";
-    } else if (hf.status === "error") {
-      hfState.textContent = "erro no refino — base preservada: " + String(hf.error || "").slice(0, 160);
-    }
-  }
+  setDownloadLink(document.getElementById("kaggle-master"), data.master_video_url || "");
+  setDownloadLink(document.getElementById("kaggle-base"), data.base_video_url || "");
+  if (hfState && data.hyperframes) renderHyperframes(hfState, data.hyperframes);
   if (data.validation) renderValidation(data.validation);
 }
 
@@ -358,7 +363,7 @@ function renderJob(job) {
   txt.textContent = `${job.kind}: ${job.status} - ${msg}`;
 }
 
-const ACTIVE_JOB_STATUSES = ["queued", "running", "canceling"];
+const ACTIVE_JOB_STATUSES = new Set(["queued", "running", "canceling"]);
 
 function jobText(job) {
   return job.message || job.error || "-";
@@ -393,7 +398,7 @@ function renderProjectJobs(jobs) {
     message.append(messageText, meta);
     item.append(kind, status, message);
 
-    if (ACTIVE_JOB_STATUSES.includes(job.status)) {
+    if (ACTIVE_JOB_STATUSES.has(job.status)) {
       const stop = document.createElement("button");
       stop.className = "btn btn-danger btn-sm";
       stop.type = "button";
@@ -423,7 +428,7 @@ async function cancelJob(jobId, btn) {
   }
   try {
     const job = await postForm(`/jobs/${jobId}/cancel`, {});
-    const projectId = window.NWRCH_PROJECT_ID;
+    const projectId = globalThis.NWRCH_PROJECT_ID;
     if (projectId) {
       await refreshProjectJobs(projectId);
       startProjectJobRefresh(true);
@@ -446,7 +451,7 @@ function startJobPolling(jobId, projectId, btn) {
       failures = 0;
       renderJob(job);
       if (job.status === "complete") {
-        const kernelUrl = job.result && job.result.kernel_url;
+        const kernelUrl = job.result?.kernel_url;
         renderKaggleState({ status: "queued", url: kernelUrl });
         startKagglePolling(projectId);
         return;
@@ -602,7 +607,7 @@ function renderValidation(data) {
   else if (data.status === "error") status.classList.add("bad-text");
   else status.classList.add("warn-text");
   status.textContent = data.status || "pendente";
-  const issue = data.issues && data.issues.length ? data.issues[0].message : "outputs coerentes";
+  const issue = data.issues?.length ? data.issues[0].message : "outputs coerentes";
   detail.textContent = issue;
 }
 
@@ -641,13 +646,13 @@ function initBusySubmitForms() {
 document.addEventListener("DOMContentLoaded", () => {
   initBusySubmitForms();
   const partsPanel = document.getElementById("parts-panel");
-  if (partsPanel && partsPanel.dataset.active === "1" && window.NWRCH_PROJECT_ID) {
-    startPartsPolling(window.NWRCH_PROJECT_ID);
+  if (partsPanel?.dataset.active === "1" && globalThis.NWRCH_PROJECT_ID) {
+    startPartsPolling(globalThis.NWRCH_PROJECT_ID);
   }
   const bar = document.getElementById("kaggle-status-bar");
   const txt = document.getElementById("kaggle-status-text");
   if (bar && txt && bar.style.display !== "none") {
-    const pid = window.location.pathname.split("/").pop();
+    const pid = globalThis.location.pathname.split("/").pop();
     const status = txt.textContent.trim().toLowerCase();
     if (status && !["complete", "pronto", "none", "-"].includes(status)) {
       startKagglePolling(pid);
@@ -657,16 +662,16 @@ document.addEventListener("DOMContentLoaded", () => {
   startProjectJobRefresh(Boolean(hasActiveJob));
 });
 
-const BUSY_PROJECT_STATUSES = ["mapping", "searching", "packaging", "auto_selecting", "researching"];
+const BUSY_PROJECT_STATUSES = new Set(["mapping", "searching", "packaging", "auto_selecting", "researching"]);
 let _projectJobRefreshActive = false;
 
 function startProjectJobRefresh(force) {
-  const projectId = window.NWRCH_PROJECT_ID;
+  const projectId = globalThis.NWRCH_PROJECT_ID;
   if (!projectId) return;
   if (_projectJobRefreshActive) return;
   const statusBadge = document.querySelector(".head-status .badge");
   const current = statusBadge ? (statusBadge.dataset.status || statusBadge.textContent).trim().toLowerCase() : "";
-  if (!force && !BUSY_PROJECT_STATUSES.includes(current)) return;
+  if (!force && !BUSY_PROJECT_STATUSES.has(current)) return;
   _projectJobRefreshActive = true;
   let ticks = 0;
   let failures = 0;
@@ -676,12 +681,12 @@ function startProjectJobRefresh(force) {
       const data = await refreshProjectJobs(projectId);
       failures = 0;
       const status = (data.project_status || "").toLowerCase();
-      const activeJob = (data.jobs || []).find((job) => ACTIVE_JOB_STATUSES.includes(job.status));
-      if (statusBadge && activeJob && activeJob.message) {
+      const activeJob = (data.jobs || []).find((job) => ACTIVE_JOB_STATUSES.has(job.status));
+      if (statusBadge && activeJob?.message) {
         statusBadge.textContent = activeJob.message;
       }
-      const busy = BUSY_PROJECT_STATUSES.includes(status);
-      const hasActiveJob = (data.jobs || []).some((job) => ACTIVE_JOB_STATUSES.includes(job.status));
+      const busy = BUSY_PROJECT_STATUSES.has(status);
+      const hasActiveJob = (data.jobs || []).some((job) => ACTIVE_JOB_STATUSES.has(job.status));
       if ((!busy && !hasActiveJob) || ticks > 240) location.reload();
       else setTimeout(poll, 2500);
     } catch (e) {

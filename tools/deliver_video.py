@@ -12,12 +12,16 @@ hardcoded). Uso interno/manual:
 from __future__ import annotations
 
 import os
+import secrets
 import sys
 import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+
+# Senha descartavel: gerada por execucao (ou via SMOKE_PASSWORD); nunca hardcoded.
+SMOKE_PASSWORD = os.environ.get("SMOKE_PASSWORD") or "smoke-" + secrets.token_urlsafe(12)
 
 # DATA_DIR estavel para os outputs persistirem apos a execucao
 DATA_DIR = os.environ.get("DELIVER_DATA_DIR") or str(ROOT / "workdir" / "deliver")
@@ -55,7 +59,7 @@ client = TestClient(app_module.app, follow_redirects=False)
 
 with client:
     # 1) usuario + chaves
-    client.post("/register", data={"username": "deliver", "password": "deliverpass1"})
+    client.post("/register", data={"username": "deliver", "password": SMOKE_PASSWORD})
     r = client.post("/settings", data={
         "pexels": K["PEXELS_KEY"], "pixabay": K["PIXABAY_KEY"], "groq": K["GROQ_KEY"],
         "groq_model": "llama-3.3-70b-versatile",

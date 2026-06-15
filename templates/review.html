@@ -60,8 +60,9 @@
         <div class="review-media" data-asset="{{ a.id }}">
           {% if a.asset_type == 'video' %}
             <video class="review-thumb" muted loop preload="none" poster="{{ a.preview_url }}"
-                   src="{{ a.download_url }}"
-                   onmouseover="this.play()" onmouseout="this.pause()"></video>
+                   src="{{ a.download_url }}" tabindex="0"
+                   onmouseover="this.play()" onmouseout="this.pause()"
+                   onfocus="this.play()" onblur="this.pause()"></video>
           {% else %}
             <img class="review-thumb" loading="lazy" src="{{ a.preview_url or a.download_url }}" alt="">
           {% endif %}

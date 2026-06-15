@@ -81,6 +81,56 @@ class VisionProvider(Protocol):
     ) -> dict[int, VisionAnalysis]: ...
 
 
+def _heuristic_resolution_score(asset: dict, config: dict, reasons: list, flags: list) -> float:
+    try:
+        target_w = int(str(config.get("resolution") or "1920x1080").split("x", 1)[0])
+    except ValueError:
+        target_w = 1920
+    width = int(asset.get("width") or 0)
+    if width >= target_w:
+        reasons.append("resolução cobre o alvo")
+        return 22.0
+    if width >= target_w * 0.66:
+        return 11.0
+    flags.append("baixa_resolucao")
+    return 0.0
+
+
+def _heuristic_aspect_score(asset: dict, flags: list) -> float:
+    width = int(asset.get("width") or 0)
+    height = int(asset.get("height") or 0)
+    if width and height:
+        if height > width:
+            flags.append("retrato")  # vertical estoura o enquadramento 16:9
+        elif width / height >= 1.4:
+            return 8.0  # paisagem ampla, bom para B-roll + avatar
+    return 0.0
+
+
+def _heuristic_type_score(asset: dict, config: dict, flags: list) -> float:
+    is_video = asset.get("asset_type") == "video"
+    prefer_video = (config.get("asset_type_priority") or "video") == "video"
+    if is_video == prefer_video:
+        return 12.0
+    if not is_video and not config.get("image_fallback"):
+        flags.append("tipo_incompativel")
+        return -8.0
+    return 0.0
+
+
+def _heuristic_duration_score(asset: dict, scene: dict, reasons: list, flags: list) -> float:
+    if asset.get("asset_type") != "video":
+        return 0.0
+    duration = float(asset.get("duration") or 0)
+    scene_duration = float(scene.get("duration") or 0)
+    if scene_duration and duration >= scene_duration:
+        reasons.append("duração cobre a cena")
+        return 14.0
+    if scene_duration and duration < scene_duration * 0.5:
+        flags.append("duracao_curta")
+    return 0.0
+
+
 class HeuristicVisionProvider:
     """Análise offline a partir de metadados + relevância textual."""
 
@@ -103,46 +153,10 @@ class HeuristicVisionProvider:
             flags.append("keyword_generica")
             score -= 8.0
 
-        # --- resolução --------------------------------------------------------
-        try:
-            target_w = int(str(config.get("resolution") or "1920x1080").split("x", 1)[0])
-        except ValueError:
-            target_w = 1920
-        width = int(asset.get("width") or 0)
-        height = int(asset.get("height") or 0)
-        if width >= target_w:
-            score += 22.0
-            reasons.append("resolução cobre o alvo")
-        elif width >= target_w * 0.66:
-            score += 11.0
-        else:
-            flags.append("baixa_resolucao")
-
-        # --- proporção / orientação ------------------------------------------
-        if width and height:
-            if height > width:
-                flags.append("retrato")  # vertical estoura o enquadramento 16:9
-            elif width / height >= 1.4:
-                score += 8.0  # paisagem ampla, bom para B-roll + avatar
-
-        # --- tipo de asset ----------------------------------------------------
-        is_video = asset.get("asset_type") == "video"
-        prefer_video = (config.get("asset_type_priority") or "video") == "video"
-        if is_video == prefer_video:
-            score += 12.0
-        elif not is_video and not config.get("image_fallback"):
-            flags.append("tipo_incompativel")
-            score -= 8.0
-
-        # --- cobertura de duração (vídeo) ------------------------------------
-        if is_video:
-            duration = float(asset.get("duration") or 0)
-            scene_duration = float(scene.get("duration") or 0)
-            if scene_duration and duration >= scene_duration:
-                score += 14.0
-                reasons.append("duração cobre a cena")
-            elif scene_duration and duration < scene_duration * 0.5:
-                flags.append("duracao_curta")
+        score += _heuristic_resolution_score(asset, config, reasons, flags)
+        score += _heuristic_aspect_score(asset, flags)
+        score += _heuristic_type_score(asset, config, flags)
+        score += _heuristic_duration_score(asset, scene, reasons, flags)
 
         # asset feito sob medida pelo usuário
         if asset.get("source") == "generated":
@@ -205,7 +219,7 @@ class LLMVisionProvider:
             # sem chave ou sem thumbnail analisável: heurística
             return self._fallback.analyze(asset, scene, config)
         try:
-            return self._analyze_remote(asset, scene, config, thumb)
+            return self._analyze_remote(asset, scene, thumb)
         except Exception as exc:  # noqa: BLE001 - fallback intencional
             logger.warning("Vision LLM erro, usando heurística: %s", exc)
             base = self._fallback.analyze(asset, scene, config)
@@ -278,7 +292,7 @@ class LLMVisionProvider:
             provider=self.name,
         )
 
-    def _analyze_remote(self, asset: dict, scene: dict, config: dict, thumb: str) -> VisionAnalysis:
+    def _analyze_remote(self, asset: dict, scene: dict, thumb: str) -> VisionAnalysis:
         payload = {
             "model": self.model,
             "messages": [{
@@ -383,7 +397,7 @@ class NvidiaVisionProvider(LLMVisionProvider):
         super().__init__(api_key=api_key, model=model or self.NVIDIA_MODEL,
                          url=self.NVIDIA_URL, timeout=timeout, name=self.name)
 
-    def _analyze_remote(self, asset: dict, scene: dict, config: dict, thumb: str) -> VisionAnalysis:
+    def _analyze_remote(self, asset: dict, scene: dict, thumb: str) -> VisionAnalysis:
         img = requests.get(thumb, timeout=self.timeout).content
         if not img or len(img) > self.MAX_IMG_BYTES:
             raise RuntimeError(f"thumbnail invalida/grande para NVIDIA ({len(img)} bytes)")

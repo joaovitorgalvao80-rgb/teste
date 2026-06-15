@@ -22,7 +22,8 @@ def jpeg_size(data: bytes) -> tuple[int, int]:
                 )
             seg_len = int.from_bytes(data[i + 2:i + 4], "big")
             i += 2 + max(seg_len, 2)
-    except Exception:  # noqa: BLE001 - dimensao e best-effort, nunca bloqueia o upload
+    except Exception:  # noqa: BLE001
+        # dimensao e best-effort, nunca bloqueia o upload
         pass
     return 0, 0
 

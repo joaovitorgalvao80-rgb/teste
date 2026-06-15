@@ -9,12 +9,16 @@ Uso: python tools/smoke_review_flow.py
 from __future__ import annotations
 
 import os
+import secrets
 import sys
 import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+
+# Senha descartavel: gerada por execucao (ou via SMOKE_PASSWORD); nunca hardcoded.
+SMOKE_PASSWORD = os.environ.get("SMOKE_PASSWORD") or "smoke-" + secrets.token_urlsafe(12)
 
 tmp = tempfile.mkdtemp(prefix="nwrch_smoke_")
 os.environ["DATA_DIR"] = tmp
@@ -37,7 +41,7 @@ def must(cond, msg):
 
 with client:  # dispara lifespan (init_db etc.)
     # registro + login
-    r = client.post("/register", data={"username": "smoke", "password": "smokepass123"})
+    r = client.post("/register", data={"username": "smoke", "password": SMOKE_PASSWORD})
     must(r.status_code == 303, f"registro (HTTP {r.status_code})")
 
     # cria projeto com roteiro com timestamps

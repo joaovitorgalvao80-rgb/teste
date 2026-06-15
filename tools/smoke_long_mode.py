@@ -10,6 +10,7 @@ Uso: python tools/smoke_long_mode.py
 from __future__ import annotations
 
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -18,6 +19,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+
+# Senha descartavel: gerada por execucao (ou via SMOKE_PASSWORD); nunca hardcoded.
+SMOKE_PASSWORD = os.environ.get("SMOKE_PASSWORD") or "smoke-" + secrets.token_urlsafe(12)
 
 tmp = tempfile.mkdtemp(prefix="nwrch_smoke_long_")
 os.environ["DATA_DIR"] = tmp
@@ -48,7 +52,7 @@ def _fake_download(url: str, dest: Path, max_bytes: int) -> bool:
 packager._download = _fake_download
 
 with client:
-    client.post("/register", data={"username": "smoke", "password": "smokepass123"})
+    client.post("/register", data={"username": "smoke", "password": SMOKE_PASSWORD})
 
     # roteiro de 10 min: 100 cenas de 6s com timestamps
     lines = []

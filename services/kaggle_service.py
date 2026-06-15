@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Iterable
 
 ROOT = Path(__file__).resolve().parent.parent
+MONTADOR_FILENAME = "montador.py"
 BASE_VIDEO_NAME = "video_broll_base.mp4"
 BASE_VIDEO_ALIAS = "base_broll.mp4"
 MASTER_VIDEO_NAME = "final_master.mp4"
@@ -106,7 +107,7 @@ def choose_preferred_video_path(paths: Iterable[Path]) -> Path | None:
     videos = [p for p in paths if _is_video_output(str(p))]
     if not videos:
         return None
-    return sorted(videos, key=lambda p: (_video_output_priority(str(p)), -p.stat().st_mtime))[0]
+    return min(videos, key=lambda p: (_video_output_priority(str(p)), -p.stat().st_mtime))
 
 
 def _parse_kernel_files_csv(output: str) -> list[str]:
@@ -199,9 +200,9 @@ def upload_dataset(
         tmp = Path(tmpdir)
         shutil.copy2(zip_path, tmp / zip_path.name)
 
-        montador_src = ROOT / "montador.py"
+        montador_src = ROOT / MONTADOR_FILENAME
         if montador_src.exists():
-            shutil.copy2(montador_src, tmp / "montador.py")
+            shutil.copy2(montador_src, tmp / MONTADOR_FILENAME)
 
         metadata = {
             "title": f"B-rolls {project_name}"[:50],
@@ -258,7 +259,7 @@ def _wait_dataset_ready(
             pass
         time.sleep(poll)
     # Se timeout, tenta assim mesmo — pode funcionar dependendo do tamanho
-    print(f"[Kaggle] timeout aguardando dataset; tentando kernel assim mesmo")
+    print("[Kaggle] timeout aguardando dataset; tentando kernel assim mesmo")
 
 
 # ------------------------------------------------------------------

@@ -11,6 +11,18 @@ from typing import Optional
 from . import kaggle_service
 
 VALIDATION_NAME = "output_validation.json"
+HYPERFRAMES_STATUS_NAME = "hyperframes_status.json"
+
+
+def _ensure_within(base: Path, target: Path) -> Path:
+    """Garante que `target` resolvido fica dentro de `base` (anti path traversal)."""
+    base_resolved = base.resolve()
+    target_resolved = target.resolve()
+    try:
+        target_resolved.relative_to(base_resolved)
+    except ValueError as exc:
+        raise ValueError(f"Caminho fora do diretorio do projeto: {target}") from exc
+    return target_resolved
 
 
 def validation_path(project_work: Path) -> Path:
@@ -31,7 +43,7 @@ def read_validation(project_work: Path) -> Optional[dict]:
 
 
 def write_validation(project_work: Path, payload: dict) -> Path:
-    path = validation_path(project_work)
+    path = _ensure_within(project_work, validation_path(project_work))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
@@ -138,26 +150,19 @@ def _add_duration_issue(issues: list[dict], label: str, info: dict, expected_dur
         )
 
 
-def validate_outputs(project_work: Path, expected_duration: float = 0.0) -> dict:
-    outputs = choose_outputs(project_work)
-    base = inspect_video(outputs["base"])
-    master = inspect_video(outputs["master"])
-    hyperframes = read_json(project_work / "kaggle_output" / "hyperframes_status.json") or {}
-    issues: list[dict] = []
+def _check_output(issues: list[dict], label: str, info: dict, expected_duration: float) -> None:
+    if not info["exists"]:
+        return
+    if info.get("size_bytes", 0) <= 0:
+        issues.append({"level": "error", "message": f"Video {label} esta vazio."})
+    if info.get("probe_ok") is False:
+        issues.append({"level": "warn", "message": f"Video {label}: {info.get('probe_error', 'ffprobe falhou')}."})
+    elif not info.get("has_video"):
+        issues.append({"level": "error", "message": f"Video {label} nao possui stream de video."})
+    _add_duration_issue(issues, f"Video {label}", info, expected_duration)
 
-    if not base["exists"] and not master["exists"]:
-        issues.append({"level": "pending", "message": "Nenhum video local baixado ainda."})
-    for label, info in [("base", base), ("master", master)]:
-        if not info["exists"]:
-            continue
-        if info.get("size_bytes", 0) <= 0:
-            issues.append({"level": "error", "message": f"Video {label} esta vazio."})
-        if info.get("probe_ok") is False:
-            issues.append({"level": "warn", "message": f"Video {label}: {info.get('probe_error', 'ffprobe falhou')}."})
-        elif not info.get("has_video"):
-            issues.append({"level": "error", "message": f"Video {label} nao possui stream de video."})
-        _add_duration_issue(issues, f"Video {label}", info, expected_duration)
 
+def _check_master_consistency(issues: list[dict], base: dict, master: dict, hyperframes: dict) -> None:
     if base["exists"] and not master["exists"]:
         if hyperframes.get("status") == "error":
             issues.append({"level": "warn", "message": "HyperFrames falhou, mas a base foi preservada."})
@@ -173,15 +178,31 @@ def validate_outputs(project_work: Path, expected_duration: float = 0.0) -> dict
     if requested_avatar and hyperframes and not hyperframes.get("avatar"):
         issues.append({"level": "warn", "message": "Avatar foi solicitado, mas o status nao confirmou overlay no master."})
 
+
+def _status_from_levels(issues: list[dict]) -> str:
     levels = {item["level"] for item in issues}
     if "error" in levels:
-        status = "error"
-    elif "warn" in levels:
-        status = "warn"
-    elif "pending" in levels:
-        status = "pending"
-    else:
-        status = "ok"
+        return "error"
+    if "warn" in levels:
+        return "warn"
+    if "pending" in levels:
+        return "pending"
+    return "ok"
+
+
+def validate_outputs(project_work: Path, expected_duration: float = 0.0) -> dict:
+    outputs = choose_outputs(project_work)
+    base = inspect_video(outputs["base"])
+    master = inspect_video(outputs["master"])
+    hyperframes = read_json(project_work / "kaggle_output" / HYPERFRAMES_STATUS_NAME) or {}
+    issues: list[dict] = []
+
+    if not base["exists"] and not master["exists"]:
+        issues.append({"level": "pending", "message": "Nenhum video local baixado ainda."})
+    for label, info in [("base", base), ("master", master)]:
+        _check_output(issues, label, info, expected_duration)
+    _check_master_consistency(issues, base, master, hyperframes)
+    status = _status_from_levels(issues)
 
     payload = {
         "status": status,
@@ -193,7 +214,7 @@ def validate_outputs(project_work: Path, expected_duration: float = 0.0) -> dict
         "files": {
             "validation": str(validation_path(project_work)),
             "render_log": str(project_work / "kaggle_output" / "log_render.txt"),
-            "hyperframes_status": str(project_work / "kaggle_output" / "hyperframes_status.json"),
+            "hyperframes_status": str(project_work / "kaggle_output" / HYPERFRAMES_STATUS_NAME),
         },
     }
     write_validation(project_work, payload)
@@ -229,7 +250,7 @@ def build_snapshot(
         "expected_duration": round(float(expected_duration or 0), 3),
         "logs": {
             "render_log": (out_dir / "log_render.txt").exists(),
-            "hyperframes_status": (out_dir / "hyperframes_status.json").exists(),
+            "hyperframes_status": (out_dir / HYPERFRAMES_STATUS_NAME).exists(),
             "validation": validation_path(project_work).exists(),
         },
     }

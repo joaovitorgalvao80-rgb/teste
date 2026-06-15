@@ -82,6 +82,14 @@ def parse_timestamped(text: str) -> list[dict]:
     return scenes
 
 
+def _chunk_words(sentence: str, target_words: int) -> list[str]:
+    """Quebra uma frase longa em pedaços de no máximo `target_words` palavras."""
+    words = sentence.split()
+    if len(words) <= target_words:
+        return [sentence]
+    return [" ".join(words[i : i + target_words]) for i in range(0, len(words), target_words)]
+
+
 def _split_sentences(text: str, target_words: int = 16) -> list[str]:
     parts: list[str] = []
     for block in re.split(r"\n\s*\n", text):
@@ -90,14 +98,8 @@ def _split_sentences(text: str, target_words: int = 16) -> list[str]:
             continue
         for sentence in re.split(r"(?<=[.!?])\s+", block):
             sentence = sentence.strip()
-            if not sentence:
-                continue
-            words = sentence.split()
-            if len(words) <= target_words:
-                parts.append(sentence)
-            else:
-                for i in range(0, len(words), target_words):
-                    parts.append(" ".join(words[i : i + target_words]))
+            if sentence:
+                parts.extend(_chunk_words(sentence, target_words))
     return [p for p in parts if p]
 
 

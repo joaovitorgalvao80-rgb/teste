@@ -203,6 +203,50 @@ def _guide_to_md(project: dict, guide: dict) -> str:
     return "\n".join(lines)
 
 
+def _accepted_take_lines(asset: Optional[dict]) -> list[str]:
+    if not asset:
+        return ["**Take aceito:** — nenhum —"]
+    kind = asset.get("asset_type", "video")
+    dur = f", {asset.get('duration')}s" if asset.get("duration") else ""
+    lines = [
+        f"**Take aceito:** {asset.get('source')} {kind} "
+        f"{asset.get('width')}x{asset.get('height')}{dur}"
+    ]
+    if asset.get("author"):
+        lines.append(f"**Autor:** [{asset['author']}]({asset.get('author_url') or asset.get('page_url') or ''})")
+    if asset.get("page_url"):
+        lines.append(f"**Fonte:** {asset['page_url']}")
+    if asset.get("auto_reason"):
+        lines.append(f"**Motivo da seleção:** {asset['auto_reason']}")
+    return lines
+
+
+def _rejected_take_lines(rejected: list[dict]) -> list[str]:
+    if not rejected:
+        return []
+    lines = ["", f"Rejeitados ({len(rejected)}):"]
+    for r in rejected:
+        rnd = f" (rodada {r.get('review_round')})" if r.get("review_round") else ""
+        lines.append(
+            f"- {r.get('source')} {r.get('asset_type', 'video')} "
+            f"{r.get('width')}x{r.get('height')} — {r.get('page_url') or r.get('download_url')}{rnd}"
+        )
+    return lines
+
+
+def _scene_report_lines(scene: dict, asset: Optional[dict], rejected: list[dict]) -> list[str]:
+    lines = [
+        f"## {scene['scene_id']} | {scene['start_time']:.1f}s–{scene['end_time']:.1f}s | {scene.get('zone') or 'cena'}",
+        "",
+        f"> {scene.get('narration', '')}",
+        "",
+    ]
+    lines.extend(_accepted_take_lines(asset))
+    lines.extend(_rejected_take_lines(rejected))
+    lines.append("")
+    return lines
+
+
 def build_curation_report(
     project: dict,
     scenes: list[dict],
@@ -226,39 +270,13 @@ def build_curation_report(
         "",
     ]
     for scene in scenes:
-        lines.append(
-            f"## {scene['scene_id']} | {scene['start_time']:.1f}s–{scene['end_time']:.1f}s | {scene.get('zone') or 'cena'}"
-        )
-        lines.append("")
-        lines.append(f"> {scene.get('narration', '')}")
-        lines.append("")
-        asset = chosen_by_scene.get(scene["id"])
-        if asset:
-            kind = asset.get("asset_type", "video")
-            dur = f", {asset.get('duration')}s" if asset.get("duration") else ""
-            lines.append(
-                f"**Take aceito:** {asset.get('source')} {kind} "
-                f"{asset.get('width')}x{asset.get('height')}{dur}"
+        lines.extend(
+            _scene_report_lines(
+                scene,
+                chosen_by_scene.get(scene["id"]),
+                rejected_by_scene.get(scene["id"]) or [],
             )
-            if asset.get("author"):
-                lines.append(f"**Autor:** [{asset['author']}]({asset.get('author_url') or asset.get('page_url') or ''})")
-            if asset.get("page_url"):
-                lines.append(f"**Fonte:** {asset['page_url']}")
-            if asset.get("auto_reason"):
-                lines.append(f"**Motivo da seleção:** {asset['auto_reason']}")
-        else:
-            lines.append("**Take aceito:** — nenhum —")
-        rejected = rejected_by_scene.get(scene["id"]) or []
-        if rejected:
-            lines.append("")
-            lines.append(f"Rejeitados ({len(rejected)}):")
-            for r in rejected:
-                rnd = f" (rodada {r.get('review_round')})" if r.get("review_round") else ""
-                lines.append(
-                    f"- {r.get('source')} {r.get('asset_type', 'video')} "
-                    f"{r.get('width')}x{r.get('height')} — {r.get('page_url') or r.get('download_url')}{rnd}"
-                )
-        lines.append("")
+        )
     return "\n".join(lines)
 
 
@@ -278,6 +296,59 @@ def _licenses_md() -> str:
             "Nao redistribua este pacote como CC0 sem revisar as licencas dos provedores.",
         ]
     )
+
+
+def _apply_download_results(jobs: list, ok_flags: list, file_by_scene: dict) -> tuple[list, list, list]:
+    """Processa o resultado dos downloads: registra fontes e zera seleções que falharam."""
+    pexels_sources, pixabay_sources, generated_sources = [], [], []
+    for (scene, gscene, asset, filename, _dest), ok in zip(jobs, ok_flags):
+        if not ok:
+            # falhou o download: remove a selecao do guia para nao apontar para arquivo inexistente
+            gscene["selected_asset"] = None
+            gscene["source_metadata"] = None
+            continue
+        file_by_scene[scene["scene_id"]] = _dest
+        record = {
+            "scene_id": scene["scene_id"],
+            "file": f"assets/{filename}",
+            **(gscene.get("source_metadata") or {}),
+        }
+        if asset["source"] == "pexels":
+            pexels_sources.append(record)
+        elif asset["source"] == "generated":
+            generated_sources.append(record)
+        else:
+            pixabay_sources.append(record)
+    return pexels_sources, pixabay_sources, generated_sources
+
+
+def _write_package_zip(
+    zip_path: Path,
+    project: dict,
+    file_by_scene: dict,
+    guide: dict,
+    sources: tuple[list, list, list],
+    rejected_assets: list[dict],
+    edit_plan: Optional[dict],
+    extra_files: Optional[list[Path]],
+) -> None:
+    pexels_sources, pixabay_sources, generated_sources = sources
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for _scene_code, src in file_by_scene.items():
+            zf.write(src, f"assets/{src.name}")
+        zf.writestr("guia_visual.json", json.dumps(guide, ensure_ascii=False, indent=2))
+        zf.writestr("guia_visual.csv", _guide_to_csv(guide))
+        zf.writestr("roteiro_com_brolls.md", _guide_to_md(project, guide))
+        zf.writestr("LICENSES.md", _licenses_md())
+        zf.writestr("metadata/pexels_sources.json", json.dumps(pexels_sources, ensure_ascii=False, indent=2))
+        zf.writestr("metadata/pixabay_sources.json", json.dumps(pixabay_sources, ensure_ascii=False, indent=2))
+        zf.writestr("metadata/generated_sources.json", json.dumps(generated_sources, ensure_ascii=False, indent=2))
+        zf.writestr("metadata/rejected_assets.json", json.dumps(rejected_assets, ensure_ascii=False, indent=2))
+        if edit_plan:
+            zf.writestr("edit_plan.json", json.dumps(edit_plan, ensure_ascii=False, indent=2))
+        for extra in extra_files or []:
+            if extra and extra.exists():
+                zf.write(extra, extra.name)
 
 
 def build_zip(
@@ -301,7 +372,6 @@ def build_zip(
     tmp = work_dir / "assets_tmp"
     tmp.mkdir(parents=True, exist_ok=True)
     file_by_scene: dict[str, Path] = {}
-    pexels_sources, pixabay_sources, generated_sources = [], [], []
 
     # baixa em paralelo (I/O bound); resultados processados na ordem das cenas
     jobs = []
@@ -326,24 +396,7 @@ def build_zip(
     else:
         ok_flags = []
 
-    for (scene, gscene, asset, filename, dest), ok in zip(jobs, ok_flags):
-        if ok:
-            file_by_scene[scene["scene_id"]] = dest
-            record = {
-                "scene_id": scene["scene_id"],
-                "file": f"assets/{filename}",
-                **(gscene.get("source_metadata") or {}),
-            }
-            if asset["source"] == "pexels":
-                pexels_sources.append(record)
-            elif asset["source"] == "generated":
-                generated_sources.append(record)
-            else:
-                pixabay_sources.append(record)
-        else:
-            # falhou o download: remove a selecao do guia para nao apontar para arquivo inexistente
-            gscene["selected_asset"] = None
-            gscene["source_metadata"] = None
+    sources = _apply_download_results(jobs, ok_flags, file_by_scene)
 
     if not file_by_scene:
         raise RuntimeError(
@@ -365,21 +418,7 @@ def build_zip(
 
     safe_name = _slug(zip_basename or project["name"]) or "asset_pack"
     zip_path = work_dir / f"asset_pack_{safe_name}.zip"
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for scene_code, src in file_by_scene.items():
-            zf.write(src, f"assets/{src.name}")
-        zf.writestr("guia_visual.json", json.dumps(guide, ensure_ascii=False, indent=2))
-        zf.writestr("guia_visual.csv", _guide_to_csv(guide))
-        zf.writestr("roteiro_com_brolls.md", _guide_to_md(project, guide))
-        zf.writestr("LICENSES.md", _licenses_md())
-        zf.writestr("metadata/pexels_sources.json", json.dumps(pexels_sources, ensure_ascii=False, indent=2))
-        zf.writestr("metadata/pixabay_sources.json", json.dumps(pixabay_sources, ensure_ascii=False, indent=2))
-        zf.writestr("metadata/generated_sources.json", json.dumps(generated_sources, ensure_ascii=False, indent=2))
-        zf.writestr("metadata/rejected_assets.json", json.dumps(rejected_assets, ensure_ascii=False, indent=2))
-        if edit_plan:
-            zf.writestr("edit_plan.json", json.dumps(edit_plan, ensure_ascii=False, indent=2))
-        for extra in extra_files or []:
-            if extra and extra.exists():
-                zf.write(extra, extra.name)
-
+    _write_package_zip(
+        zip_path, project, file_by_scene, guide, sources, rejected_assets, edit_plan, extra_files
+    )
     return zip_path

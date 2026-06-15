@@ -95,7 +95,7 @@ def _best_pexels_video_file(video: dict, max_w: int) -> Optional[dict]:
         return None
     preferred = [f for f in landscape if f.get("width", 0) <= max_w]
     pool = preferred or landscape
-    return sorted(pool, key=lambda f: (f.get("width", 0), f.get("height", 0)), reverse=True)[0]
+    return max(pool, key=lambda f: (f.get("width", 0), f.get("height", 0)))
 
 
 def search_pexels_videos(keyword: str, key: str, max_w: int, per_page: int = 8) -> list[dict]:
@@ -163,7 +163,7 @@ def search_pixabay_videos(keyword: str, key: str, max_w: int, per_page: int = 8)
         if not choices:
             continue
         preferred = [c for c in choices if c.get("width", 0) <= max_w]
-        chosen = sorted(preferred or choices, key=lambda c: c.get("width", 0), reverse=True)[0]
+        chosen = max(preferred or choices, key=lambda c: c.get("width", 0))
         # thumbnail do pixabay
         thumb = (videos.get("tiny") or {}).get("thumbnail", "") or (videos.get("small") or {}).get("thumbnail", "")
         out.append(
@@ -259,7 +259,7 @@ def search_pixabay_images(keyword: str, key: str, per_page: int = 6) -> list[dic
     return out
 
 
-def search_coverr_videos(keyword: str, key: str, max_w: int, per_page: int = 8) -> list[dict]:
+def search_coverr_videos(keyword: str, key: str, per_page: int = 8) -> list[dict]:
     if not key:
         return []
     per_page = _bounded_per_page(per_page)
@@ -303,7 +303,7 @@ def search_coverr_videos(keyword: str, key: str, max_w: int, per_page: int = 8) 
     return out
 
 
-def search_openverse_images(keyword: str, max_w: int, per_page: int = 5) -> list[dict]:
+def search_openverse_images(keyword: str, per_page: int = 5) -> list[dict]:
     """Imagens CC do Openverse (agregador: Flickr, museus, etc.). Sem chave
     (uso anonimo, com rate limit). Fallback dirigido para cenas com pool fraco."""
     per_page = _bounded_per_page(per_page, default=5, minimum=1)
@@ -346,6 +346,33 @@ def search_openverse_images(keyword: str, max_w: int, per_page: int = 5) -> list
     return out
 
 
+def _wikimedia_item(page: dict, keyword: str) -> Optional[dict]:
+    info = (page.get("imageinfo") or [{}])[0]
+    mime = str(info.get("mime") or "")
+    if mime not in {"image/jpeg", "image/png", "image/webp"}:
+        return None  # pula SVG/PDF/audio/video
+    width, height = int(info.get("width") or 0), int(info.get("height") or 0)
+    if width and height and height > width:
+        return None  # so paisagem
+    meta = info.get("extmetadata") or {}
+    artist = str((meta.get("Artist") or {}).get("value") or "")
+    artist = re.sub(r"<[^>]+>", "", artist).strip()[:120]
+    return {
+        "source": "wikimedia",
+        "source_id": str(page.get("pageid", "")),
+        "asset_type": "image",
+        "preview_url": info.get("thumburl") or info.get("url", ""),
+        "download_url": info.get("thumburl") or info.get("url", ""),
+        "page_url": info.get("descriptionurl", ""),
+        "width": int(info.get("thumbwidth") or width),
+        "height": int(info.get("thumbheight") or height),
+        "duration": 0,
+        "keyword": keyword,
+        "author": artist or "Wikimedia Commons",
+        "author_url": info.get("descriptionurl", ""),
+    }
+
+
 def search_wikimedia_images(keyword: str, max_w: int, per_page: int = 5) -> list[dict]:
     """Fotos do Wikimedia Commons. Excelente para assuntos factuais/cientificos
     (especies, fenomenos) que os bancos de stock nao cobrem. Sem chave."""
@@ -372,33 +399,46 @@ def search_wikimedia_images(keyword: str, max_w: int, per_page: int = 5) -> list
     pages = (resp.json().get("query") or {}).get("pages") or {}
     out = []
     for page in pages.values():
-        info = (page.get("imageinfo") or [{}])[0]
-        mime = str(info.get("mime") or "")
-        if mime not in {"image/jpeg", "image/png", "image/webp"}:
-            continue  # pula SVG/PDF/audio/video
-        width, height = int(info.get("width") or 0), int(info.get("height") or 0)
-        if width and height and height > width:
-            continue  # so paisagem
-        meta = info.get("extmetadata") or {}
-        artist = str((meta.get("Artist") or {}).get("value") or "")
-        artist = re.sub(r"<[^>]+>", "", artist).strip()[:120]
-        out.append(
-            {
-                "source": "wikimedia",
-                "source_id": str(page.get("pageid", "")),
-                "asset_type": "image",
-                "preview_url": info.get("thumburl") or info.get("url", ""),
-                "download_url": info.get("thumburl") or info.get("url", ""),
-                "page_url": info.get("descriptionurl", ""),
-                "width": int(info.get("thumbwidth") or width),
-                "height": int(info.get("thumbheight") or height),
-                "duration": 0,
-                "keyword": keyword,
-                "author": artist or "Wikimedia Commons",
-                "author_url": info.get("descriptionurl", ""),
-            }
-        )
+        item = _wikimedia_item(page, keyword)
+        if item:
+            out.append(item)
     return out
+
+
+def _collect_provider_tasks(
+    keywords: list[str],
+    pexels_key: str,
+    pixabay_key: str,
+    coverr_key: str,
+    max_w: int,
+    per_keyword: int,
+    want_video: bool,
+    want_image: bool,
+    media: str,
+) -> list[Callable[[], list[dict]]]:
+    """Monta as buscas mainstream em ordem deterministica (executadas em paralelo)."""
+    tasks: list[Callable[[], list[dict]]] = []
+    for i, kw in enumerate(keywords[:3]):
+        if want_video:
+            tasks.append(lambda kw=kw: search_pexels_videos(kw, pexels_key, max_w, per_keyword))
+            tasks.append(lambda kw=kw: search_pixabay_videos(kw, pixabay_key, max_w, per_keyword))
+            # Coverr so na keyword principal (limite ~50 req/hora)
+            if coverr_key and i == 0:
+                tasks.append(lambda kw=kw: search_coverr_videos(kw, coverr_key, per_keyword))
+        if want_image:
+            n = per_keyword if media == "image" else (per_keyword // 2 or 1)
+            tasks.append(lambda kw=kw, n=n: search_pexels_images(kw, pexels_key, n))
+            tasks.append(lambda kw=kw, n=n: search_pixabay_images(kw, pixabay_key, n))
+    return tasks
+
+
+def _collect_extra_image_tasks(keywords: list[str], max_w: int) -> list[Callable[[], list[dict]]]:
+    """Fallback dirigido: Wikimedia Commons + Openverse para pool fraco."""
+    extra_tasks: list[Callable[[], list[dict]]] = []
+    for kw in keywords[:2]:
+        extra_tasks.append(lambda kw=kw: search_wikimedia_images(kw, max_w, 4))
+        extra_tasks.append(lambda kw=kw: search_openverse_images(kw, 4))
+    return extra_tasks
 
 
 def search_scene(
@@ -436,20 +476,10 @@ def search_scene(
                 seen.add(url)
                 results.append(item)
 
-    # Monta as buscas em ordem deterministica e executa em paralelo;
     # cada provedor ja devolve [] em caso de erro/chave ausente.
-    tasks: list[Callable[[], list[dict]]] = []
-    for i, kw in enumerate(keywords[:3]):
-        if want_video:
-            tasks.append(lambda kw=kw: search_pexels_videos(kw, pexels_key, max_w, per_keyword))
-            tasks.append(lambda kw=kw: search_pixabay_videos(kw, pixabay_key, max_w, per_keyword))
-            # Coverr so na keyword principal (limite ~50 req/hora)
-            if coverr_key and i == 0:
-                tasks.append(lambda kw=kw: search_coverr_videos(kw, coverr_key, max_w, per_keyword))
-        if want_image:
-            n = per_keyword if media == "image" else (per_keyword // 2 or 1)
-            tasks.append(lambda kw=kw, n=n: search_pexels_images(kw, pexels_key, n))
-            tasks.append(lambda kw=kw, n=n: search_pixabay_images(kw, pixabay_key, n))
+    tasks = _collect_provider_tasks(
+        keywords, pexels_key, pixabay_key, coverr_key, max_w, per_keyword, want_video, want_image, media
+    )
     if tasks:
         with ThreadPoolExecutor(max_workers=min(8, len(tasks))) as pool:
             _absorb(list(pool.map(lambda task: task(), tasks)))
@@ -457,10 +487,7 @@ def search_scene(
     # Fallback dirigido: so consulta bancos extras (Wikimedia/Openverse) quando o
     # pool mainstream veio fraco. Mantem o pool enxuto e a visao dentro do limite.
     if extra_image_banks and keywords and len(results) < max(4, per_keyword):
-        extra_tasks: list[Callable[[], list[dict]]] = []
-        for kw in keywords[:2]:
-            extra_tasks.append(lambda kw=kw: search_wikimedia_images(kw, max_w, 4))
-            extra_tasks.append(lambda kw=kw: search_openverse_images(kw, max_w, 4))
+        extra_tasks = _collect_extra_image_tasks(keywords, max_w)
         with ThreadPoolExecutor(max_workers=min(4, len(extra_tasks))) as pool:
             _absorb(list(pool.map(lambda task: task(), extra_tasks)))
 

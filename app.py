@@ -15,11 +15,12 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Annotated, Optional
 from urllib.parse import urlparse
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, Request, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, FileResponse
+from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -106,6 +107,24 @@ ACTIVE_JOB_STATUSES = db.ACTIVE_JOB_STATUSES
 CHOSEN_ASSET_STATES = ["selected", "accepted"]
 
 EDIT_PLAN_FILENAME = "edit_plan.json"
+
+# Constantes reutilizadas (evita literais duplicados espalhados pelo modulo)
+PROJECTS_PATH = "/projects"
+MEDIA_TYPE_JSON = "application/json"
+MEDIA_TYPE_MP4 = "video/mp4"
+MSG_PROJECT_NOT_FOUND = "Projeto nao encontrado."
+MSG_NO_API_KEYS = "Cadastre ao menos uma chave de API em /settings."
+
+# Respostas de erro comuns documentadas no OpenAPI (responses=) das rotas que
+# levantam HTTPException. Centraliza a documentacao em vez de repetir por rota.
+ERROR_RESPONSES = {
+    400: {"description": "Requisicao invalida"},
+    401: {"description": "Nao autenticado / sessao expirada"},
+    403: {"description": "Acesso negado"},
+    404: {"description": "Recurso nao encontrado"},
+    409: {"description": "Conflito com o estado atual do projeto"},
+    500: {"description": "Erro interno do servidor"},
+}
 
 # Defaults, coerção e normalização de config vivem em services/project_config.py
 # (importados abaixo). _coerce_bool/_coerce_int seguem usados em rotas daqui.
@@ -299,7 +318,7 @@ def _wants_json(request: Request) -> bool:
     fetch_mode = request.headers.get("sec-fetch-mode", "")
     if fetch_mode and fetch_mode != "navigate":
         return True
-    return "application/json" in request.headers.get("accept", "")
+    return MEDIA_TYPE_JSON in request.headers.get("accept", "")
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -523,8 +542,9 @@ def cancel_project_status(project_id: int, kind: str) -> Optional[str]:
     if kind == "generate_map":
         return "mapped" if db.list_scenes(project_id) else "created"
     if kind == "search_assets":
-        has_assets = any(db.list_assets_for_project(project_id).values())
-        return "searched" if has_assets else ("mapped" if db.list_scenes(project_id) else "created")
+        if any(db.list_assets_for_project(project_id).values()):
+            return "searched"
+        return "mapped" if db.list_scenes(project_id) else "created"
     if kind == "auto_select":
         return "reviewing" if any(db.list_assets_for_project(project_id).values()) else "searched"
     if kind == "research_rejected":
@@ -567,13 +587,13 @@ def project_diagnostics_snapshot(
 def safe_next_url(raw_next: str) -> str:
     """Aceita apenas redirects internos, evitando open redirect no login."""
     if not raw_next:
-        return "/projects"
+        return PROJECTS_PATH
     # navegadores tratam '\' como '/': "/\evil.com" viraria "//evil.com"
     if "\\" in raw_next or any(ord(ch) < 0x20 for ch in raw_next):
-        return "/projects"
+        return PROJECTS_PATH
     parsed = urlparse(raw_next)
     if parsed.scheme or parsed.netloc or not raw_next.startswith("/") or raw_next.startswith("//"):
-        return "/projects"
+        return PROJECTS_PATH
     return raw_next
 
 
@@ -735,7 +755,7 @@ def run_kaggle_send_job(
 # ------------------------------------------------------------------
 # Health check (Railway / load balancer)
 # ------------------------------------------------------------------
-@app.get("/health")
+@app.get("/health", responses=ERROR_RESPONSES)
 def health():
     return {"status": "ok"}
 
@@ -743,24 +763,24 @@ def health():
 # ------------------------------------------------------------------
 # Auth
 # ------------------------------------------------------------------
-@app.get("/", response_class=HTMLResponse)
+@app.get("/", response_class=HTMLResponse, responses=ERROR_RESPONSES)
 def home(request: Request):
     if current_user(request):
-        return RedirectResponse("/projects", status_code=303)
+        return RedirectResponse(PROJECTS_PATH, status_code=303)
     return RedirectResponse("/login", status_code=303)
 
 
-@app.get("/login", response_class=HTMLResponse)
+@app.get("/login", response_class=HTMLResponse, responses=ERROR_RESPONSES)
 def login_page(request: Request, error: str = "", next: str = ""):
     return render_template(request, "login.html", {"error": error, "next": next})
 
 
-@app.post("/login")
+@app.post("/login", responses=ERROR_RESPONSES)
 def login(
     request: Request,
-    username: str = Form(...),
-    password: str = Form(...),
-    next: str = Form(""),
+    username: Annotated[str, Form()],
+    password: Annotated[str, Form()],
+    next: Annotated[str, Form()] = "",
 ):
     user = db.get_user_by_name(username.strip())
     if not user or not db.verify_password(password, user["password_hash"]):
@@ -770,12 +790,12 @@ def login(
     return RedirectResponse(safe_next_url(next), status_code=303)
 
 
-@app.post("/register")
+@app.post("/register", responses=ERROR_RESPONSES)
 def register(
     request: Request,
-    username: str = Form(...),
-    password: str = Form(...),
-    invite_code: str = Form(""),
+    username: Annotated[str, Form()],
+    password: Annotated[str, Form()],
+    invite_code: Annotated[str, Form()] = "",
 ):
     state = registration_state()
     if not state["enabled"]:
@@ -793,7 +813,7 @@ def register(
     return RedirectResponse("/settings", status_code=303)
 
 
-@app.get("/logout")
+@app.get("/logout", responses=ERROR_RESPONSES)
 def logout(request: Request):
     request.session.clear()
     return RedirectResponse("/login", status_code=303)
@@ -802,7 +822,7 @@ def logout(request: Request):
 # ------------------------------------------------------------------
 # Settings (APIs)
 # ------------------------------------------------------------------
-@app.get("/settings", response_class=HTMLResponse)
+@app.get("/settings", response_class=HTMLResponse, responses=ERROR_RESPONSES)
 def settings_page(request: Request, saved: str = ""):
     user = require_user(request)
     secret_masks = {
@@ -826,13 +846,13 @@ def settings_page(request: Request, saved: str = ""):
     )
 
 
-@app.get("/settings/integrations-status")
+@app.get("/settings/integrations-status", responses=ERROR_RESPONSES)
 def integrations_status(request: Request):
     user = require_user(request)
     return JSONResponse(ops_status.integration_snapshot(user, APP_ENV))
 
 
-@app.get("/settings/test-kaggle")
+@app.get("/settings/test-kaggle", responses=ERROR_RESPONSES)
 def test_kaggle(request: Request):
     user = require_user(request)
     username = user.get("kaggle_username", "")
@@ -855,40 +875,42 @@ def test_kaggle(request: Request):
         return JSONResponse({"ok": False, "detail": str(exc)})
 
 
-@app.post("/settings")
-def settings_save(
-    request: Request,
-    pexels: str = Form(""),
-    pixabay: str = Form(""),
-    groq: str = Form(""),
-    groq_model: str = Form(""),
-    coverr: str = Form(""),
-    nvidia: str = Form(""),
-    kaggle_username: str = Form(""),
-    kaggle_token: str = Form(""),
-    clear_pexels: str = Form(""),
-    clear_pixabay: str = Form(""),
-    clear_groq: str = Form(""),
-    clear_coverr: str = Form(""),
-    clear_nvidia: str = Form(""),
-    clear_kaggle_token: str = Form(""),
-    csrf_token: str = Form(""),
-):
+class SettingsForm(BaseModel):
+    """Campos do formulário de /settings (agrupa as chaves de API e flags de limpeza)."""
+    pexels: str = ""
+    pixabay: str = ""
+    groq: str = ""
+    groq_model: str = ""
+    coverr: str = ""
+    nvidia: str = ""
+    kaggle_username: str = ""
+    kaggle_token: str = ""
+    clear_pexels: str = ""
+    clear_pixabay: str = ""
+    clear_groq: str = ""
+    clear_coverr: str = ""
+    clear_nvidia: str = ""
+    clear_kaggle_token: str = ""
+    csrf_token: str = ""
+
+
+@app.post("/settings", responses=ERROR_RESPONSES)
+def settings_save(request: Request, form: Annotated[SettingsForm, Form()]):
     user = require_user(request)
-    verify_csrf(request, csrf_token)
+    verify_csrf(request, form.csrf_token)
     db.update_api_keys(
         user["id"],
-        secret_from_form(user.get("pexels_key", ""), pexels, clear_pexels),
-        secret_from_form(user.get("pixabay_key", ""), pixabay, clear_pixabay),
-        secret_from_form(user.get("groq_key", ""), groq, clear_groq),
-        groq_model.strip(),
-        coverr=secret_from_form(user.get("coverr_key", ""), coverr, clear_coverr),
-        nvidia=secret_from_form(user.get("nvidia_key", ""), nvidia, clear_nvidia),
+        secret_from_form(user.get("pexels_key", ""), form.pexels, form.clear_pexels),
+        secret_from_form(user.get("pixabay_key", ""), form.pixabay, form.clear_pixabay),
+        secret_from_form(user.get("groq_key", ""), form.groq, form.clear_groq),
+        form.groq_model.strip(),
+        coverr=secret_from_form(user.get("coverr_key", ""), form.coverr, form.clear_coverr),
+        nvidia=secret_from_form(user.get("nvidia_key", ""), form.nvidia, form.clear_nvidia),
     )
     db.update_kaggle_keys(
         user["id"],
-        kaggle_username.strip(),
-        secret_from_form(user.get("kaggle_token", ""), kaggle_token, clear_kaggle_token),
+        form.kaggle_username.strip(),
+        secret_from_form(user.get("kaggle_token", ""), form.kaggle_token, form.clear_kaggle_token),
     )
     return RedirectResponse("/settings?saved=1", status_code=303)
 
@@ -899,11 +921,11 @@ def settings_save(
 # Detecção de chaves (formatos, rótulos, parsing) vive em services/key_detect.py.
 
 
-@app.post("/settings/import-keys")
+@app.post("/settings/import-keys", responses=ERROR_RESPONSES)
 async def import_keys(
     request: Request,
-    keys_file: UploadFile = File(...),
-    csrf_token: str = Form(""),
+    keys_file: Annotated[UploadFile, File()],
+    csrf_token: Annotated[str, Form()] = "",
 ):
     user = require_user(request)
     verify_csrf(request, csrf_token)
@@ -940,13 +962,15 @@ async def import_keys(
 # Transcrição de áudio (Groq Whisper → timestamps)
 # ------------------------------------------------------------------
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".flv", ".wmv"}
+_AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".flac", ".wma"}
+_ALLOWED_UPLOAD_EXTS = _VIDEO_EXTS | _AUDIO_EXTS
 _GROQ_MAX_BYTES = 24 * 1024 * 1024  # 25 MB hard limit da API; 24 MB de margem
 
 
 def _extract_audio_bytes(raw: bytes, filename: str) -> tuple[bytes, str]:
     """Se for vídeo ou arquivo grande, extrai/comprime para MP3 mono 64k via FFmpeg."""
-    ext = Path(filename).suffix.lower()
-    is_video = ext in _VIDEO_EXTS
+    raw_ext = Path(filename).suffix.lower()
+    is_video = raw_ext in _VIDEO_EXTS
     if not is_video and len(raw) <= _GROQ_MAX_BYTES:
         return raw, filename
     if not shutil.which("ffmpeg"):
@@ -955,8 +979,11 @@ def _extract_audio_bytes(raw: bytes, filename: str) -> tuple[bytes, str]:
             "FFmpeg não encontrado no servidor; necessário para extrair áudio de vídeo. "
             "Instale o FFmpeg ou envie um arquivo de áudio (mp3/wav) direto.",
         )
+    # Só usamos a extensão se ela estiver na allowlist; caso contrário, nome fixo.
+    # Evita construir o caminho do tempfile a partir de dado controlado pelo usuário.
+    safe_ext = raw_ext if raw_ext in _ALLOWED_UPLOAD_EXTS else (".mp4" if is_video else ".bin")
     with tempfile.TemporaryDirectory() as tmp:
-        src = Path(tmp) / ("input" + (ext or ".mp4"))
+        src = Path(tmp) / ("input" + safe_ext)
         src.write_bytes(raw)
         out = Path(tmp) / "audio.mp3"
         result = subprocess.run(
@@ -977,11 +1004,11 @@ def _extract_audio_bytes(raw: bytes, filename: str) -> tuple[bytes, str]:
     return extracted, "audio.mp3"
 
 
-@app.post("/transcribe-audio")
+@app.post("/transcribe-audio", responses=ERROR_RESPONSES)
 async def transcribe_audio(
     request: Request,
-    audio: UploadFile = File(...),
-    csrf_token: str = Form(""),
+    audio: Annotated[UploadFile, File()],
+    csrf_token: Annotated[str, Form()] = "",
 ):
     user = require_user(request)
     verify_csrf(request, csrf_token)
@@ -1001,32 +1028,32 @@ async def transcribe_audio(
 # ------------------------------------------------------------------
 # Projects
 # ------------------------------------------------------------------
-@app.get("/projects", response_class=HTMLResponse)
+@app.get("/projects", response_class=HTMLResponse, responses=ERROR_RESPONSES)
 def projects_page(request: Request):
     user = require_user(request)
     projects = db.list_projects(user["id"])
     return render_template(request, "projects.html", {"user": user, "projects": projects})
 
 
-@app.get("/projects/new", response_class=HTMLResponse)
+@app.get("/projects/new", response_class=HTMLResponse, responses=ERROR_RESPONSES)
 def new_project_page(request: Request):
     user = require_user(request)
     return render_template(request, "new_project.html", {"user": user, "config": DEFAULT_CONFIG})
 
 
-@app.post("/projects/new")
+@app.post("/projects/new", responses=ERROR_RESPONSES)
 async def new_project(
     request: Request,
-    name: str = Form(...),
-    script: str = Form(...),
-    avatar_safe_area: str = Form("right"),
-    visual_style: str = Form(DEFAULT_CONFIG["visual_style"]),
-    resolution: str = Form("1920x1080"),
-    scene_duration: float = Form(4.0),
-    image_fallback: str = Form(""),
-    long_mode: str = Form(""),
-    narration_media: Optional[UploadFile] = File(None),
-    csrf_token: str = Form(""),
+    name: Annotated[str, Form()],
+    script: Annotated[str, Form()],
+    avatar_safe_area: Annotated[str, Form()] = "right",
+    visual_style: Annotated[str, Form()] = DEFAULT_CONFIG["visual_style"],
+    resolution: Annotated[str, Form()] = "1920x1080",
+    scene_duration: Annotated[float, Form()] = 4.0,
+    image_fallback: Annotated[str, Form()] = "",
+    long_mode: Annotated[str, Form()] = "",
+    narration_media: Annotated[Optional[UploadFile], File()] = None,
+    csrf_token: Annotated[str, Form()] = "",
 ):
     user = require_user(request)
     verify_csrf(request, csrf_token)
@@ -1053,8 +1080,8 @@ async def new_project(
     return RedirectResponse(f"/projects/{pid}", status_code=303)
 
 
-@app.post("/projects/{project_id}/delete")
-def delete_project(request: Request, project_id: int, csrf_token: str = Form("")):
+@app.post("/projects/{project_id}/delete", responses=ERROR_RESPONSES)
+def delete_project(request: Request, project_id: int, csrf_token: Annotated[str, Form()] = ""):
     user = require_user(request)
     verify_csrf(request, csrf_token)
     project = db.get_project(project_id, user["id"])
@@ -1062,10 +1089,10 @@ def delete_project(request: Request, project_id: int, csrf_token: str = Form("")
         ensure_project_not_busy(project)
         db.delete_project(project_id, user["id"])
         remove_project_workspace(project_id)
-    return RedirectResponse("/projects", status_code=303)
+    return RedirectResponse(PROJECTS_PATH, status_code=303)
 
 
-@app.get("/projects/{project_id}", response_class=HTMLResponse)
+@app.get("/projects/{project_id}", response_class=HTMLResponse, responses=ERROR_RESPONSES)
 def project_page(request: Request, project_id: int):
     user = require_user(request)
     project = db.get_project(project_id, user["id"])
@@ -1166,7 +1193,7 @@ def run_generate_map_job(
         db.update_job(job_id, status="running", message="Gerando mapa visual")
         project = db.get_project(project_id, user_id)
         if not project:
-            raise RuntimeError("Projeto nao encontrado.")
+            raise RuntimeError(MSG_PROJECT_NOT_FOUND)
         config = project_config(project)
         base_scenes = parse_script(project["script"], config["scene_duration"])
         if not base_scenes:
@@ -1234,12 +1261,12 @@ def run_generate_map_job(
         db.fail_job(job_id, "Falha ao gerar mapa visual", str(exc))
 
 
-@app.post("/projects/{project_id}/generate-map")
+@app.post("/projects/{project_id}/generate-map", responses=ERROR_RESPONSES)
 def generate_map(
     request: Request,
     project_id: int,
     background_tasks: BackgroundTasks,
-    csrf_token: str = Form(""),
+    csrf_token: Annotated[str, Form()] = "",
 ):
     user = require_user(request)
     verify_csrf(request, csrf_token)
@@ -1345,7 +1372,7 @@ def run_search_job(
         db.update_job(job_id, status="running", message="Buscando assets")
         project = db.get_project(project_id, user_id)
         if not project:
-            raise RuntimeError("Projeto nao encontrado.")
+            raise RuntimeError(MSG_PROJECT_NOT_FOUND)
         config = project_config(project)
         max_w = resolution_width(config)
         scenes = db.list_scenes(project_id)
@@ -1438,7 +1465,7 @@ def run_part_search_job(
         db.update_job(job_id, status="running", message=f"Buscando assets da parte {part_idx}")
         project = db.get_project(project_id, user_id)
         if not project:
-            raise RuntimeError("Projeto nao encontrado.")
+            raise RuntimeError(MSG_PROJECT_NOT_FOUND)
         config = project_config(project)
         max_w = resolution_width(config)
         all_scenes = db.list_scenes(project_id)
@@ -1505,13 +1532,13 @@ def run_part_search_job(
         db.fail_job(job_id, f"Falha na busca da parte {part_idx}", str(exc))
 
 
-@app.post("/projects/{project_id}/parts/{part_idx}/search")
+@app.post("/projects/{project_id}/parts/{part_idx}/search", responses=ERROR_RESPONSES)
 def search_part(
     request: Request,
     project_id: int,
     part_idx: int,
     background_tasks: BackgroundTasks,
-    csrf_token: str = Form(""),
+    csrf_token: Annotated[str, Form()] = "",
 ):
     user = require_user(request)
     verify_csrf(request, csrf_token)
@@ -1520,7 +1547,7 @@ def search_part(
         raise HTTPException(404)
     ensure_project_not_busy(project)
     if not has_visual_provider(user):
-        raise HTTPException(400, "Cadastre ao menos uma chave de API em /settings.")
+        raise HTTPException(400, MSG_NO_API_KEYS)
     parts = db.list_parts(project_id)
     if not parts:
         raise HTTPException(400, "Gere o mapa visual antes de buscar assets.")
@@ -1553,12 +1580,50 @@ def search_part(
     return RedirectResponse(f"/projects/{project_id}/review?part={part_idx}", status_code=303)
 
 
-@app.post("/projects/{project_id}/parts/{part_idx}/confirm")
+def _missing_broll_takes(scenes: list[dict], assets_by_scene: dict, broll_required: set) -> list[str]:
+    """Cenas de b-roll sem nenhum take aceito (bloqueiam a confirmacao da parte)."""
+    missing: list[str] = []
+    for scene in scenes:
+        assets = assets_by_scene.get(scene["id"], [])
+        accepted = next((a for a in assets if a["state"] == "accepted"), None)
+        if not accepted and scene["scene_id"] in broll_required:
+            missing.append(scene["scene_id"])
+    return missing
+
+
+def _write_full_curation_report(project: dict, project_id: int, assets_by_scene: dict) -> None:
+    """Gera o relatorio completo de curadoria e marca o projeto como revisado."""
+    all_scenes = db.list_scenes(project_id)
+    chosen_by_scene: dict[int, dict] = {}
+    for scene in all_scenes:
+        accepted = next(
+            (a for a in assets_by_scene.get(scene["id"], []) if a["state"] == "accepted"), None
+        )
+        if accepted:
+            chosen_by_scene[scene["id"]] = accepted
+    rejected_by_scene = {
+        scene["id"]: [a for a in assets_by_scene.get(scene["id"], []) if a["state"] == "rejected"]
+        for scene in all_scenes
+    }
+    report = packager.build_curation_report(
+        project,
+        all_scenes,
+        chosen_by_scene,
+        rejected_by_scene,
+        review_round=int(project.get("review_round") or 0),
+    )
+    path = curation_report_path(project_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(report, encoding="utf-8")
+    db.set_project_status(project_id, "reviewed")
+
+
+@app.post("/projects/{project_id}/parts/{part_idx}/confirm", responses=ERROR_RESPONSES)
 def confirm_part(
     request: Request,
     project_id: int,
     part_idx: int,
-    csrf_token: str = Form(""),
+    csrf_token: Annotated[str, Form()] = "",
 ):
     user = require_user(request)
     verify_csrf(request, csrf_token)
@@ -1576,12 +1641,7 @@ def confirm_part(
     # cenas avatar-only nao precisam de take aceito (nao levam b-roll)
     broll_required = {sid for sid, on in scene_broll_flags(scenes, config).items() if on}
     assets_by_scene = db.list_assets_for_project(project_id)
-    not_accepted: list[str] = []
-    for scene in scenes:
-        assets = assets_by_scene.get(scene["id"], [])
-        accepted = next((a for a in assets if a["state"] == "accepted"), None)
-        if not accepted and scene["scene_id"] in broll_required:
-            not_accepted.append(scene["scene_id"])
+    not_accepted = _missing_broll_takes(scenes, assets_by_scene, broll_required)
     if not_accepted:
         preview = ", ".join(not_accepted[:8])
         suffix = "..." if len(not_accepted) > 8 else ""
@@ -1594,29 +1654,7 @@ def confirm_part(
     parts = db.list_parts(project_id)
     all_curated = all(p.get("curation_status") == "curated" for p in parts)
     if all_curated:
-        all_scenes = db.list_scenes(project_id)
-        chosen_by_scene: dict[int, dict] = {}
-        for scene in all_scenes:
-            accepted = next(
-                (a for a in assets_by_scene.get(scene["id"], []) if a["state"] == "accepted"), None
-            )
-            if accepted:
-                chosen_by_scene[scene["id"]] = accepted
-        rejected_by_scene = {
-            scene["id"]: [a for a in assets_by_scene.get(scene["id"], []) if a["state"] == "rejected"]
-            for scene in all_scenes
-        }
-        report = packager.build_curation_report(
-            project,
-            all_scenes,
-            chosen_by_scene,
-            rejected_by_scene,
-            review_round=int(project.get("review_round") or 0),
-        )
-        path = curation_report_path(project_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(report, encoding="utf-8")
-        db.set_project_status(project_id, "reviewed")
+        _write_full_curation_report(project, project_id, assets_by_scene)
         return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
     # Senao, avanca para a proxima parte ainda nao curada.
@@ -1626,12 +1664,12 @@ def confirm_part(
     return RedirectResponse(f"/projects/{project_id}?part={next_part}#parts-panel", status_code=303)
 
 
-@app.post("/projects/{project_id}/search")
+@app.post("/projects/{project_id}/search", responses=ERROR_RESPONSES)
 def search_all(
     request: Request,
     project_id: int,
     background_tasks: BackgroundTasks,
-    csrf_token: str = Form(""),
+    csrf_token: Annotated[str, Form()] = "",
 ):
     user = require_user(request)
     verify_csrf(request, csrf_token)
@@ -1640,7 +1678,7 @@ def search_all(
         raise HTTPException(404)
     ensure_project_not_busy(project)
     if not has_visual_provider(user):
-        raise HTTPException(400, "Cadastre ao menos uma chave de API em /settings.")
+        raise HTTPException(400, MSG_NO_API_KEYS)
     scenes = db.list_scenes(project_id)
     if not scenes:
         raise HTTPException(400, "Gere o mapa visual antes de buscar assets.")
@@ -1662,12 +1700,12 @@ def search_all(
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
-@app.post("/scenes/{scene_db_id}/search-more")
+@app.post("/scenes/{scene_db_id}/search-more", responses=ERROR_RESPONSES)
 def search_more(
     request: Request,
     scene_db_id: int,
-    media: str = Form("all"),
-    csrf_token: str = Form(""),
+    media: Annotated[str, Form()] = "all",
+    csrf_token: Annotated[str, Form()] = "",
 ):
     user = require_user(request)
     verify_csrf(request, csrf_token)
@@ -1679,7 +1717,7 @@ def search_more(
         raise HTTPException(404)
     ensure_project_not_busy(project)
     if not has_visual_provider(user):
-        raise HTTPException(400, "Cadastre ao menos uma chave de API em /settings.")
+        raise HTTPException(400, MSG_NO_API_KEYS)
     config = project_config(project)
     if media not in {"all", "video", "image"}:
         media = "all"
@@ -1703,8 +1741,8 @@ def search_more(
     return JSONResponse({"added": added, "media": media})
 
 
-@app.post("/scenes/{scene_db_id}/regen-keywords")
-def regen_keywords(request: Request, scene_db_id: int, csrf_token: str = Form("")):
+@app.post("/scenes/{scene_db_id}/regen-keywords", responses=ERROR_RESPONSES)
+def regen_keywords(request: Request, scene_db_id: int, csrf_token: Annotated[str, Form()] = ""):
     user = require_user(request)
     verify_csrf(request, csrf_token)
     scene = db.get_scene(scene_db_id)
@@ -1730,13 +1768,46 @@ def regen_keywords(request: Request, scene_db_id: int, csrf_token: str = Form(""
 # ------------------------------------------------------------------
 # Curadoria
 # ------------------------------------------------------------------
-@app.post("/assets/{asset_id}/state")
+def _revert_part_on_take_change(project: dict, owner: dict, asset_id: int) -> None:
+    """Modo longo: mexer num take de uma parte ja curada exige re-confirmar a parte."""
+    if not project_config(project).get("long_mode"):
+        return
+    asset = db.get_asset(asset_id)
+    scene = db.get_scene(asset["scene_id"]) if asset else None
+    if not scene:
+        return
+    p_idx = int(scene.get("part") or 1)
+    part = db.get_part(owner["project_id"], p_idx)
+    if part and part.get("curation_status") == "curated":
+        db.update_part(owner["project_id"], p_idx, curation_status="reviewing")
+        curation_report_path(owner["project_id"]).unlink(missing_ok=True)
+        if project.get("status") == "reviewed":
+            db.set_project_status(owner["project_id"], "reviewing")
+
+
+def _project_status_after_take_change(project: dict, owner: dict, user: dict) -> Optional[str]:
+    status = project.get("status")
+    if status == "reviewed":
+        # Changing a take after finishing makes the review report stale.
+        db.set_project_status(owner["project_id"], "reviewing")
+        curation_report_path(owner["project_id"]).unlink(missing_ok=True)
+        return "reviewing"
+    if status != "reviewing":
+        # Outside review, invalidate any existing package as before.
+        mark_project_dirty(owner["project_id"])
+        curation_report_path(owner["project_id"]).unlink(missing_ok=True)
+        fresh_project = db.get_project(owner["project_id"], user["id"])
+        return (fresh_project or project).get("status", status)
+    return status
+
+
+@app.post("/assets/{asset_id}/state", responses=ERROR_RESPONSES)
 def asset_state(
     request: Request,
     asset_id: int,
-    state: str = Form(...),
-    csrf_token: str = Form(""),
-    redirect: str = Form(""),
+    state: Annotated[str, Form()],
+    csrf_token: Annotated[str, Form()] = "",
+    redirect: Annotated[str, Form()] = "",
 ):
     user = require_user(request)
     verify_csrf(request, csrf_token)
@@ -1753,32 +1824,8 @@ def asset_state(
     if not updated:
         raise HTTPException(404)
 
-    # Modo longo: mexer num take de uma parte ja curada exige re-confirmar a parte.
-    if project_config(project).get("long_mode"):
-        asset = db.get_asset(asset_id)
-        scene = db.get_scene(asset["scene_id"]) if asset else None
-        if scene:
-            p_idx = int(scene.get("part") or 1)
-            part = db.get_part(owner["project_id"], p_idx)
-            if part and part.get("curation_status") == "curated":
-                db.update_part(owner["project_id"], p_idx, curation_status="reviewing")
-                curation_report_path(owner["project_id"]).unlink(missing_ok=True)
-                if project.get("status") == "reviewed":
-                    db.set_project_status(owner["project_id"], "reviewing")
-
-    status = project.get("status")
-    project_status = status
-    if status == "reviewed":
-        # Changing a take after finishing makes the review report stale.
-        db.set_project_status(owner["project_id"], "reviewing")
-        curation_report_path(owner["project_id"]).unlink(missing_ok=True)
-        project_status = "reviewing"
-    elif status != "reviewing":
-        # Outside review, invalidate any existing package as before.
-        mark_project_dirty(owner["project_id"])
-        curation_report_path(owner["project_id"]).unlink(missing_ok=True)
-        fresh_project = db.get_project(owner["project_id"], user["id"])
-        project_status = (fresh_project or project).get("status", status)
+    _revert_part_on_take_change(project, owner, asset_id)
+    project_status = _project_status_after_take_change(project, owner, user)
     # Native form fallback sends redirect; fetch-based JS does not.
     if redirect and redirect.startswith("/") and not redirect.startswith("//"):
         return RedirectResponse(redirect, status_code=303)
@@ -1807,7 +1854,7 @@ def run_auto_select_job(
         db.update_job(job_id, status="running", message="Selecionando os melhores takes")
         project = db.get_project(project_id, user_id)
         if not project:
-            raise RuntimeError("Projeto nao encontrado.")
+            raise RuntimeError(MSG_PROJECT_NOT_FOUND)
         config = project_config(project)
         chosen = auto_select_for_project(
             project_id, config, groq_key, groq_model, job_id=job_id,
@@ -1824,12 +1871,12 @@ def run_auto_select_job(
         db.fail_job(job_id, "Falha na selecao automatica", str(exc))
 
 
-@app.post("/projects/{project_id}/auto-select")
+@app.post("/projects/{project_id}/auto-select", responses=ERROR_RESPONSES)
 def auto_select_route(
     request: Request,
     project_id: int,
     background_tasks: BackgroundTasks,
-    csrf_token: str = Form(""),
+    csrf_token: Annotated[str, Form()] = "",
 ):
     user = require_user(request)
     verify_csrf(request, csrf_token)
@@ -1860,6 +1907,27 @@ def auto_select_route(
 # ------------------------------------------------------------------
 # Analise de visao: pontua cada candidato comparando imagem x cena
 # ------------------------------------------------------------------
+def _build_vision_providers(groq_key: str, nvidia_key: str) -> list:
+    """Provedores de visao disponiveis, em ordem de round-robin."""
+    providers: list = []
+    if groq_key:
+        providers.append(vision.get_provider("groq", api_key=groq_key))
+    if nvidia_key:
+        providers.append(vision.get_provider("nvidia", api_key=nvidia_key))
+    return providers
+
+
+def _score_scene_assets(scene: dict, pend: list, provider, heuristic, config: dict, sheet_n: int):
+    """Pontua as candidatas de uma cena (top-N no contact-sheet, resto na heuristica)."""
+    # ranqueia pela RELEVANCIA textual: a IA olha primeiro os mais on-topic.
+    ranked = sorted(pend, key=lambda a, scene=scene: scoring.keyword_relevance(scene, a), reverse=True)
+    top, rest = ranked[:sheet_n], ranked[sheet_n:]
+    results = provider.analyze_batch(top, scene, config)
+    for asset in rest:  # candidatas fora do sheet: heuristica offline
+        results[asset["id"]] = heuristic.analyze(asset, scene, config)
+    return ranked, results
+
+
 def analyze_pending_vision(
     project_id: int,
     user_id: int,
@@ -1879,7 +1947,7 @@ def analyze_pending_vision(
     """
     project = db.get_project(project_id, user_id)
     if not project:
-        raise RuntimeError("Projeto nao encontrado.")
+        raise RuntimeError(MSG_PROJECT_NOT_FOUND)
     config = project_config(project)
     scenes = db.list_scenes(project_id)
     # Tema global do video ancora o julgamento da visao (rejeita fora-do-tema).
@@ -1889,11 +1957,7 @@ def analyze_pending_vision(
             s["video_theme"] = video_theme
     assets_by_scene = db.list_assets_for_project(project_id)
 
-    providers: list = []
-    if groq_key:
-        providers.append(vision.get_provider("groq", api_key=groq_key))
-    if nvidia_key:
-        providers.append(vision.get_provider("nvidia", api_key=nvidia_key))
+    providers = _build_vision_providers(groq_key, nvidia_key)
     heuristic = vision.HeuristicVisionProvider()
     primary_name = providers[0].name if providers else heuristic.name
     # Contact-sheet: a IA julga as TOP-N candidatas de cada cena numa unica
@@ -1915,14 +1979,9 @@ def analyze_pending_vision(
         pend = [a for a in assets_by_scene.get(scene["id"], []) if not a.get("vision_analyzed")]
         if not pend:
             continue
-        # ranqueia pela RELEVANCIA textual: a IA olha primeiro os mais on-topic.
-        ranked = sorted(pend, key=lambda a: scoring.keyword_relevance(scene, a), reverse=True)
-        top, rest = ranked[:sheet_n], ranked[sheet_n:]
         provider = providers[rr % len(providers)] if providers else heuristic
         rr += 1
-        results = provider.analyze_batch(top, scene, config)
-        for asset in rest:  # candidatas fora do sheet: heuristica offline
-            results[asset["id"]] = heuristic.analyze(asset, scene, config)
+        ranked, results = _score_scene_assets(scene, pend, provider, heuristic, config, sheet_n)
         for asset in ranked:
             res = results.get(asset["id"]) or heuristic.analyze(asset, scene, config)
             db.set_asset_vision(
@@ -1968,12 +2027,12 @@ def run_vision_job(
         db.fail_job(job_id, "Falha na analise de visao", str(exc))
 
 
-@app.post("/projects/{project_id}/analyze-vision")
+@app.post("/projects/{project_id}/analyze-vision", responses=ERROR_RESPONSES)
 def analyze_vision_route(
     request: Request,
     project_id: int,
     background_tasks: BackgroundTasks,
-    csrf_token: str = Form(""),
+    csrf_token: Annotated[str, Form()] = "",
 ):
     user = require_user(request)
     verify_csrf(request, csrf_token)
@@ -1998,7 +2057,7 @@ def analyze_vision_route(
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
-@app.get("/projects/{project_id}/review", response_class=HTMLResponse)
+@app.get("/projects/{project_id}/review", response_class=HTMLResponse, responses=ERROR_RESPONSES)
 def review_page(request: Request, project_id: int, part: Optional[int] = None):
     user = require_user(request)
     project = db.get_project(project_id, user["id"])
@@ -2053,6 +2112,39 @@ def review_page(request: Request, project_id: int, part: Optional[int] = None):
     )
 
 
+def _research_one_scene(scene: dict, label: str, job_id: int, keys: dict, config: dict, max_w: int, assets_by_scene: dict) -> int:
+    """Re-busca de uma cena rejeitada: novas keywords + nova busca. Retorna adicionados."""
+    db.update_job(job_id, status="running", message=label)
+    # keywords novas para fugir dos resultados que o usuario rejeitou
+    kws = groq_service.regenerate_keywords(
+        scene.get("narration", ""),
+        scene.get("visual_goal", ""),
+        keys["groq"],
+        config["visual_style"],
+        model=keys["groq_model"] or groq_service.DEFAULT_MODEL,
+    )
+    check_job_canceled(job_id)
+    if kws:
+        roles = scoring.assign_roles(kws)
+        db.update_scene_keywords(scene["id"], kws, roles)
+        scene["keywords"] = kws
+        scene["keyword_roles"] = roles
+    existing = {a["download_url"] for a in assets_by_scene.get(scene["id"], [])}
+    results = asset_search.search_scene(
+        scene["keywords"],
+        keys["pexels"],
+        keys["pixabay"],
+        max_w=max_w,
+        per_keyword=config["per_keyword"] + 4,
+        allow_images=True,
+        seen_urls=existing,
+        coverr_key=keys["coverr"],
+        extra_image_banks=True,
+    )
+    check_job_canceled(job_id)
+    return db.add_assets(scene["id"], results)
+
+
 def run_research_job(
     job_id: int,
     project_id: int,
@@ -2070,7 +2162,7 @@ def run_research_job(
         db.update_job(job_id, status="running", message="Buscando takes melhores para as cenas rejeitadas")
         project = db.get_project(project_id, user_id)
         if not project:
-            raise RuntimeError("Projeto nao encontrado.")
+            raise RuntimeError(MSG_PROJECT_NOT_FOUND)
         config = project_config(project)
         max_w = resolution_width(config)
         new_round = int(project.get("review_round") or 0) + 1
@@ -2087,41 +2179,13 @@ def run_research_job(
         if not targets:
             raise RuntimeError("Nenhuma cena rejeitada aguardando nova busca.")
 
+        keys = {"pexels": pexels_key, "pixabay": pixabay_key, "groq": groq_key,
+                "groq_model": groq_model, "coverr": coverr_key}
         added_total = 0
         for i, scene in enumerate(targets, 1):
             check_job_canceled(job_id)
-            db.update_job(
-                job_id, status="running",
-                message=f"Nova busca {i}/{len(targets)}: {scene['scene_id']}",
-            )
-            # keywords novas para fugir dos resultados que o usuario rejeitou
-            kws = groq_service.regenerate_keywords(
-                scene.get("narration", ""),
-                scene.get("visual_goal", ""),
-                groq_key,
-                config["visual_style"],
-                model=groq_model or groq_service.DEFAULT_MODEL,
-            )
-            check_job_canceled(job_id)
-            if kws:
-                roles = scoring.assign_roles(kws)
-                db.update_scene_keywords(scene["id"], kws, roles)
-                scene["keywords"] = kws
-                scene["keyword_roles"] = roles
-            existing = {a["download_url"] for a in assets_by_scene.get(scene["id"], [])}
-            results = asset_search.search_scene(
-                scene["keywords"],
-                pexels_key,
-                pixabay_key,
-                max_w=max_w,
-                per_keyword=config["per_keyword"] + 4,
-                allow_images=True,
-                seen_urls=existing,
-                coverr_key=coverr_key,
-                extra_image_banks=True,
-            )
-            check_job_canceled(job_id)
-            added_total += db.add_assets(scene["id"], results)
+            label = f"Nova busca {i}/{len(targets)}: {scene['scene_id']}"
+            added_total += _research_one_scene(scene, label, job_id, keys, config, max_w, assets_by_scene)
 
         # pontua os novos takes antes de escolher, para a selecao usar a visao.
         # No fluxo por-parte pulamos a visao em massa (e sob demanda e ficaria
@@ -2161,13 +2225,13 @@ def run_research_job(
         db.fail_job(job_id, "Falha na nova busca", str(exc))
 
 
-@app.post("/projects/{project_id}/research-rejected")
+@app.post("/projects/{project_id}/research-rejected", responses=ERROR_RESPONSES)
 def research_rejected(
     request: Request,
     project_id: int,
     background_tasks: BackgroundTasks,
-    csrf_token: str = Form(""),
-    part: str = Form(""),
+    csrf_token: Annotated[str, Form()] = "",
+    part: Annotated[str, Form()] = "",
 ):
     user = require_user(request)
     verify_csrf(request, csrf_token)
@@ -2176,7 +2240,7 @@ def research_rejected(
         raise HTTPException(404)
     ensure_project_not_busy(project)
     if not has_visual_provider(user):
-        raise HTTPException(400, "Cadastre ao menos uma chave de API em /settings.")
+        raise HTTPException(400, MSG_NO_API_KEYS)
     part_idx: Optional[int] = None
     if part.strip():
         try:
@@ -2203,8 +2267,8 @@ def research_rejected(
     return RedirectResponse(f"/projects/{project_id}/review{suffix}", status_code=303)
 
 
-@app.post("/projects/{project_id}/finish-review")
-def finish_review(request: Request, project_id: int, csrf_token: str = Form("")):
+@app.post("/projects/{project_id}/finish-review", responses=ERROR_RESPONSES)
+def finish_review(request: Request, project_id: int, csrf_token: Annotated[str, Form()] = ""):
     user = require_user(request)
     verify_csrf(request, csrf_token)
     project = db.get_project(project_id, user["id"])
@@ -2251,7 +2315,7 @@ def finish_review(request: Request, project_id: int, csrf_token: str = Form(""))
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
-@app.get("/projects/{project_id}/curation-report")
+@app.get("/projects/{project_id}/curation-report", responses=ERROR_RESPONSES)
 def download_curation_report(request: Request, project_id: int):
     user = require_user(request)
     if not db.get_project(project_id, user["id"]):
@@ -2262,7 +2326,7 @@ def download_curation_report(request: Request, project_id: int):
     return FileResponse(path, filename=path.name, media_type="text/markdown")
 
 
-@app.get("/projects/{project_id}/preview", response_class=HTMLResponse)
+@app.get("/projects/{project_id}/preview", response_class=HTMLResponse, responses=ERROR_RESPONSES)
 def preview_page(request: Request, project_id: int):
     """Folha de contato: o take escolhido de cada cena lado a lado com a narracao.
 
@@ -2332,15 +2396,15 @@ def project_generated_dir(project_id: int) -> Path:
 # (importado como _image_kind_and_size no topo).
 
 
-@app.post("/scenes/{scene_db_id}/generated-image")
+@app.post("/scenes/{scene_db_id}/generated-image", responses=ERROR_RESPONSES)
 async def save_generated_image(
     request: Request,
     scene_db_id: int,
-    image: UploadFile = File(...),
-    prompt: str = Form(""),
-    width: str = Form("0"),
-    height: str = Form("0"),
-    csrf_token: str = Form(""),
+    image: Annotated[UploadFile, File()],
+    prompt: Annotated[str, Form()] = "",
+    width: Annotated[str, Form()] = "0",
+    height: Annotated[str, Form()] = "0",
+    csrf_token: Annotated[str, Form()] = "",
 ):
     user = require_user(request)
     verify_csrf(request, csrf_token)
@@ -2395,7 +2459,7 @@ async def save_generated_image(
     return JSONResponse({"added": added, "url": url})
 
 
-@app.get("/projects/{project_id}/generated/{filename}")
+@app.get("/projects/{project_id}/generated/{filename}", responses=ERROR_RESPONSES)
 def serve_generated_image(request: Request, project_id: int, filename: str):
     user = require_user(request)
     if not db.get_project(project_id, user["id"]):
@@ -2415,13 +2479,13 @@ def serve_generated_image(request: Request, project_id: int, filename: str):
 # ------------------------------------------------------------------
 # Midias do refinamento (narracao / avatar)
 # ------------------------------------------------------------------
-@app.post("/projects/{project_id}/upload-media")
+@app.post("/projects/{project_id}/upload-media", responses=ERROR_RESPONSES)
 async def upload_media(
     request: Request,
     project_id: int,
-    kind: str = Form(...),
-    media: UploadFile = File(...),
-    csrf_token: str = Form(""),
+    kind: Annotated[str, Form()],
+    media: Annotated[UploadFile, File()],
+    csrf_token: Annotated[str, Form()] = "",
 ):
     user = require_user(request)
     verify_csrf(request, csrf_token)
@@ -2441,12 +2505,12 @@ async def upload_media(
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
-@app.post("/projects/{project_id}/remove-media")
+@app.post("/projects/{project_id}/remove-media", responses=ERROR_RESPONSES)
 def remove_media(
     request: Request,
     project_id: int,
-    kind: str = Form(...),
-    csrf_token: str = Form(""),
+    kind: Annotated[str, Form()],
+    csrf_token: Annotated[str, Form()] = "",
 ):
     user = require_user(request)
     verify_csrf(request, csrf_token)
@@ -2513,6 +2577,140 @@ def _slice_avatar(avatar_path: Path, start: float, duration: float, out_path: Pa
     return out_path
 
 
+class _PackageCtx:
+    """Contexto compartilhado do job de empacotamento (evita explosao de parametros)."""
+    def __init__(self, job_id, project_id, project, config, scenes, selected_by_scene, rejected_payload):
+        self.job_id = job_id
+        self.project_id = project_id
+        self.project = project
+        self.config = config
+        self.scenes = scenes
+        self.selected_by_scene = selected_by_scene
+        self.rejected_payload = rejected_payload
+
+
+def _validate_package_selection(scenes, selected_by_scene, broll_required, required_scene_db_ids) -> None:
+    if not broll_required:
+        raise RuntimeError("Plano sem cenas de b-roll; ajuste o roteiro ou as regras antes de gerar pacote.")
+    if missing_selected_scene_ids(scenes, selected_by_scene, broll_required):
+        raise RuntimeError("Selecao incompleta; escolha um asset para cada cena de b-roll.")
+    if not any(scene_id in selected_by_scene for scene_id in required_scene_db_ids):
+        raise RuntimeError("Selecao incompleta; escolha um asset para cada cena de b-roll.")
+
+
+def _build_part_zip(ctx: "_PackageCtx", part: dict, parts_count: int, avatar_input) -> Optional[str]:
+    """Monta o ZIP de uma parte (modo longo): fatia o avatar, gera edit_plan e zipa."""
+    idx = part["part_idx"]
+    check_job_canceled(ctx.job_id)
+    db.update_job(ctx.job_id, status="running", message=f"Baixando assets da parte {idx}/{parts_count}")
+    part_scenes = [s for s in ctx.scenes if int(s.get("part") or 1) == idx]
+    if not part_scenes:
+        db.update_part(ctx.project_id, idx, status="error", error="parte sem cenas")
+        return None
+    # avatar fatiado para o intervalo desta parte (vira a base do render)
+    extras: list[Path] = []
+    avatar_name = ""
+    if avatar_input and avatar_input.exists():
+        p_start = min(float(s.get("start_time") or 0) for s in part_scenes)
+        p_end = max(float(s.get("end_time") or 0) for s in part_scenes)
+        slice_out = part_dir(ctx.project_id, idx) / "avatar.mp4"
+        _slice_avatar(avatar_input, p_start, p_end - p_start, slice_out)
+        extras.append(slice_out)
+        avatar_name = slice_out.name
+    check_job_canceled(ctx.job_id)
+    rebased = _rebase_scenes(part_scenes)
+    part_plan = edit_plan.build_edit_plan(
+        ctx.project, ctx.config, rebased,
+        narration_file="",      # narracao entra so no concat final
+        avatar_file=avatar_name,  # avatar-base por parte
+    )
+    zip_path = packager.build_zip(
+        project=ctx.project,
+        config=ctx.config,
+        scenes=rebased,
+        selected_by_scene=ctx.selected_by_scene,
+        rejected_assets=ctx.rejected_payload,
+        work_dir=part_dir(ctx.project_id, idx),
+        max_download_mb=ctx.config["max_download_mb"],
+        edit_plan=part_plan,
+        extra_files=extras,
+        zip_basename=f"{ctx.project['name']}_pt{idx:02d}",
+    )
+    check_job_canceled(ctx.job_id)
+    db.update_part(
+        ctx.project_id, idx,
+        zip_name=zip_path.name, status="zipped",
+        error="", video_path="", dataset_slug="", kernel_slug="",
+    )
+    return zip_path.name
+
+
+def _package_long_mode(ctx: "_PackageCtx") -> None:
+    """Um ZIP por parte: cada parte e um render avatar-base proprio (partes mudas)."""
+    parts = db.list_parts(ctx.project_id)
+    if not parts:
+        raise RuntimeError("Projeto longo sem partes; gere o mapa visual novamente.")
+    if parts_dir(ctx.project_id).exists():
+        shutil.rmtree(parts_dir(ctx.project_id), ignore_errors=True)
+    avatar_input = find_input_media(ctx.project_id, "avatar")
+    if avatar_input and not shutil.which("ffmpeg"):
+        raise RuntimeError("FFmpeg necessario no servidor para fatiar o avatar por parte (modo longo).")
+    zip_names = [
+        name for part in parts
+        if (name := _build_part_zip(ctx, part, len(parts), avatar_input))
+    ]
+    if not zip_names:
+        raise RuntimeError("Nenhuma parte gerou pacote.")
+    db.set_project_status(ctx.project_id, "packaged")
+    db.clear_kaggle_job(ctx.project_id)
+    db.finish_job(
+        ctx.job_id,
+        f"{len(zip_names)} pacotes prontos (1 por parte, avatar-base)",
+        {"parts": len(zip_names), "zips": zip_names, "scenes": len(ctx.scenes)},
+    )
+
+
+def _package_single_mode(ctx: "_PackageCtx") -> None:
+    project_work = project_work_dir(ctx.project_id)
+    narration_file = find_input_media(ctx.project_id, "narration")
+    avatar_file = find_input_media(ctx.project_id, "avatar")
+    check_job_canceled(ctx.job_id)
+    plan = edit_plan.build_edit_plan(
+        ctx.project,
+        ctx.config,
+        ctx.scenes,
+        narration_file=narration_file.name if narration_file else "",
+        avatar_file=avatar_file.name if avatar_file else "",
+    )
+    # copia local do plano: permite revisar a edicao antes de enviar ao Kaggle
+    project_work.mkdir(parents=True, exist_ok=True)
+    (project_work / EDIT_PLAN_FILENAME).write_text(
+        json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    check_job_canceled(ctx.job_id)
+    zip_path = packager.build_zip(
+        project=ctx.project,
+        config=ctx.config,
+        scenes=ctx.scenes,
+        selected_by_scene=ctx.selected_by_scene,
+        rejected_assets=ctx.rejected_payload,
+        work_dir=project_work,
+        max_download_mb=ctx.config["max_download_mb"],
+        edit_plan=plan,
+        extra_files=[
+            f for f in (narration_file, avatar_file, curation_report_path(ctx.project_id)) if f and f.exists()
+        ],
+    )
+    check_job_canceled(ctx.job_id)
+    db.set_project_status(ctx.project_id, "packaged")
+    db.clear_kaggle_job(ctx.project_id)
+    db.finish_job(
+        ctx.job_id,
+        "Pacote ZIP pronto",
+        {"zip": zip_path.name, "scenes": len(ctx.scenes), "selected": len(ctx.selected_by_scene)},
+    )
+
+
 def run_package_job(
     job_id: int,
     project_id: int,
@@ -2523,7 +2721,7 @@ def run_package_job(
         db.update_job(job_id, status="running", message="Gerando edit_plan e baixando assets")
         project = db.get_project(project_id, user_id)
         if not project:
-            raise RuntimeError("Projeto nao encontrado.")
+            raise RuntimeError(MSG_PROJECT_NOT_FOUND)
         config = project_config(project)
         scenes = db.list_scenes(project_id)
         # decisao de b-roll (mesma da busca/render): anexa em cada cena para o
@@ -2536,132 +2734,18 @@ def run_package_job(
         selected_rows = db.list_assets_by_state(project_id, CHOSEN_ASSET_STATES)
         selected_by_scene = {row["scene_id"]: row for row in selected_rows}
         rejected = db.list_assets_by_state(project_id, ["rejected"])
-        missing = missing_selected_scene_ids(scenes, selected_by_scene, broll_required)
-        has_required_selection = any(scene_id in selected_by_scene for scene_id in required_scene_db_ids)
-        if not broll_required:
-            raise RuntimeError("Plano sem cenas de b-roll; ajuste o roteiro ou as regras antes de gerar pacote.")
-        if missing:
-            raise RuntimeError("Selecao incompleta; escolha um asset para cada cena de b-roll.")
-        if not has_required_selection:
-            raise RuntimeError("Selecao incompleta; escolha um asset para cada cena de b-roll.")
-        project_work = project_work_dir(project_id)
+        _validate_package_selection(scenes, selected_by_scene, broll_required, required_scene_db_ids)
         remove_project_artifacts(project_id)
         rejected_payload = [
             {"scene_id": r["scene_code"], "source": r["source"], "url": r["download_url"], "keyword": r["keyword"]}
             for r in rejected
         ]
 
+        ctx = _PackageCtx(job_id, project_id, project, config, scenes, selected_by_scene, rejected_payload)
         if config.get("long_mode"):
-            # Um ZIP por parte. Cada parte e um render avatar-base proprio: o
-            # avatar (video unico do apresentador) e FATIADO no intervalo da
-            # parte e vai no ZIP junto com um edit_plan base. A narracao completa
-            # entra so na concatenacao final (as partes ficam mudas).
-            parts = db.list_parts(project_id)
-            if not parts:
-                raise RuntimeError("Projeto longo sem partes; gere o mapa visual novamente.")
-            if parts_dir(project_id).exists():
-                shutil.rmtree(parts_dir(project_id), ignore_errors=True)
-            avatar_input = find_input_media(project_id, "avatar")
-            if avatar_input and not shutil.which("ffmpeg"):
-                raise RuntimeError(
-                    "FFmpeg necessario no servidor para fatiar o avatar por parte (modo longo)."
-                )
-            zip_names = []
-            for part in parts:
-                idx = part["part_idx"]
-                check_job_canceled(job_id)
-                db.update_job(
-                    job_id, status="running",
-                    message=f"Baixando assets da parte {idx}/{len(parts)}",
-                )
-                part_scenes = [s for s in scenes if int(s.get("part") or 1) == idx]
-                if not part_scenes:
-                    db.update_part(project_id, idx, status="error", error="parte sem cenas")
-                    continue
-                # avatar fatiado para o intervalo desta parte (vira a base do render)
-                extras: list[Path] = []
-                avatar_name = ""
-                if avatar_input and avatar_input.exists():
-                    p_start = min(float(s.get("start_time") or 0) for s in part_scenes)
-                    p_end = max(float(s.get("end_time") or 0) for s in part_scenes)
-                    slice_out = part_dir(project_id, idx) / "avatar.mp4"
-                    _slice_avatar(avatar_input, p_start, p_end - p_start, slice_out)
-                    extras.append(slice_out)
-                    avatar_name = slice_out.name
-                check_job_canceled(job_id)
-                rebased = _rebase_scenes(part_scenes)
-                part_plan = edit_plan.build_edit_plan(
-                    project, config, rebased,
-                    narration_file="",      # narracao entra so no concat final
-                    avatar_file=avatar_name,  # avatar-base por parte
-                )
-                zip_path = packager.build_zip(
-                    project=project,
-                    config=config,
-                    scenes=rebased,
-                    selected_by_scene=selected_by_scene,
-                    rejected_assets=rejected_payload,
-                    work_dir=part_dir(project_id, idx),
-                    max_download_mb=config["max_download_mb"],
-                    edit_plan=part_plan,
-                    extra_files=extras,
-                    zip_basename=f"{project['name']}_pt{idx:02d}",
-                )
-                check_job_canceled(job_id)
-                db.update_part(
-                    project_id, idx,
-                    zip_name=zip_path.name, status="zipped",
-                    error="", video_path="", dataset_slug="", kernel_slug="",
-                )
-                zip_names.append(zip_path.name)
-            if not zip_names:
-                raise RuntimeError("Nenhuma parte gerou pacote.")
-            db.set_project_status(project_id, "packaged")
-            db.clear_kaggle_job(project_id)
-            db.finish_job(
-                job_id,
-                f"{len(zip_names)} pacotes prontos (1 por parte, avatar-base)",
-                {"parts": len(zip_names), "zips": zip_names, "scenes": len(scenes)},
-            )
-            return
-
-        narration_file = find_input_media(project_id, "narration")
-        avatar_file = find_input_media(project_id, "avatar")
-        check_job_canceled(job_id)
-        plan = edit_plan.build_edit_plan(
-            project,
-            config,
-            scenes,
-            narration_file=narration_file.name if narration_file else "",
-            avatar_file=avatar_file.name if avatar_file else "",
-        )
-        # copia local do plano: permite revisar a edicao antes de enviar ao Kaggle
-        project_work.mkdir(parents=True, exist_ok=True)
-        (project_work / EDIT_PLAN_FILENAME).write_text(
-            json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        check_job_canceled(job_id)
-        zip_path = packager.build_zip(
-            project=project,
-            config=config,
-            scenes=scenes,
-            selected_by_scene=selected_by_scene,
-            rejected_assets=rejected_payload,
-            work_dir=project_work,
-            max_download_mb=config["max_download_mb"],
-            edit_plan=plan,
-            extra_files=[
-                f for f in (narration_file, avatar_file, curation_report_path(project_id)) if f and f.exists()
-            ],
-        )
-        check_job_canceled(job_id)
-        db.set_project_status(project_id, "packaged")
-        db.clear_kaggle_job(project_id)
-        db.finish_job(
-            job_id,
-            "Pacote ZIP pronto",
-            {"zip": zip_path.name, "scenes": len(scenes), "selected": len(selected_by_scene)},
-        )
+            _package_long_mode(ctx)
+        else:
+            _package_single_mode(ctx)
     except JobCanceled:
         finish_canceled_job(job_id, project_id, "package")
     except Exception as exc:  # noqa: BLE001
@@ -2669,12 +2753,12 @@ def run_package_job(
         db.fail_job(job_id, "Falha ao gerar pacote", str(exc))
 
 
-@app.post("/projects/{project_id}/package")
+@app.post("/projects/{project_id}/package", responses=ERROR_RESPONSES)
 def package(
     request: Request,
     project_id: int,
     background_tasks: BackgroundTasks,
-    csrf_token: str = Form(""),
+    csrf_token: Annotated[str, Form()] = "",
 ):
     user = require_user(request)
     verify_csrf(request, csrf_token)
@@ -2721,7 +2805,7 @@ def package(
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
-@app.get("/projects/{project_id}/download-zip")
+@app.get("/projects/{project_id}/download-zip", responses=ERROR_RESPONSES)
 def download_zip(request: Request, project_id: int):
     user = require_user(request)
     project = db.get_project(project_id, user["id"])
@@ -2734,7 +2818,7 @@ def download_zip(request: Request, project_id: int):
     return FileResponse(zip_path, filename=zip_path.name, media_type="application/zip")
 
 
-@app.get("/projects/{project_id}/edit-plan")
+@app.get("/projects/{project_id}/edit-plan", responses=ERROR_RESPONSES)
 def get_edit_plan(request: Request, project_id: int):
     """Plano de edição gerado no pacote — para revisão antes do envio ao Kaggle."""
     user = require_user(request)
@@ -2750,12 +2834,12 @@ def get_edit_plan(request: Request, project_id: int):
 # ------------------------------------------------------------------
 # Kaggle - enviar para render
 # ------------------------------------------------------------------
-@app.post("/projects/{project_id}/send-to-kaggle")
+@app.post("/projects/{project_id}/send-to-kaggle", responses=ERROR_RESPONSES)
 def send_to_kaggle(
     request: Request,
     project_id: int,
     background_tasks: BackgroundTasks,
-    csrf_token: str = Form(""),
+    csrf_token: Annotated[str, Form()] = "",
 ):
     user = require_user(request)
     verify_csrf(request, csrf_token)
@@ -2803,6 +2887,52 @@ PART_POLL_SECONDS = 30
 PART_RENDER_TIMEOUT = 45 * 60  # por parte
 
 
+def _poll_part_render(job_id: int, k_slug: str, username: str, token: str) -> tuple[str, str]:
+    """Aguarda o kernel da parte terminar. Retorna (status_final, detalhe_erro)."""
+    deadline = time.time() + PART_RENDER_TIMEOUT
+    while time.time() < deadline:
+        time.sleep(PART_POLL_SECONDS)
+        check_job_canceled(job_id)
+        info = kaggle_service.get_status(k_slug, username, token)
+        status = (info.get("status") or "").lower()
+        if status == "complete":
+            return "complete", ""
+        if status == "error":
+            return "error", str(info.get("error") or "")[:400]
+    return "timeout", ""
+
+
+def _upload_and_render_part(job_id: int, project_id: int, project: dict, part: dict, total: int, username: str, token: str) -> None:
+    """Sobe o ZIP da parte, dispara o kernel, aguarda e baixa o MP4. Raise em falha."""
+    idx = part["part_idx"]
+    label = f"parte {idx}/{total}"
+    zip_path = part_dir(project_id, idx) / (part.get("zip_name") or "")
+    if not part.get("zip_name") or not zip_path.exists():
+        raise RuntimeError("ZIP da parte nao encontrado; gere os pacotes novamente.")
+    db.update_job(job_id, status="running", message=f"Enviando {label} ao Kaggle")
+    db.update_part(project_id, idx, status="uploading", error="")
+    part_name = f"{project['name']} pt{idx:02d}"
+    check_job_canceled(job_id)
+    ds_slug = kaggle_service.upload_dataset(zip_path, part_name, username, token, project_id=project_id)
+    check_job_canceled(job_id)
+    k_slug, _push = kaggle_service.push_kernel(ds_slug, part_name, username, token, project_id=project_id)
+    db.update_part(project_id, idx, dataset_slug=ds_slug, kernel_slug=k_slug, status="running")
+    check_job_canceled(job_id)
+
+    db.update_job(job_id, status="running", message=f"Renderizando {label} no Kaggle")
+    final_status, error_detail = _poll_part_render(job_id, k_slug, username, token)
+    if final_status == "complete":
+        out_dir = part_dir(project_id, idx) / "kaggle_output"
+        video = kaggle_service.pull_output_video(k_slug, username, token, out_dir)
+        if not video:
+            raise RuntimeError("Render concluiu mas o MP4 nao foi encontrado no output.")
+        db.update_part(project_id, idx, status="done", video_path=str(video), error="")
+        return
+    if final_status == "error":
+        raise RuntimeError(error_detail or "kernel falhou")
+    raise RuntimeError(f"timeout apos {PART_RENDER_TIMEOUT // 60} min")
+
+
 def run_kaggle_parts_job(
     job_id: int,
     project_id: int,
@@ -2814,7 +2944,7 @@ def run_kaggle_parts_job(
         check_job_canceled(job_id)
         project = db.get_project(project_id, user_id)
         if not project:
-            raise RuntimeError("Projeto nao encontrado.")
+            raise RuntimeError(MSG_PROJECT_NOT_FOUND)
         parts = [p for p in db.list_parts(project_id) if p["status"] != "done"]
         total = len(db.list_parts(project_id))
         if not parts:
@@ -2824,48 +2954,9 @@ def run_kaggle_parts_job(
         for part in parts:
             check_job_canceled(job_id)
             idx = part["part_idx"]
-            label = f"parte {idx}/{total}"
             try:
-                zip_path = part_dir(project_id, idx) / (part.get("zip_name") or "")
-                if not part.get("zip_name") or not zip_path.exists():
-                    raise RuntimeError("ZIP da parte nao encontrado; gere os pacotes novamente.")
-                db.update_job(job_id, status="running", message=f"Enviando {label} ao Kaggle")
-                db.update_part(project_id, idx, status="uploading", error="")
-                part_name = f"{project['name']} pt{idx:02d}"
-                check_job_canceled(job_id)
-                ds_slug = kaggle_service.upload_dataset(zip_path, part_name, username, token, project_id=project_id)
-                check_job_canceled(job_id)
-                k_slug, _push = kaggle_service.push_kernel(ds_slug, part_name, username, token, project_id=project_id)
-                db.update_part(project_id, idx, dataset_slug=ds_slug, kernel_slug=k_slug, status="running")
-                check_job_canceled(job_id)
-
-                db.update_job(job_id, status="running", message=f"Renderizando {label} no Kaggle")
-                deadline = time.time() + PART_RENDER_TIMEOUT
-                final_status = "timeout"
-                error_detail = ""
-                while time.time() < deadline:
-                    time.sleep(PART_POLL_SECONDS)
-                    check_job_canceled(job_id)
-                    info = kaggle_service.get_status(k_slug, username, token)
-                    status = (info.get("status") or "").lower()
-                    if status == "complete":
-                        final_status = "complete"
-                        break
-                    if status == "error":
-                        final_status = "error"
-                        error_detail = str(info.get("error") or "")[:400]
-                        break
-                if final_status == "complete":
-                    out_dir = part_dir(project_id, idx) / "kaggle_output"
-                    video = kaggle_service.pull_output_video(k_slug, username, token, out_dir)
-                    if not video:
-                        raise RuntimeError("Render concluiu mas o MP4 nao foi encontrado no output.")
-                    db.update_part(project_id, idx, status="done", video_path=str(video), error="")
-                    ok += 1
-                elif final_status == "error":
-                    raise RuntimeError(error_detail or "kernel falhou")
-                else:
-                    raise RuntimeError(f"timeout apos {PART_RENDER_TIMEOUT // 60} min")
+                _upload_and_render_part(job_id, project_id, project, part, total, username, token)
+                ok += 1
             except JobCanceled:
                 db.update_part(project_id, idx, status="error", error="render interrompido pelo usuario")
                 raise
@@ -2889,12 +2980,12 @@ def run_kaggle_parts_job(
         db.fail_job(job_id, "Falha no render por partes", str(exc))
 
 
-@app.post("/projects/{project_id}/render-parts")
+@app.post("/projects/{project_id}/render-parts", responses=ERROR_RESPONSES)
 def render_parts(
     request: Request,
     project_id: int,
     background_tasks: BackgroundTasks,
-    csrf_token: str = Form(""),
+    csrf_token: Annotated[str, Form()] = "",
 ):
     user = require_user(request)
     verify_csrf(request, csrf_token)
@@ -2928,23 +3019,68 @@ def render_parts(
     return JSONResponse({"job_id": job_id, "parts": len(pending), "message": "Render por partes iniciado."})
 
 
+def _run_ffmpeg(args: list[str], timeout: int = 1800) -> subprocess.CompletedProcess:
+    return subprocess.run(["ffmpeg", "-y", *args], capture_output=True, timeout=timeout)
+
+
+def _collect_part_videos(job_id: int, parts: list[dict]) -> list[Path]:
+    """Coleta os MP4s renderizados das partes em ordem; raise se alguma faltar."""
+    videos: list[Path] = []
+    for part in sorted(parts, key=lambda p: p["part_idx"]):
+        check_job_canceled(job_id)
+        video = Path(part.get("video_path") or "")
+        if part["status"] != "done" or not video.exists():
+            raise RuntimeError(f"Parte {part['part_idx']} sem video renderizado.")
+        videos.append(video)
+    return videos
+
+
+def _concat_part_videos(job_id: int, concat_list: Path, base_out: Path) -> None:
+    """Stream copy primeiro (mesmo preset do montador); re-encode como fallback."""
+    check_job_canceled(job_id)
+    result = _run_ffmpeg(["-f", "concat", "-safe", "0", "-i", str(concat_list), "-c", "copy", str(base_out)])
+    if result.returncode != 0 or not base_out.exists() or base_out.stat().st_size == 0:
+        check_job_canceled(job_id)
+        db.update_job(job_id, status="running", message="Stream copy falhou; re-encodando")
+        result = _run_ffmpeg(
+            ["-f", "concat", "-safe", "0", "-i", str(concat_list),
+             "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-an", str(base_out)],
+            timeout=3600,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"FFmpeg concat falhou: {result.stderr.decode(errors='replace')[:400]}")
+
+
+def _mux_narration(job_id: int, project_id: int, base_out: Path, out_dir: Path) -> str:
+    """Adiciona a narracao ao master. Retorna o nome do master ou '' se nao houver/falhar."""
+    narration = find_input_media(project_id, "narration")
+    if not narration:
+        return ""
+    check_job_canceled(job_id)
+    db.update_job(job_id, status="running", message="Adicionando narracao ao master")
+    master_out = out_dir / kaggle_service.MASTER_VIDEO_NAME
+    result = _run_ffmpeg(
+        ["-i", str(base_out), "-i", str(narration),
+         "-c:v", "copy", "-c:a", "aac", "-map", "0:v:0", "-map", "1:a:0",
+         "-shortest", str(master_out)],
+    )
+    if result.returncode == 0 and master_out.exists() and master_out.stat().st_size > 0:
+        return master_out.name
+    logger.warning("mux de narracao falhou: %s", result.stderr.decode(errors="replace")[:300])
+    return ""
+
+
 def run_concat_job(job_id: int, project_id: int, user_id: int) -> None:
     try:
         check_job_canceled(job_id)
         db.update_job(job_id, status="running", message="Concatenando partes")
         project = db.get_project(project_id, user_id)
         if not project:
-            raise RuntimeError("Projeto nao encontrado.")
+            raise RuntimeError(MSG_PROJECT_NOT_FOUND)
         parts = db.list_parts(project_id)
         if not parts:
             raise RuntimeError("Projeto sem partes.")
-        videos: list[Path] = []
-        for part in sorted(parts, key=lambda p: p["part_idx"]):
-            check_job_canceled(job_id)
-            video = Path(part.get("video_path") or "")
-            if part["status"] != "done" or not video.exists():
-                raise RuntimeError(f"Parte {part['part_idx']} sem video renderizado.")
-            videos.append(video)
+        videos = _collect_part_videos(job_id, parts)
         if not shutil.which("ffmpeg"):
             raise RuntimeError("FFmpeg nao encontrado no servidor; necessario para concatenar as partes.")
 
@@ -2960,38 +3096,8 @@ def run_concat_job(job_id: int, project_id: int, user_id: int) -> None:
             encoding="utf-8",
         )
 
-        def _ffmpeg(args: list[str], timeout: int = 1800) -> subprocess.CompletedProcess:
-            return subprocess.run(["ffmpeg", "-y", *args], capture_output=True, timeout=timeout)
-
-        # stream copy primeiro (partes usam o mesmo preset do montador); re-encode como fallback
-        check_job_canceled(job_id)
-        result = _ffmpeg(["-f", "concat", "-safe", "0", "-i", str(concat_list), "-c", "copy", str(base_out)])
-        if result.returncode != 0 or not base_out.exists() or base_out.stat().st_size == 0:
-            check_job_canceled(job_id)
-            db.update_job(job_id, status="running", message="Stream copy falhou; re-encodando")
-            result = _ffmpeg(
-                ["-f", "concat", "-safe", "0", "-i", str(concat_list),
-                 "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-an", str(base_out)],
-                timeout=3600,
-            )
-            if result.returncode != 0:
-                raise RuntimeError(f"FFmpeg concat falhou: {result.stderr.decode(errors='replace')[:400]}")
-
-        master_name = ""
-        narration = find_input_media(project_id, "narration")
-        if narration:
-            check_job_canceled(job_id)
-            db.update_job(job_id, status="running", message="Adicionando narracao ao master")
-            master_out = out_dir / kaggle_service.MASTER_VIDEO_NAME
-            result = _ffmpeg(
-                ["-i", str(base_out), "-i", str(narration),
-                 "-c:v", "copy", "-c:a", "aac", "-map", "0:v:0", "-map", "1:a:0",
-                 "-shortest", str(master_out)],
-            )
-            if result.returncode == 0 and master_out.exists() and master_out.stat().st_size > 0:
-                master_name = master_out.name
-            else:
-                logger.warning("mux de narracao falhou: %s", result.stderr.decode(errors="replace")[:300])
+        _concat_part_videos(job_id, concat_list, base_out)
+        master_name = _mux_narration(job_id, project_id, base_out, out_dir)
 
         check_job_canceled(job_id)
         concat_list.unlink(missing_ok=True)
@@ -3006,12 +3112,12 @@ def run_concat_job(job_id: int, project_id: int, user_id: int) -> None:
         db.fail_job(job_id, "Falha na concatenacao", str(exc))
 
 
-@app.post("/projects/{project_id}/concat-parts")
+@app.post("/projects/{project_id}/concat-parts", responses=ERROR_RESPONSES)
 def concat_parts(
     request: Request,
     project_id: int,
     background_tasks: BackgroundTasks,
-    csrf_token: str = Form(""),
+    csrf_token: Annotated[str, Form()] = "",
 ):
     user = require_user(request)
     verify_csrf(request, csrf_token)
@@ -3031,7 +3137,7 @@ def concat_parts(
     return JSONResponse({"job_id": job_id, "message": "Concatenacao iniciada."})
 
 
-@app.get("/projects/{project_id}/parts-status")
+@app.get("/projects/{project_id}/parts-status", responses=ERROR_RESPONSES)
 def parts_status(request: Request, project_id: int):
     user = require_user(request)
     project = db.get_project(project_id, user["id"])
@@ -3052,7 +3158,7 @@ def parts_status(request: Request, project_id: int):
     })
 
 
-@app.get("/jobs/{job_id}")
+@app.get("/jobs/{job_id}", responses=ERROR_RESPONSES)
 def job_status(request: Request, job_id: int):
     user = require_user(request)
     job = db.get_job(job_id, user["id"])
@@ -3061,8 +3167,8 @@ def job_status(request: Request, job_id: int):
     return JSONResponse(job)
 
 
-@app.post("/jobs/{job_id}/cancel")
-def cancel_job(request: Request, job_id: int, csrf_token: str = Form("")):
+@app.post("/jobs/{job_id}/cancel", responses=ERROR_RESPONSES)
+def cancel_job(request: Request, job_id: int, csrf_token: Annotated[str, Form()] = ""):
     user = require_user(request)
     verify_csrf(request, csrf_token)
     job = db.request_job_cancel(job_id, user["id"])
@@ -3073,7 +3179,7 @@ def cancel_job(request: Request, job_id: int, csrf_token: str = Form("")):
     return JSONResponse(job)
 
 
-@app.get("/projects/{project_id}/jobs")
+@app.get("/projects/{project_id}/jobs", responses=ERROR_RESPONSES)
 def project_jobs(request: Request, project_id: int):
     user = require_user(request)
     project = db.get_project(project_id, user["id"])
@@ -3082,7 +3188,7 @@ def project_jobs(request: Request, project_id: int):
     return JSONResponse({"project_status": project.get("status", ""), "jobs": db.list_project_jobs(project_id, user["id"])})
 
 
-@app.get("/projects/{project_id}/diagnostics.json")
+@app.get("/projects/{project_id}/diagnostics.json", responses=ERROR_RESPONSES)
 def project_diagnostics_json(request: Request, project_id: int, refresh: str = ""):
     user = require_user(request)
     project = db.get_project(project_id, user["id"])
@@ -3141,8 +3247,8 @@ def project_diagnostics_json(request: Request, project_id: int, refresh: str = "
     )
 
 
-@app.post("/projects/{project_id}/validate-output")
-def validate_output(request: Request, project_id: int, csrf_token: str = Form("")):
+@app.post("/projects/{project_id}/validate-output", responses=ERROR_RESPONSES)
+def validate_output(request: Request, project_id: int, csrf_token: Annotated[str, Form()] = ""):
     user = require_user(request)
     verify_csrf(request, csrf_token)
     project = db.get_project(project_id, user["id"])
@@ -3160,7 +3266,7 @@ def project_output_file(project_id: int, filename: str) -> Path:
     return project_work_dir(project_id) / "kaggle_output" / filename
 
 
-@app.get("/projects/{project_id}/download-render-log")
+@app.get("/projects/{project_id}/download-render-log", responses=ERROR_RESPONSES)
 def download_render_log(request: Request, project_id: int):
     user = require_user(request)
     project = db.get_project(project_id, user["id"])
@@ -3172,7 +3278,7 @@ def download_render_log(request: Request, project_id: int):
     return FileResponse(path, filename=path.name, media_type="text/plain")
 
 
-@app.get("/projects/{project_id}/download-validation")
+@app.get("/projects/{project_id}/download-validation", responses=ERROR_RESPONSES)
 def download_validation(request: Request, project_id: int):
     user = require_user(request)
     project = db.get_project(project_id, user["id"])
@@ -3181,10 +3287,10 @@ def download_validation(request: Request, project_id: int):
     path = diagnostics.validation_path(project_work_dir(project_id))
     if not path.exists():
         raise HTTPException(404, "Validacao ainda nao gerada.")
-    return FileResponse(path, filename=path.name, media_type="application/json")
+    return FileResponse(path, filename=path.name, media_type=MEDIA_TYPE_JSON)
 
 
-@app.get("/projects/{project_id}/download-hyperframes-status")
+@app.get("/projects/{project_id}/download-hyperframes-status", responses=ERROR_RESPONSES)
 def download_hyperframes_status(request: Request, project_id: int):
     user = require_user(request)
     project = db.get_project(project_id, user["id"])
@@ -3193,10 +3299,38 @@ def download_hyperframes_status(request: Request, project_id: int):
     path = project_output_file(project_id, "hyperframes_status.json")
     if not path.exists():
         raise HTTPException(404, "Status HyperFrames ainda nao encontrado.")
-    return FileResponse(path, filename=path.name, media_type="application/json")
+    return FileResponse(path, filename=path.name, media_type=MEDIA_TYPE_JSON)
 
 
-@app.get("/projects/{project_id}/kaggle-status")
+def _enrich_complete_kaggle_status(info: dict, project_id: int, k_slug: str, user: dict) -> None:
+    """Anexa URLs de video, hyperframes e validacao quando o render Kaggle concluiu."""
+    project_work = project_work_dir(project_id)
+    outputs = local_output_videos(project_work)
+    if not outputs["base"] and not outputs["master"]:
+        kaggle_service.pull_output_video(
+            k_slug,
+            user["kaggle_username"],
+            user["kaggle_token"],
+            project_work / "kaggle_output",
+        )
+        outputs = local_output_videos(project_work)
+    if outputs["master"]:
+        info["master_video_url"] = f"/projects/{project_id}/download-master-video"
+        info["video_url"] = info["master_video_url"]
+    if outputs["base"]:
+        info["base_video_url"] = f"/projects/{project_id}/download-base-video"
+        if not info.get("video_url"):
+            info["video_url"] = info["base_video_url"]
+    hf = local_hyperframes_status(project_work)
+    if hf:
+        info["hyperframes"] = hf
+    info["validation"] = diagnostics.validate_outputs(
+        project_work,
+        expected_duration=expected_duration_from_scenes(db.list_scenes(project_id)),
+    )
+
+
+@app.get("/projects/{project_id}/kaggle-status", responses=ERROR_RESPONSES)
 def kaggle_status(request: Request, project_id: int):
     user = require_user(request)
     project = db.get_project(project_id, user["id"])
@@ -3210,37 +3344,14 @@ def kaggle_status(request: Request, project_id: int):
     try:
         info = kaggle_service.get_status(k_slug, user["kaggle_username"], user["kaggle_token"])
         if info.get("status") == "complete":
-            project_work = project_work_dir(project_id)
-            outputs = local_output_videos(project_work)
-            if not outputs["base"] and not outputs["master"]:
-                kaggle_service.pull_output_video(
-                    k_slug,
-                    user["kaggle_username"],
-                    user["kaggle_token"],
-                    project_work / "kaggle_output",
-                )
-                outputs = local_output_videos(project_work)
-            if outputs["master"]:
-                info["master_video_url"] = f"/projects/{project_id}/download-master-video"
-                info["video_url"] = info["master_video_url"]
-            if outputs["base"]:
-                info["base_video_url"] = f"/projects/{project_id}/download-base-video"
-                if not info.get("video_url"):
-                    info["video_url"] = info["base_video_url"]
-            hf = local_hyperframes_status(project_work)
-            if hf:
-                info["hyperframes"] = hf
-            info["validation"] = diagnostics.validate_outputs(
-                project_work,
-                expected_duration=expected_duration_from_scenes(db.list_scenes(project_id)),
-            )
+            _enrich_complete_kaggle_status(info, project_id, k_slug, user)
         db.update_kaggle_status(project_id, info["status"])
         return JSONResponse(info)
     except Exception as exc:
         return JSONResponse({"status": "error", "error": str(exc)})
 
 
-@app.get("/projects/{project_id}/download-kaggle-video")
+@app.get("/projects/{project_id}/download-kaggle-video", responses=ERROR_RESPONSES)
 def download_kaggle_video(request: Request, project_id: int):
     user = require_user(request)
     project = db.get_project(project_id, user["id"])
@@ -3249,10 +3360,10 @@ def download_kaggle_video(request: Request, project_id: int):
     video = latest_kaggle_video(project_work_dir(project_id))
     if not video:
         raise HTTPException(404, "Video do Kaggle ainda nao baixado.")
-    return FileResponse(video, filename=video.name, media_type="video/mp4")
+    return FileResponse(video, filename=video.name, media_type=MEDIA_TYPE_MP4)
 
 
-@app.get("/projects/{project_id}/download-base-video")
+@app.get("/projects/{project_id}/download-base-video", responses=ERROR_RESPONSES)
 def download_base_video(request: Request, project_id: int):
     user = require_user(request)
     project = db.get_project(project_id, user["id"])
@@ -3261,10 +3372,10 @@ def download_base_video(request: Request, project_id: int):
     video = local_output_videos(project_work_dir(project_id))["base"]
     if not video:
         raise HTTPException(404, "Video base ainda nao baixado.")
-    return FileResponse(video, filename=video.name, media_type="video/mp4")
+    return FileResponse(video, filename=video.name, media_type=MEDIA_TYPE_MP4)
 
 
-@app.get("/projects/{project_id}/download-master-video")
+@app.get("/projects/{project_id}/download-master-video", responses=ERROR_RESPONSES)
 def download_master_video(request: Request, project_id: int):
     user = require_user(request)
     project = db.get_project(project_id, user["id"])
@@ -3273,10 +3384,10 @@ def download_master_video(request: Request, project_id: int):
     video = local_output_videos(project_work_dir(project_id))["master"]
     if not video:
         raise HTTPException(404, "Video master ainda nao renderizado.")
-    return FileResponse(video, filename=video.name, media_type="video/mp4")
+    return FileResponse(video, filename=video.name, media_type=MEDIA_TYPE_MP4)
 
 
-@app.get("/projects/{project_id}/kaggle-debug")
+@app.get("/projects/{project_id}/kaggle-debug", responses=ERROR_RESPONSES)
 def kaggle_debug(request: Request, project_id: int):
     """Retorna output bruto do CLI para diagnóstico."""
     if APP_ENV == "production" and os.getenv("ENABLE_KAGGLE_DEBUG") != "1":

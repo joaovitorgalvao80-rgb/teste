@@ -210,6 +210,30 @@ def _avatar_solo_runs(plan_scenes: list[dict]) -> list[list[int]]:
     return runs
 
 
+def _find_oversized_run(plan_scenes: list[dict]) -> "list[int] | None":
+    """Acha o primeiro trecho de avatar-solo acima do limite (com mais de 1 cena)."""
+    for run in _avatar_solo_runs(plan_scenes):
+        solo = sum(float(plan_scenes[i].get("duration") or 0) for i in run)
+        if solo > MAX_AVATAR_SOLO_SECONDS and len(run) > 1:
+            return run
+    return None
+
+
+def _pick_broll_target(oversized: list[int], source_scenes: list[dict], n: int) -> int:
+    """Escolhe a cena mais forte do trecho para virar b-roll (preserva gancho/apresentacao)."""
+    candidates = [
+        i for i in oversized
+        if i != 0 and not _is_presentation(source_scenes[i].get("narration"))
+    ]
+    if not candidates:
+        candidates = [i for i in oversized if i != 0] or oversized
+    middle = oversized[len(oversized) // 2]
+    return max(
+        candidates,
+        key=lambda i, middle=middle: (_scene_score(source_scenes[i], i, n), -abs(i - middle)),
+    )
+
+
 def enforce_broll_policy(plan_scenes: list[dict], source_scenes: list[dict]) -> dict:
     """Garante as regras de alternancia mesmo quando o LLM decide o b-roll.
 
@@ -230,28 +254,10 @@ def enforce_broll_policy(plan_scenes: list[dict], source_scenes: list[dict]) -> 
         plan_scenes[0]["broll"] = False
 
     while True:
-        oversized = None
-        for run in _avatar_solo_runs(plan_scenes):
-            solo = sum(float(plan_scenes[i].get("duration") or 0) for i in run)
-            if solo > MAX_AVATAR_SOLO_SECONDS and len(run) > 1:
-                oversized = run
-                break
+        oversized = _find_oversized_run(plan_scenes)
         if not oversized:
             break
-        # vira b-roll a cena mais forte do trecho (sem mexer no gancho inicial
-        # nem em cenas de apresentacao, que devem ficar com o apresentador)
-        candidates = [
-            i for i in oversized
-            if i != 0 and not _is_presentation(source_scenes[i].get("narration"))
-        ]
-        if not candidates:
-            candidates = [i for i in oversized if i != 0] or oversized
-        middle = oversized[len(oversized) // 2]
-        best = max(
-            candidates,
-            key=lambda i: (_scene_score(source_scenes[i], i, n), -abs(i - middle)),
-        )
-        plan_scenes[best]["broll"] = True
+        plan_scenes[_pick_broll_target(oversized, source_scenes, n)]["broll"] = True
 
     total = sum(float(scene.get("duration") or 0) for scene in plan_scenes)
     covered = sum(
@@ -290,6 +296,29 @@ def enforce_caption_policy(
         scene["caption_duration"] = cap_duration if caption else 0
 
 
+def _plan_scene_entry(
+    i: int, scene: dict, scenes: list[dict], captioned_indexes: set, broll_flags: list[bool]
+) -> dict:
+    duration = _scene_duration(scene)
+    start = round(float(scene.get("start_time") or 0), 3)
+    caption = _caption_text(scene) if i in captioned_indexes else ""
+    cap_start, cap_duration = _caption_timing(start, duration)
+    next_scene = scenes[i + 1] if i + 1 < len(scenes) else None
+    return {
+        "scene_id": scene.get("scene_id", f"scene_{i + 1:03d}"),
+        "start": start,
+        "duration": round(duration, 3),
+        "motion": _motion_for(i, len(scenes), bool(caption)),
+        "transition_out": _transition_for(i, len(scenes), scene, next_scene),
+        "caption": caption,
+        "caption_start": cap_start if caption else None,
+        "caption_duration": cap_duration if caption else 0,
+        # usa a decisao ja tomada na cena (busca/mapa) quando presente,
+        # garantindo que render e busca concordem; senao recalcula.
+        "broll": bool(scene["broll"]) if scene.get("broll") is not None else broll_flags[i],
+    }
+
+
 def build_edit_plan(
     project: dict,
     config: dict,
@@ -305,28 +334,10 @@ def build_edit_plan(
     safe_area = (config.get("avatar_safe_area") or "right").lower()
     captioned_indexes = _caption_indexes(scenes)
     broll_flags = _broll_flags(scenes)
-    plan_scenes = []
-    for i, scene in enumerate(scenes):
-        duration = _scene_duration(scene)
-        start = round(float(scene.get("start_time") or 0), 3)
-        caption = _caption_text(scene) if i in captioned_indexes else ""
-        cap_start, cap_duration = _caption_timing(start, duration)
-        next_scene = scenes[i + 1] if i + 1 < len(scenes) else None
-        plan_scenes.append(
-            {
-                "scene_id": scene.get("scene_id", f"scene_{i + 1:03d}"),
-                "start": start,
-                "duration": round(duration, 3),
-                "motion": _motion_for(i, len(scenes), bool(caption)),
-                "transition_out": _transition_for(i, len(scenes), scene, next_scene),
-                "caption": caption,
-                "caption_start": cap_start if caption else None,
-                "caption_duration": cap_duration if caption else 0,
-                # usa a decisao ja tomada na cena (busca/mapa) quando presente,
-                # garantindo que render e busca concordem; senao recalcula.
-                "broll": bool(scene["broll"]) if scene.get("broll") is not None else broll_flags[i],
-            }
-        )
+    plan_scenes = [
+        _plan_scene_entry(i, scene, scenes, captioned_indexes, broll_flags)
+        for i, scene in enumerate(scenes)
+    ]
     broll_policy = enforce_broll_policy(plan_scenes, scenes)
 
     plan: dict = {

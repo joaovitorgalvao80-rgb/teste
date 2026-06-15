@@ -44,8 +44,9 @@
           <div class="preview-empty t-muted t-small">🎤 só apresentador (sem b-roll)</div>
         {% elif a and a.asset_type == 'video' %}
           <video class="preview-thumb" muted loop preload="none" poster="{{ a.preview_url }}"
-                 src="{{ a.download_url }}"
-                 onmouseover="this.play()" onmouseout="this.pause()"></video>
+                 src="{{ a.download_url }}" tabindex="0"
+                 onmouseover="this.play()" onmouseout="this.pause()"
+                 onfocus="this.play()" onblur="this.pause()"></video>
         {% elif a %}
           <img class="preview-thumb" loading="lazy" src="{{ a.preview_url or a.download_url }}" alt="">
         {% else %}

@@ -65,7 +65,12 @@ def decorate_jobs(jobs: list[dict], now: Optional[float] = None) -> list[dict]:
 
 
 def _item(key: str, label: str, configured: bool, required: bool, detail: str, kind: str = "secret") -> dict:
-    status = "ok" if configured else ("missing" if required else "optional")
+    if configured:
+        status = "ok"
+    elif required:
+        status = "missing"
+    else:
+        status = "optional"
     return {
         "key": key,
         "label": label,
@@ -77,31 +82,20 @@ def _item(key: str, label: str, configured: bool, required: bool, detail: str, k
     }
 
 
-def integration_snapshot(user: dict, app_env: str = "dev") -> dict:
-    """Returns a masked readiness snapshot. Raw secret values never leave here."""
-    has_pexels = _has(user.get("pexels_key"))
-    has_pixabay = _has(user.get("pixabay_key"))
-    has_coverr = _has(user.get("coverr_key"))
-    has_groq = _has(user.get("groq_key"))
-    has_nvidia = _has(user.get("nvidia_key"))
-    has_kaggle_user = _has(user.get("kaggle_username"))
-    has_kaggle_token = _has(user.get("kaggle_token"))
-    has_asset_provider = has_pexels or has_pixabay or has_coverr
-    has_kaggle = has_kaggle_user and has_kaggle_token
-
-    app_secret = os.getenv("APP_SECRET_KEY", "")
-    secret_strong = app_env != "production" or (len(app_secret) >= 32 and "change" not in app_secret.lower())
-
-    groups = [
+def _build_groups(flags: dict, app_env: str, secret_strong: bool) -> list[dict]:
+    has_asset_provider = flags["asset_provider"]
+    has_groq = flags["groq"]
+    has_kaggle = flags["kaggle"]
+    return [
         {
             "key": "assets",
             "label": "Bibliotecas visuais",
             "status": "ok" if has_asset_provider else "missing",
             "summary": "Busca de assets pronta" if has_asset_provider else "configure Pexels, Pixabay ou Coverr",
             "items": [
-                _item("pexels", "Pexels", has_pexels, False, "video e imagem stock"),
-                _item("pixabay", "Pixabay", has_pixabay, False, "fallback de video/imagem"),
-                _item("coverr", "Coverr", has_coverr, False, "video curado, limite menor"),
+                _item("pexels", "Pexels", flags["pexels"], False, "video e imagem stock"),
+                _item("pixabay", "Pixabay", flags["pixabay"], False, "fallback de video/imagem"),
+                _item("coverr", "Coverr", flags["coverr"], False, "video curado, limite menor"),
                 _item("openverse", "Openverse", True, False, "fallback publico sem chave", "public"),
                 _item("wikimedia", "Wikimedia", True, False, "acervo publico sem chave", "public"),
             ],
@@ -113,7 +107,7 @@ def integration_snapshot(user: dict, app_env: str = "dev") -> dict:
             "summary": "Mapa visual e transcricao prontos" if has_groq else "Groq e necessario para mapa/transcricao",
             "items": [
                 _item("groq", "Groq", has_groq, True, "mapa visual, keywords e transcricao"),
-                _item("nvidia", "NVIDIA", has_nvidia, False, "segunda opiniao de visao"),
+                _item("nvidia", "NVIDIA", flags["nvidia"], False, "segunda opiniao de visao"),
             ],
         },
         {
@@ -122,8 +116,8 @@ def integration_snapshot(user: dict, app_env: str = "dev") -> dict:
             "status": "ok" if has_kaggle else "missing",
             "summary": "Kaggle pronto para render" if has_kaggle else "username e token Kaggle pendentes",
             "items": [
-                _item("kaggle_username", "Kaggle username", has_kaggle_user, True, "identifica a conta"),
-                _item("kaggle_token", "Kaggle token", has_kaggle_token, True, "autoriza dataset/kernel"),
+                _item("kaggle_username", "Kaggle username", flags["kaggle_user"], True, "identifica a conta"),
+                _item("kaggle_token", "Kaggle token", flags["kaggle_token"], True, "autoriza dataset/kernel"),
             ],
         },
         {
@@ -136,17 +130,42 @@ def integration_snapshot(user: dict, app_env: str = "dev") -> dict:
             ],
         },
     ]
+
+
+def _collect_warnings(flags: dict) -> list[str]:
+    warnings = []
+    if flags["asset_provider"] and not (flags["pexels"] and flags["pixabay"]):
+        warnings.append("Use pelo menos dois provedores visuais para reduzir busca vazia.")
+    if flags["groq"] and not flags["nvidia"]:
+        warnings.append("NVIDIA e opcional, mas melhora a segunda opiniao de visao.")
+    return warnings
+
+
+def integration_snapshot(user: dict, app_env: str = "dev") -> dict:
+    """Returns a masked readiness snapshot. Raw secret values never leave here."""
+    flags = {
+        "pexels": _has(user.get("pexels_key")),
+        "pixabay": _has(user.get("pixabay_key")),
+        "coverr": _has(user.get("coverr_key")),
+        "groq": _has(user.get("groq_key")),
+        "nvidia": _has(user.get("nvidia_key")),
+        "kaggle_user": _has(user.get("kaggle_username")),
+        "kaggle_token": _has(user.get("kaggle_token")),
+    }
+    flags["asset_provider"] = flags["pexels"] or flags["pixabay"] or flags["coverr"]
+    flags["kaggle"] = flags["kaggle_user"] and flags["kaggle_token"]
+
+    app_secret = os.getenv("APP_SECRET_KEY", "")
+    secret_strong = app_env != "production" or (len(app_secret) >= 32 and "change" not in app_secret.lower())
+
+    groups = _build_groups(flags, app_env, secret_strong)
     required_missing = [
         item["label"]
         for group in groups
         for item in group["items"]
         if item["required"] and not item["configured"]
     ]
-    warnings = []
-    if has_asset_provider and not (has_pexels and has_pixabay):
-        warnings.append("Use pelo menos dois provedores visuais para reduzir busca vazia.")
-    if has_groq and not has_nvidia:
-        warnings.append("NVIDIA e opcional, mas melhora a segunda opiniao de visao.")
+    warnings = _collect_warnings(flags)
     return {
         "ready": not required_missing,
         "required_missing": required_missing,
@@ -156,21 +175,7 @@ def integration_snapshot(user: dict, app_env: str = "dev") -> dict:
     }
 
 
-def project_state(
-    project: dict,
-    *,
-    scenes: list[dict],
-    asset_count: int,
-    curation_stats: dict,
-    jobs: list[dict],
-    parts: list[dict],
-    outputs: dict,
-    diagnostics: dict,
-    has_asset_keys: bool,
-) -> dict:
-    """Computes the next operational state from authoritative current state."""
-    active = next((job for job in jobs if job.get("status") in ACTIVE_JOB_STATUSES), None)
-    status = project.get("status") or "created"
+def _blocking_state(active: Optional[dict], status: str) -> Optional[dict]:
     if active:
         return {
             "code": "processing",
@@ -187,6 +192,12 @@ def project_state(
             "detail": "A ultima etapa falhou; veja Jobs recentes e tente novamente.",
             "next_action": "corrigir erro e repetir a etapa",
         }
+    return None
+
+
+def _prerequisite_state(
+    scenes: list[dict], curation_stats: dict, has_asset_keys: bool, asset_count: int
+) -> Optional[dict]:
     if not scenes:
         return {
             "code": "needs_map",
@@ -219,6 +230,10 @@ def project_state(
             "detail": "As cenas existem, mas ainda nao ha candidatos para curadoria.",
             "next_action": "buscar assets",
         }
+    return None
+
+
+def _curation_state(curation_stats: dict, status: str) -> Optional[dict]:
     required = int(curation_stats.get("required") or 0)
     selected = int(curation_stats.get("selected") or 0)
     accepted = int(curation_stats.get("accepted") or 0)
@@ -238,6 +253,71 @@ def project_state(
             "detail": f"{accepted}/{required} b-rolls aceitos.",
             "next_action": "abrir revisao e aceitar os takes",
         }
+    return None
+
+
+def _packaged_state(outputs: dict, diagnostics: dict) -> dict:
+    if outputs.get("master") or outputs.get("base"):
+        validation = (diagnostics.get("outputs") or {}).get("validation") or {}
+        if validation.get("status") == "ok":
+            return {
+                "code": "delivered",
+                "severity": "ok",
+                "label": "Video validado",
+                "detail": "Ha output local validado.",
+                "next_action": "baixar master/base",
+            }
+        return {
+            "code": "needs_output_validation",
+            "severity": "warn",
+            "label": "Output local encontrado",
+            "detail": "Valide duracao, streams e master antes de entregar.",
+            "next_action": "validar outputs",
+        }
+    return {
+        "code": "ready_to_render",
+        "severity": "ready",
+        "label": "Pacote pronto",
+        "detail": "O ZIP/partes estao prontos para render.",
+        "next_action": "enviar para Kaggle",
+    }
+
+
+def _parts_state(parts: list[dict]) -> Optional[dict]:
+    pending_parts = [p for p in parts if p.get("curation_status") != "curated"]
+    if pending_parts:
+        return {
+            "code": "needs_part_curation",
+            "severity": "todo",
+            "label": "Curadoria por parte pendente",
+            "detail": f"{len(pending_parts)} parte(s) ainda precisam de revisao.",
+            "next_action": "curar a proxima parte",
+        }
+    return None
+
+
+def project_state(
+    project: dict,
+    *,
+    scenes: list[dict],
+    asset_count: int,
+    curation_stats: dict,
+    jobs: list[dict],
+    parts: list[dict],
+    outputs: dict,
+    diagnostics: dict,
+    has_asset_keys: bool,
+) -> dict:
+    """Computes the next operational state from authoritative current state."""
+    active = next((job for job in jobs if job.get("status") in ACTIVE_JOB_STATUSES), None)
+    status = project.get("status") or "created"
+    state = (
+        _blocking_state(active, status)
+        or _prerequisite_state(scenes, curation_stats, has_asset_keys, asset_count)
+        or _curation_state(curation_stats, status)
+    )
+    if state:
+        return state
     if status in {"reviewed", "needs_package", "package_failed"}:
         return {
             "code": "ready_to_package",
@@ -247,40 +327,11 @@ def project_state(
             "next_action": "gerar pacote",
         }
     if status == "packaged":
-        if outputs.get("master") or outputs.get("base"):
-            validation = (diagnostics.get("outputs") or {}).get("validation") or {}
-            if validation.get("status") == "ok":
-                return {
-                    "code": "delivered",
-                    "severity": "ok",
-                    "label": "Video validado",
-                    "detail": "Ha output local validado.",
-                    "next_action": "baixar master/base",
-                }
-            return {
-                "code": "needs_output_validation",
-                "severity": "warn",
-                "label": "Output local encontrado",
-                "detail": "Valide duracao, streams e master antes de entregar.",
-                "next_action": "validar outputs",
-            }
-        return {
-            "code": "ready_to_render",
-            "severity": "ready",
-            "label": "Pacote pronto",
-            "detail": "O ZIP/partes estao prontos para render.",
-            "next_action": "enviar para Kaggle",
-        }
+        return _packaged_state(outputs, diagnostics)
     if parts:
-        pending_parts = [p for p in parts if p.get("curation_status") != "curated"]
-        if pending_parts:
-            return {
-                "code": "needs_part_curation",
-                "severity": "todo",
-                "label": "Curadoria por parte pendente",
-                "detail": f"{len(pending_parts)} parte(s) ainda precisam de revisao.",
-                "next_action": "curar a proxima parte",
-            }
+        part_state = _parts_state(parts)
+        if part_state:
+            return part_state
     return {
         "code": "in_progress",
         "severity": "todo",

@@ -36,6 +36,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+GUIA_VISUAL_NAME = "guia_visual.json"
+
 
 # ----------------------------------------------------------------------------
 # Logger simples (console + arquivo)
@@ -79,7 +81,7 @@ def ffprobe_duration(path: Path) -> float:
         return 0.0
     try:
         return float(json.loads(result.stdout)["format"]["duration"])
-    except (KeyError, ValueError, json.JSONDecodeError):
+    except (KeyError, ValueError):  # json.JSONDecodeError deriva de ValueError
         return 0.0
 
 
@@ -190,16 +192,16 @@ def prepare_input(source: Path, workdir: Path, log: Logger) -> Path:
         with zipfile.ZipFile(source, "r") as zf:
             safe_extract_zip(zf, extract_dir)
         # alguns zips tem uma subpasta unica; normaliza
-        if not (extract_dir / "guia_visual.json").exists():
+        if not (extract_dir / GUIA_VISUAL_NAME).exists():
             for sub in extract_dir.iterdir():
-                if sub.is_dir() and (sub / "guia_visual.json").exists():
+                if sub.is_dir() and (sub / GUIA_VISUAL_NAME).exists():
                     return sub
         return extract_dir
     raise RuntimeError(f"Entrada invalida: {source} (esperado .zip ou pasta)")
 
 
 def load_guide(pack_dir: Path) -> dict:
-    guide_path = pack_dir / "guia_visual.json"
+    guide_path = pack_dir / GUIA_VISUAL_NAME
     if not guide_path.exists():
         raise RuntimeError(f"guia_visual.json nao encontrado em {pack_dir}")
     return json.loads(guide_path.read_text(encoding="utf-8"))

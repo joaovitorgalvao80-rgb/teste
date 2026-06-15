@@ -521,8 +521,9 @@
                    data-low="{{ '1' if a.low_relevance else '0' }}">
             {% if a.asset_type == 'video' %}
               <video class="take-thumb" muted loop preload="none" poster="{{ a.preview_url }}"
-                     src="{{ a.download_url }}"
-                     onmouseover="this.play()" onmouseout="this.pause()"></video>
+                     src="{{ a.download_url }}" tabindex="0"
+                     onmouseover="this.play()" onmouseout="this.pause()"
+                     onfocus="this.play()" onblur="this.pause()"></video>
             {% else %}
               <img class="take-thumb" loading="lazy" src="{{ a.preview_url or a.download_url }}" alt="">
             {% endif %}

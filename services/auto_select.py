@@ -33,44 +33,63 @@ VISION_WEIGHT = 0.5         # peso por ponto (0-100) da análise de visão por I
 VISION_DISCARD_PENALTY = 40.0  # IA de visão marcou o asset como "descartar"
 
 
-def heuristic_score(scene: dict, asset: dict, config: dict) -> float:
-    """Pontua a adequação técnica + textual de um candidato à cena (maior = melhor)."""
-    score = 0.0
-    is_video = asset.get("asset_type") == "video"
+def _type_score(config: dict, is_video: bool) -> float:
     prefer_video = (config.get("asset_type_priority") or "video") == "video"
-
-    if is_video == prefer_video:
-        score += 30.0
+    score = 30.0 if is_video == prefer_video else 0.0
     if not is_video and not config.get("image_fallback"):
         score -= 15.0
+    return score
 
-    # resolução: cobre a resolução alvo sem exagerar
+
+def _resolution_score(asset: dict, config: dict) -> float:
+    """Cobre a resolução alvo sem exagerar."""
     try:
         target_w = int(str(config.get("resolution") or "1920x1080").split("x", 1)[0])
     except ValueError:
         target_w = 1920
     width = int(asset.get("width") or 0)
     if width >= target_w:
+        return 20.0
+    if width >= target_w * 0.66:
+        return 10.0
+    return 0.0
+
+
+def _video_duration_score(scene: dict, asset: dict) -> float:
+    """Vídeo precisa cobrir a duração da cena (loop degrada a percepção)."""
+    duration = float(asset.get("duration") or 0)
+    scene_duration = float(scene.get("duration") or 0)
+    score = 0.0
+    if duration >= scene_duration:
         score += 20.0
-    elif width >= target_w * 0.66:
-        score += 10.0
+    elif duration >= scene_duration * 0.5:
+        score += 8.0
+    if 3 <= duration <= 30:
+        score += 5.0
+    return score
 
-    # vídeo precisa cobrir a duração da cena (loop degrada a percepção)
+
+def _vision_score(asset: dict) -> float:
+    """Julgamento visual real por IA (quando já rodou e não é a heurística)."""
+    provider = asset.get("vision_provider") or ""
+    if not provider or provider == "heuristic":
+        return 0.0
+    score = VISION_WEIGHT * float(asset.get("vision_score") or 0)
+    if (asset.get("vision_verdict") or "") == "descartar":
+        score -= VISION_DISCARD_PENALTY
+    return score
+
+
+def heuristic_score(scene: dict, asset: dict, config: dict) -> float:
+    """Pontua a adequação técnica + textual de um candidato à cena (maior = melhor)."""
+    is_video = asset.get("asset_type") == "video"
+    score = _type_score(config, is_video) + _resolution_score(asset, config)
     if is_video:
-        duration = float(asset.get("duration") or 0)
-        scene_duration = float(scene.get("duration") or 0)
-        if duration >= scene_duration:
-            score += 20.0
-        elif duration >= scene_duration * 0.5:
-            score += 8.0
-        if 3 <= duration <= 30:
-            score += 5.0
+        score += _video_duration_score(scene, asset)
 
-    # relevância textual: o quanto a keyword que trouxe o asset corresponde
-    # ao conceito visual da cena. É o sinal que faltava — sem ele dois assets
-    # da mesma busca eram ordenados só por pixels/segundos.
-    relevance = scoring.keyword_relevance(scene, asset)
-    score += RELEVANCE_WEIGHT * relevance
+    # relevância textual: o quanto a keyword que trouxe o asset corresponde ao
+    # conceito visual da cena (sem ela, assets da mesma busca ordenavam só por pixels).
+    score += RELEVANCE_WEIGHT * scoring.keyword_relevance(scene, asset)
 
     # penaliza keyword puramente genérica de banco de imagem
     if scoring.is_generic_keyword(asset.get("keyword", "")):
@@ -80,15 +99,7 @@ def heuristic_score(scene: dict, asset: dict, config: dict) -> float:
     if asset.get("source") == "generated":
         score += 12.0
 
-    # análise de visão por IA (quando já rodou e NÃO é a heurística — evita
-    # contar duas vezes os sinais técnicos que já estão acima). É o julgamento
-    # visual real do conteúdo da imagem.
-    provider = asset.get("vision_provider") or ""
-    if provider and provider != "heuristic":
-        score += VISION_WEIGHT * float(asset.get("vision_score") or 0)
-        if (asset.get("vision_verdict") or "") == "descartar":
-            score -= VISION_DISCARD_PENALTY
-
+    score += _vision_score(asset)
     return score
 
 
@@ -197,6 +208,56 @@ def rank_with_groq(
     return out
 
 
+def _filter_candidates(candidates: list[dict]) -> list[dict]:
+    """Aplica os filtros de visão: descarta reprovados e prefere os aprovados."""
+    # A IA de visao ja reprovou ('descartar') os assets fora de contexto.
+    non_discard = [c for c in candidates if (c.get("vision_verdict") or "") != "descartar"]
+    if non_discard:
+        candidates = non_discard
+    # Prefere takes que a IA de visao REALMENTE aprovou (viu a imagem e achou que combina).
+    vetted = [
+        c for c in candidates
+        if (c.get("vision_provider") or "heuristic") != "heuristic"
+        and (c.get("vision_verdict") or "") in {"ótimo", "bom"}
+    ]
+    return vetted or candidates
+
+
+def _prepare_pending(
+    scenes: list[dict], candidates_by_scene: dict[int, list[dict]], config: dict
+) -> list[tuple[dict, list[dict]]]:
+    pending: list[tuple[dict, list[dict]]] = []
+    for scene in scenes:
+        candidates = candidates_by_scene.get(scene["id"]) or []
+        if not candidates:
+            continue
+        candidates = _filter_candidates(candidates)
+        top = rank_candidates(scene, candidates, config)[:CANDIDATES_PER_SCENE]
+        pending.append((scene, top))
+    return pending
+
+
+def _resolve_take(
+    scene: dict,
+    top: list[dict],
+    ai: Optional[tuple[int, str]],
+    config: dict,
+    used_signatures: set[tuple[str, str]],
+    used_authors: set[str],
+) -> tuple[dict, tuple[int, float, str]]:
+    if ai:
+        asset_id, reason = ai
+        asset = next(a for a in top if a["id"] == asset_id)
+        score = heuristic_score(scene, asset, config)
+        return asset, (asset_id, score, reason or "escolhido pela IA")
+    # Fallback determinístico: melhor candidato penalizando assets/autores
+    # já usados em outras cenas (diversidade visual entre cenas).
+    asset = _best_with_diversity(scene, top, config, used_signatures, used_authors)
+    score = heuristic_score(scene, asset, config)
+    relevance = scoring.keyword_relevance(scene, asset)
+    return asset, (asset["id"], score, _fallback_reason(relevance))
+
+
 def choose_best_takes(
     scenes: list[dict],
     candidates_by_scene: dict[int, list[dict]],
@@ -210,27 +271,7 @@ def choose_best_takes(
     Retorna {scene_db_id: (asset_id, score, reason)}. Cenas sem candidatos
     ficam de fora. `progress(done, total)` é chamado por lote, se passado.
     """
-    pending: list[tuple[dict, list[dict]]] = []
-    for scene in scenes:
-        candidates = candidates_by_scene.get(scene["id"]) or []
-        if not candidates:
-            continue
-        # A IA de visao ja reprovou ('descartar') os assets fora de contexto;
-        # nunca escolhe um desses quando ha alternativa melhor para a cena.
-        non_discard = [c for c in candidates if (c.get("vision_verdict") or "") != "descartar"]
-        if non_discard:
-            candidates = non_discard
-        # Prefere takes que a IA de visao REALMENTE aprovou (viu a imagem e
-        # achou que combina) em vez de candidatos so pontuados pela heuristica.
-        vetted = [
-            c for c in candidates
-            if (c.get("vision_provider") or "heuristic") != "heuristic"
-            and (c.get("vision_verdict") or "") in {"ótimo", "bom"}
-        ]
-        if vetted:
-            candidates = vetted
-        top = rank_candidates(scene, candidates, config)[:CANDIDATES_PER_SCENE]
-        pending.append((scene, top))
+    pending = _prepare_pending(scenes, candidates_by_scene, config)
 
     results: dict[int, tuple[int, float, str]] = {}
     used_signatures: set[tuple[str, str]] = set()
@@ -241,19 +282,10 @@ def choose_best_takes(
         ai_choices = rank_with_groq(batch, groq_key, model=model) if groq_key else {}
         for scene, top in batch:
             scene_db_id = scene["id"]
-            ai = ai_choices.get(scene_db_id)
-            if ai:
-                asset_id, reason = ai
-                asset = next(a for a in top if a["id"] == asset_id)
-                score = heuristic_score(scene, asset, config)
-                results[scene_db_id] = (asset_id, score, reason or "escolhido pela IA")
-            else:
-                # Fallback determinístico: melhor candidato penalizando assets/autores
-                # já usados em outras cenas (diversidade visual entre cenas).
-                asset = _best_with_diversity(scene, top, config, used_signatures, used_authors)
-                score = heuristic_score(scene, asset, config)
-                relevance = scoring.keyword_relevance(scene, asset)
-                results[scene_db_id] = (asset["id"], score, _fallback_reason(relevance))
+            asset, result = _resolve_take(
+                scene, top, ai_choices.get(scene_db_id), config, used_signatures, used_authors
+            )
+            results[scene_db_id] = result
             used_signatures.add(scoring.asset_signature(asset))
             if asset.get("author"):
                 used_authors.add(str(asset["author"]))

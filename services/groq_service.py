@@ -23,6 +23,7 @@ logger = logging.getLogger("nwrch.groq")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 DEFAULT_MODEL = "llama-3.3-70b-versatile"
+CONTENT_TYPE_JSON = "application/json"
 BRIEF_BATCH_SIZE = 40  # cenas por chamada; roteiros longos estouram o contexto num prompt unico
 GROQ_MODELS = [
     ("llama-3.3-70b-versatile", "Llama 3.3 70B — melhor qualidade (padrão)"),
@@ -55,7 +56,7 @@ _ZONE_FALLBACK = {
 }
 
 
-def fallback_scene_brief(scene: dict, style: str, avatar_safe_area: str) -> dict:
+def fallback_scene_brief(scene: dict, avatar_safe_area: str) -> dict:
     """Brief determinístico (sem IA), usado só quando a Groq falha.
 
     Sem tradução PT->EN confiável offline, usa os tokens significativos da
@@ -99,7 +100,7 @@ def infer_video_theme(scenes: list[dict], groq_key: str, model: str = DEFAULT_MO
         try:
             resp = requests.post(
                 GROQ_URL,
-                headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
+                headers={"Authorization": f"Bearer {groq_key}", "Content-Type": CONTENT_TYPE_JSON},
                 json={
                     "model": resolve_model(model),
                     "messages": [{
@@ -191,6 +192,65 @@ SCENES:
 """
 
 
+def _fetch_briefs_from_groq(
+    scenes: list[dict],
+    groq_key: str,
+    style: str,
+    avatar_safe_area: str,
+    safe_ratio: float,
+    model: str,
+    video_theme: str,
+) -> dict[str, dict]:
+    """Chama a Groq em lotes e devolve {scene_id: brief_bruto} para as cenas cobertas."""
+    by_id: dict[str, dict] = {}
+    # em lotes: roteiros longos (100+ cenas) nao cabem numa unica resposta JSON
+    for start in range(0, len(scenes), BRIEF_BATCH_SIZE):
+        chunk = scenes[start:start + BRIEF_BATCH_SIZE]
+        try:
+            resp = requests.post(
+                GROQ_URL,
+                headers={"Authorization": f"Bearer {groq_key}", "Content-Type": CONTENT_TYPE_JSON},
+                json={
+                    "model": resolve_model(model),
+                    "messages": [
+                        {"role": "user", "content": _build_prompt(chunk, style, avatar_safe_area, safe_ratio, video_theme)}
+                    ],
+                    "temperature": 0.3,
+                    "response_format": {"type": "json_object"},
+                },
+                timeout=180,
+            )
+            if resp.status_code < 400:
+                content = resp.json()["choices"][0]["message"]["content"]
+                data = json.loads(content)
+                for item in data.get("scenes", []):
+                    sid = item.get("scene_id")
+                    if sid:
+                        by_id[sid] = item
+            else:
+                logger.warning("Groq HTTP %s: %s", resp.status_code, resp.text[:300])
+        except Exception as exc:  # noqa: BLE001 - fallback intencional
+            logger.warning("Groq erro, usando fallback para o lote %s+: %s", start, exc)
+    return by_id
+
+
+def _merge_brief(scene: dict, ai: dict, fb: dict, avatar_safe_area: str) -> dict:
+    """Combina o brief da IA com o fallback, garantindo campos completos."""
+    keywords = ai.get("keywords") or fb["keywords"]
+    if isinstance(keywords, str):
+        keywords = [keywords]
+    return {
+        "scene_id": scene["scene_id"],
+        "visual_goal": (ai.get("visual_goal") or fb["visual_goal"]).strip(),
+        "keywords": [str(k).strip() for k in keywords if str(k).strip()][:3] or fb["keywords"],
+        "must_show": [str(k).strip() for k in (ai.get("must_show") or []) if str(k).strip()],
+        "must_not_show": [str(k).strip() for k in (ai.get("must_not_show") or fb["must_not_show"]) if str(k).strip()],
+        "asset_type": ai.get("asset_type") or "video",
+        "overlay_text": str(ai.get("overlay_text") or "").upper()[:60],
+        "avatar_safe_area": avatar_safe_area,
+    }
+
+
 def generate_briefs(
     scenes: list[dict],
     groq_key: str,
@@ -206,60 +266,16 @@ def generate_briefs(
     qualquer cena que a IA nao tenha coberto. `video_theme` ancora as keywords
     no assunto do video inteiro (evita drift de tema).
     """
-    by_id: dict[str, dict] = {}
-
-    if groq_key:
-        # em lotes: roteiros longos (100+ cenas) nao cabem numa unica resposta JSON
-        for start in range(0, len(scenes), BRIEF_BATCH_SIZE):
-            chunk = scenes[start:start + BRIEF_BATCH_SIZE]
-            try:
-                resp = requests.post(
-                    GROQ_URL,
-                    headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": resolve_model(model),
-                        "messages": [
-                            {"role": "user", "content": _build_prompt(chunk, style, avatar_safe_area, safe_ratio, video_theme)}
-                        ],
-                        "temperature": 0.3,
-                        "response_format": {"type": "json_object"},
-                    },
-                    timeout=180,
-                )
-                if resp.status_code < 400:
-                    content = resp.json()["choices"][0]["message"]["content"]
-                    data = json.loads(content)
-                    for item in data.get("scenes", []):
-                        sid = item.get("scene_id")
-                        if sid:
-                            by_id[sid] = item
-                else:
-                    logger.warning("Groq HTTP %s: %s", resp.status_code, resp.text[:300])
-            except Exception as exc:  # noqa: BLE001 - fallback intencional
-                logger.warning("Groq erro, usando fallback para o lote %s+: %s", start, exc)
+    by_id = (
+        _fetch_briefs_from_groq(scenes, groq_key, style, avatar_safe_area, safe_ratio, model, video_theme)
+        if groq_key else {}
+    )
 
     briefs: list[dict] = []
     for scene in scenes:
         ai = by_id.get(scene["scene_id"])
-        fb = fallback_scene_brief(scene, style, avatar_safe_area)
-        if not ai:
-            briefs.append(fb)
-            continue
-        keywords = ai.get("keywords") or fb["keywords"]
-        if isinstance(keywords, str):
-            keywords = [keywords]
-        briefs.append(
-            {
-                "scene_id": scene["scene_id"],
-                "visual_goal": (ai.get("visual_goal") or fb["visual_goal"]).strip(),
-                "keywords": [str(k).strip() for k in keywords if str(k).strip()][:3] or fb["keywords"],
-                "must_show": [str(k).strip() for k in (ai.get("must_show") or []) if str(k).strip()],
-                "must_not_show": [str(k).strip() for k in (ai.get("must_not_show") or fb["must_not_show"]) if str(k).strip()],
-                "asset_type": ai.get("asset_type") or "video",
-                "overlay_text": str(ai.get("overlay_text") or "").upper()[:60],
-                "avatar_safe_area": avatar_safe_area,
-            }
-        )
+        fb = fallback_scene_brief(scene, avatar_safe_area)
+        briefs.append(_merge_brief(scene, ai, fb, avatar_safe_area) if ai else fb)
     return briefs
 
 
@@ -332,7 +348,7 @@ def regenerate_keywords(
             )
             resp = requests.post(
                 GROQ_URL,
-                headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
+                headers={"Authorization": f"Bearer {groq_key}", "Content-Type": CONTENT_TYPE_JSON},
                 json={
                     "model": resolve_model(model),
                     "messages": [{"role": "user", "content": prompt}],
@@ -348,4 +364,4 @@ def regenerate_keywords(
                     return kws[:3]
         except Exception as exc:  # noqa: BLE001
             logger.warning("Groq regenerate erro: %s", exc)
-    return fallback_scene_brief({"scene_id": "x", "narration": narration}, style, "right")["keywords"]
+    return fallback_scene_brief({"scene_id": "x", "narration": narration}, "right")["keywords"]
