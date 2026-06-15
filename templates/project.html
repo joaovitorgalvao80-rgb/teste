@@ -18,7 +18,7 @@
 </div>
 
 <!-- Pipeline -->
-<div class="panel" style="margin-bottom:var(--sp-5)">
+<div class="panel" style="margin-bottom:var(--sp-4)">
   <div class="pipeline">
     <form method="post" action="/projects/{{ project.id }}/generate-map" style="flex:1;display:contents" data-busy-submit>
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -98,143 +98,75 @@
     </button>
     {% endif %}
   </div>
+</div>
 
-  <div class="curation-switch">
-    <div class="curation-switch-copy">
-      <span class="tag">Curadoria</span>
-      <strong>Manual ou automatica</strong>
-      <span class="t-small t-faint">{{ asset_count }} assets - {{ selected_count }}/{{ broll_required_count }} b-rolls marcados{% if avatar_only_count %} - {{ avatar_only_count }} cenas no avatar{% endif %}</span>
+<!-- Estado operacional -->
+<div class="operational-state operational-{{ operational_state.severity }}" style="margin-bottom:var(--sp-4)">
+  <div>
+    <span class="tag">Estado operacional</span>
+    <strong>{{ operational_state.label }}</strong>
+    <span>{{ operational_state.detail }}</span>
+  </div>
+  <em>Próximo: {{ operational_state.next_action }}</em>
+</div>
+
+<!-- Alertas contextuais -->
+{% if not has_keys %}
+<p class="note note-warn" style="margin-bottom:var(--sp-4)">Cadastre Pexels, Pixabay ou Coverr em <a href="/settings" style="color:var(--paper-0)">Configurações → APIs</a> para buscar assets.</p>
+{% endif %}
+{% if project.status == 'needs_package' %}
+<p class="note note-warn" style="margin-bottom:var(--sp-4)">O projeto mudou depois do último pacote. Gere a etapa 03 novamente antes de enviar ao Kaggle.</p>
+{% endif %}
+{% if project.status == 'reviewing' %}
+<p class="note note-warn" style="margin-bottom:var(--sp-4)">Takes pré-selecionados automaticamente. <a href="/projects/{{ project.id }}/review" style="color:var(--paper-0)">Revisar agora →</a></p>
+{% endif %}
+{% if project.status == 'reviewed' %}
+<p class="note" style="margin-bottom:var(--sp-4)">Revisão concluída — todos os b-rolls necessários aceitos. <a href="/projects/{{ project.id }}/curation-report" style="color:var(--paper-0)">Baixar relatório de curadoria</a> ou gere a etapa <strong>03 Pacote</strong>.</p>
+{% endif %}
+
+<!-- Kaggle status bar -->
+<div id="kaggle-status-bar" class="kaggle-panel" style="margin-bottom:var(--sp-4){% if not project.kaggle_kernel_slug %};display:none{% endif %}">
+  <div class="kaggle-row">
+    <span id="kaggle-dot" class="tally"></span>
+    <div class="kaggle-info">
+      <strong>Render no Kaggle</strong>
+      <span id="kaggle-status-text" class="kaggle-state">{{ project.kaggle_status or 'verificando...' }}</span>
     </div>
-    <div class="curation-switch-actions">
-      <a class="btn btn-primary btn-sm" href="{% if scenes %}#curadoria{% else %}#{% endif %}"
-         {% if not scenes %}aria-disabled="true"{% endif %}>
-        Escolher manualmente
-      </a>
-      {% if not config.long_mode %}
-      <form method="post" action="/projects/{{ project.id }}/auto-select" data-busy-submit>
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button class="btn btn-secondary btn-sm" type="submit"
-                {% if broll_required_count == 0 or asset_count == 0 or project.status not in ['searched','reviewing'] or project.status in ['searching','packaging','mapping','auto_selecting','researching'] %}disabled{% endif %}>
-          Selecao automatica
-        </button>
-      </form>
-      {% endif %}
-      <form method="post" action="/projects/{{ project.id }}/analyze-vision" data-busy-submit>
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button class="btn btn-ghost btn-sm" type="submit"
-                title="Pontua cada candidato comparando a imagem com a cena (IA de visão: Groq + NVIDIA)"
-                {% if asset_count == 0 or project.status in ['searching','packaging','mapping','auto_selecting','researching'] %}disabled{% endif %}>
-          Analisar visão
-        </button>
-      </form>
-      <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}/preview"
-         title="Folha de contato dos takes escolhidos antes de renderizar"
-         {% if selected_count == 0 %}aria-disabled="true"{% endif %}>
-        Preview
-      </a>
+    <div class="kaggle-links">
+      <a id="kaggle-master" class="btn btn-secondary btn-sm" href="/projects/{{ project.id }}/download-master-video" download
+         {% if not has_master_video %}style="display:none"{% endif %}>Baixar master</a>
+      <a id="kaggle-base" class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}/download-base-video" download
+         {% if not has_base_video %}style="display:none"{% endif %}>Baixar base</a>
+      <a id="kaggle-link" href="https://www.kaggle.com/code/{{ user.kaggle_username }}/{{ project.kaggle_kernel_slug }}"
+         target="_blank" class="btn btn-ghost btn-sm">abrir no Kaggle ↗</a>
     </div>
   </div>
-
-  <div class="operational-state operational-{{ operational_state.severity }}">
-    <div>
-      <span class="tag">Estado operacional</span>
-      <strong>{{ operational_state.label }}</strong>
-      <span>{{ operational_state.detail }}</span>
-    </div>
-    <em>Proximo: {{ operational_state.next_action }}</em>
+  <div class="kaggle-row hyperframes-row">
+    <span class="tag">05 Master (FFmpeg)</span>
+    <span id="hyperframes-state" class="kaggle-state">
+      {%- if hyperframes_status.get('status') in ('complete', 'fallback_complete') -%}
+        master pronto ({{ hyperframes_status.get('render_mode', 'ffmpeg') }}{% if hyperframes_status.get('audio') %}, com narração{% endif %}{% if hyperframes_status.get('avatar') %}, com avatar{% endif %})
+      {%- elif hyperframes_status.get('status') == 'error' -%}
+        erro no master — base preservada
+      {%- else -%}
+        composto junto com o render do Kaggle
+      {%- endif -%}
+    </span>
   </div>
+</div>
 
-  {% if not has_keys %}
-    <div style="padding:var(--sp-3) var(--sp-5)">
-      <p class="note note-warn">Cadastre Pexels, Pixabay ou Coverr em <a href="/settings" style="color:var(--paper-0)">Configurações → APIs</a> para buscar assets.</p>
-    </div>
-  {% endif %}
-
-  <div class="console-insights">
-    <section class="insight-panel">
-      <div class="row-between">
-        <span class="tag">Consumo de API</span>
-        <strong>{{ api_usage.total_calls }}</strong>
-      </div>
-      <div class="usage-bars">
-        {% if api_usage.providers %}
-          {% for item in api_usage.providers %}
-          <div class="usage-row">
-            <span>{{ item.provider }}</span>
-            <strong>{{ item.calls }}</strong>
-            <small>{% if item.failures %}{{ item.failures }} erro(s){% else %}ok{% endif %}</small>
-          </div>
-          {% endfor %}
-        {% else %}
-          <p class="t-muted t-small">Nenhuma chamada externa registrada neste projeto ainda.</p>
-        {% endif %}
-      </div>
-      <p class="t-small t-faint">Mede chamadas feitas pelo app; billing real depende de cada provedor.</p>
-    </section>
-
-    <section class="insight-panel">
-      <div class="row-between">
-        <span class="tag">Cenas para revisar</span>
-        <strong>{{ problem_scenes|length }}</strong>
-      </div>
-      {% if problem_scenes %}
-        <ul class="problem-scene-list">
-          {% for item in problem_scenes %}
-          <li>
-            <a href="#scene-{{ item.scene_db_id }}">{{ item.scene_id }}</a>
-            <span>{{ item.reasons|join(', ') }}</span>
-          </li>
-          {% endfor %}
-        </ul>
-      {% else %}
-        <p class="t-muted t-small">Nenhum alerta forte de curadoria agora.</p>
-      {% endif %}
-    </section>
+{% if config.long_mode and parts %}
+<!-- Partes do vídeo -->
+<div id="parts-panel" class="panel" data-active="{{ 1 if parts_job_active else 0 }}" style="margin-bottom:var(--sp-4)">
+  <div class="panel-head">
+    <span class="tag">Partes do vídeo ({{ parts|length }})</span>
+    <span class="t-small t-faint" id="parts-job-msg">
+      {% if all_parts_curated %}curadoria concluída — gere o pacote (03)
+      {% elif search_part_active %}buscando assets da parte — mantenha o servidor aberto
+      {% else %}busque e revise uma parte por vez, em ordem{% endif %}
+    </span>
   </div>
-
-  <!-- Kaggle status bar -->
-  <div id="kaggle-status-bar" class="kaggle-panel"
-       {% if not project.kaggle_kernel_slug %}style="display:none"{% endif %}>
-    <div class="kaggle-row">
-      <span id="kaggle-dot" class="tally"></span>
-      <div class="kaggle-info">
-        <strong>Render no Kaggle</strong>
-        <span id="kaggle-status-text" class="kaggle-state">{{ project.kaggle_status or 'verificando...' }}</span>
-      </div>
-      <div class="kaggle-links">
-        <a id="kaggle-master" class="btn btn-secondary btn-sm" href="/projects/{{ project.id }}/download-master-video" download
-           {% if not has_master_video %}style="display:none"{% endif %}>Baixar master</a>
-        <a id="kaggle-base" class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}/download-base-video" download
-           {% if not has_base_video %}style="display:none"{% endif %}>Baixar base</a>
-        <a id="kaggle-link" href="https://www.kaggle.com/code/{{ user.kaggle_username }}/{{ project.kaggle_kernel_slug }}"
-           target="_blank" class="btn btn-ghost btn-sm">abrir no Kaggle ↗</a>
-      </div>
-    </div>
-    <div class="kaggle-row hyperframes-row">
-      <span class="tag">05 Master (FFmpeg)</span>
-      <span id="hyperframes-state" class="kaggle-state">
-        {%- if hyperframes_status.get('status') in ('complete', 'fallback_complete') -%}
-          master pronto ({{ hyperframes_status.get('render_mode', 'ffmpeg') }}{% if hyperframes_status.get('audio') %}, com narração{% endif %}{% if hyperframes_status.get('avatar') %}, com avatar{% endif %})
-        {%- elif hyperframes_status.get('status') == 'error' -%}
-          erro no master — base preservada
-        {%- else -%}
-          composto junto com o render do Kaggle
-        {%- endif -%}
-      </span>
-    </div>
-  </div>
-
-  {% if config.long_mode and parts %}
-  <div id="parts-panel" data-active="{{ 1 if parts_job_active else 0 }}"
-       style="padding:var(--sp-3) var(--sp-5);border-top:1px solid var(--line-0)">
-    <div class="row-between" style="margin-bottom:var(--sp-3)">
-      <span class="tag">Partes do vídeo ({{ parts|length }})</span>
-      <span class="t-small t-faint" id="parts-job-msg">
-        {% if all_parts_curated %}curadoria concluída — gere o pacote (03)
-        {% elif search_part_active %}buscando assets da parte — mantenha o servidor aberto
-        {% else %}busque e revise uma parte por vez, em ordem{% endif %}
-      </span>
-    </div>
+  <div style="padding:var(--sp-3) var(--sp-5)">
     <table class="parts-table" id="parts-table">
       <thead>
         <tr><th>parte</th><th>cenas</th><th>duração</th><th>curadoria</th><th>status</th><th>kernel</th></tr>
@@ -291,38 +223,16 @@
          id="parts-dl-master" {% if not has_master_video %}style="display:none"{% endif %}>Baixar master (com narração)</a>
     </div>
   </div>
-  {% endif %}
-
-  {% if project.status == 'packaged' %}
-  <div style="padding:var(--sp-3) var(--sp-5);border-top:1px solid var(--line-0)">
-    {% if config.long_mode %}
-      <p class="t-small t-faint" style="margin-bottom:var(--sp-2)">Pacotes por parte gerados em workdir/parts/. Use <strong>04 Render partes</strong>.</p>
-    {% else %}
-      <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}/download-zip">Baixar ZIP</a>
-    {% endif %}
-  </div>
-  {% endif %}
-  {% if project.status == 'needs_package' %}
-  <div style="padding:var(--sp-3) var(--sp-5);border-top:1px solid var(--line-0)">
-    <p class="note note-warn">O projeto mudou depois do último pacote. Gere a etapa 03 novamente antes de enviar ao Kaggle.</p>
-  </div>
-  {% endif %}
-  {% if project.status == 'reviewing' %}
-  <div style="padding:var(--sp-3) var(--sp-5);border-top:1px solid var(--line-0)">
-    <p class="note note-warn">Takes pré-selecionados automaticamente.
-      <a href="/projects/{{ project.id }}/review" style="color:var(--paper-0)">Revisar agora →</a></p>
-  </div>
-  {% endif %}
-  {% if project.status == 'reviewed' %}
-  <div style="padding:var(--sp-3) var(--sp-5);border-top:1px solid var(--line-0)">
-    <p class="note">Revisão concluída — todos os b-rolls necessários aceitos.
-      <a href="/projects/{{ project.id }}/curation-report" style="color:var(--paper-0)">Baixar relatório de curadoria</a>
-      ou gere a etapa <strong>03 Pacote</strong>.</p>
-  </div>
-  {% endif %}
 </div>
+{% endif %}
 
-<!-- Plano de edição (revisão antes do render) -->
+{% if project.status == 'packaged' and not config.long_mode %}
+<div style="margin-bottom:var(--sp-4)">
+  <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}/download-zip">Baixar ZIP</a>
+</div>
+{% endif %}
+
+<!-- Plano de edição -->
 {% if edit_plan %}
 <div class="panel" style="margin-bottom:var(--sp-5)" id="edit-plan-panel">
   <div class="panel-head">
@@ -372,7 +282,7 @@
 </div>
 {% endif %}
 
-<!-- Diagnóstico + jobs -->
+<!-- Diagnóstico + Jobs -->
 <div class="grid-2" style="margin-bottom:var(--sp-5)">
   <div class="panel ops-card">
     <div class="panel-head">
@@ -455,7 +365,7 @@
 </div>
 
 <!-- Refinamento (narração + avatar) -->
-<div class="panel" style="margin-bottom:var(--sp-5)">
+<div class="panel" style="margin-bottom:var(--sp-7)">
   <div class="panel-head">
     <span class="tag">Refinamento · narração e avatar</span>
   </div>
@@ -512,32 +422,51 @@
   </div>
 {% endif %}
 
-<!-- Curadoria de cenas -->
+<!-- Barra de curadoria -->
 {% if scenes %}
-<hr class="rule" style="margin-bottom:var(--sp-5)">
-<div class="row-between" id="curadoria" style="margin-bottom:var(--sp-4)">
-  <h2>Curadoria de takes</h2>
-  <span class="row" style="gap:var(--sp-3);align-items:center">
-    <label class="t-small t-faint" style="display:flex;gap:var(--sp-1);align-items:center;cursor:pointer">
+<div class="curation-bar" id="curadoria">
+  <div class="curation-bar-info">
+    <h2>Curadoria de takes</h2>
+    <span class="t-small t-faint">{{ asset_count }} assets · {{ selected_count }}/{{ broll_required_count }} b-rolls marcados{% if avatar_only_count %} · {{ avatar_only_count }} cenas no avatar{% endif %}</span>
+  </div>
+  <div class="curation-bar-actions">
+    {% if not config.long_mode %}
+    <form method="post" action="/projects/{{ project.id }}/auto-select" data-busy-submit>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="btn btn-secondary btn-sm" type="submit"
+              {% if broll_required_count == 0 or asset_count == 0 or project.status not in ['searched','reviewing'] or project.status in ['searching','packaging','mapping','auto_selecting','researching'] %}disabled{% endif %}>
+        Seleção automática
+      </button>
+    </form>
+    <form method="post" action="/projects/{{ project.id }}/analyze-vision" data-busy-submit>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="btn btn-ghost btn-sm" type="submit"
+              title="Pontua cada candidato comparando a imagem com a cena (IA de visão: Groq + NVIDIA)"
+              {% if asset_count == 0 or project.status in ['searching','packaging','mapping','auto_selecting','researching'] %}disabled{% endif %}>
+        Analisar visão
+      </button>
+    </form>
+    {% endif %}
+    <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}/preview"
+       title="Folha de contato dos takes escolhidos antes de renderizar"
+       {% if selected_count == 0 %}aria-disabled="true"{% endif %}>
+      Preview
+    </a>
+    <span class="curation-bar-hint"><kbd>S</kbd> sel · <kbd>R</kbd> rej</span>
+    <label class="check" style="margin:0">
       <input type="checkbox" id="hide-low-rel" onchange="document.body.classList.toggle('hide-low-rel', this.checked)">
-      esconder baixa relevância
+      <span class="t-small t-faint">Ocultar baixa relevância</span>
     </label>
-    <span class="t-small t-faint"><kbd>S</kbd> selecionar · <kbd>R</kbd> rejeitar</span>
-  </span>
+  </div>
 </div>
 <style>
   body.hide-low-rel .take[data-low="1"]:not(.is-selected):not(.is-accepted) { display: none; }
-</style>
-{% endif %}
-
-<style>
   .scene-controls { margin: var(--sp-2) 0 var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2); }
   .kw-search { min-width: 200px; flex: 1 1 200px; max-width: 320px; }
   .avatar-override { align-items: center; gap: var(--sp-1); }
-  .avatar-override .btn.is-active { outline: 2px solid var(--accent, #5b8def); outline-offset: -1px; font-weight: 600; }
-  .scene.is-avatar-only .ov-no-avatar.is-active,
-  .scene .ov-no-broll.is-active { opacity: 1; }
+  .avatar-override .btn.is-active { outline: 2px solid rgba(91,141,239,0.7); outline-offset: -1px; font-weight: 600; }
 </style>
+{% endif %}
 
 {% for scene in gallery_scenes %}
   {% if config.long_mode and loop.first %}
@@ -580,7 +509,7 @@
           <button type="button" class="btn btn-secondary btn-sm" onclick="searchMore({{ scene.id }}, this, 'all')">buscar</button>
           <button type="button" class="btn btn-secondary btn-sm" onclick="searchMore({{ scene.id }}, this, 'video')">+ vídeos</button>
           <button type="button" class="btn btn-secondary btn-sm" onclick="searchMore({{ scene.id }}, this, 'image')">+ imagens</button>
-          <button type="button" class="btn btn-secondary btn-sm" onclick="toggleGenPanel({{ scene.id }})">✦ gerar imagem</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="toggleGenPanel({{ scene.id }})">✦ gerar</button>
           <button type="button" class="btn btn-ghost btn-sm" onclick="regenKeywords({{ scene.id }})">
             novas keywords
             <span id="kw-{{ scene.id }}" style="display:none">{{ scene.keywords|join(', ') }}</span>
@@ -591,12 +520,12 @@
           <button type="button" class="btn btn-ghost btn-sm ov-auto{% if scene.broll_override == 0 %} is-active{% endif %}"
                   onclick="setAvatarOverride({{ scene.id }}, 'auto', this)">automático</button>
           <button type="button" class="btn btn-ghost btn-sm ov-no-broll{% if scene.broll_override == -1 %} is-active{% endif %}"
-                  onclick="setAvatarOverride({{ scene.id }}, 'no_broll', this)">sem b-roll (só avatar)</button>
+                  onclick="setAvatarOverride({{ scene.id }}, 'no_broll', this)">sem b-roll</button>
           <span class="t-small t-faint" style="margin-left:auto">posição: {{ scene.avatar_safe_area }}</span>
         </div>
       </div>
 
-      <div class="gen-panel" id="gen-panel-{{ scene.id }}" style="display:none;margin-bottom:var(--sp-3);padding:var(--sp-3);border:1px solid var(--line-0);border-radius:6px">
+      <div class="gen-panel" id="gen-panel-{{ scene.id }}" style="display:none;margin-bottom:var(--sp-3);padding:var(--sp-3);border:1px solid var(--line-0);border-radius:var(--radius)">
         <p class="t-small t-faint" style="margin-bottom:var(--sp-2)">
           O gerador externo carrega somente quando você clicar em Gerar. A imagem entra como take normal.
         </p>
@@ -664,6 +593,53 @@
     <a class="btn btn-primary" href="/projects/{{ project.id }}/review?part={{ current_part }}">Confirmar seleção → revisar parte</a>
   </div>
 {% endif %}
+
+<!-- Detalhes operacionais (colapsável) -->
+<details class="panel" style="margin-top:var(--sp-6)">
+  <summary>Consumo de API e alertas de curadoria</summary>
+  <div class="console-insights">
+    <section class="insight-panel">
+      <div class="row-between">
+        <span class="tag">Consumo de API</span>
+        <strong>{{ api_usage.total_calls }}</strong>
+      </div>
+      <div class="usage-bars">
+        {% if api_usage.providers %}
+          {% for item in api_usage.providers %}
+          <div class="usage-row">
+            <span>{{ item.provider }}</span>
+            <strong>{{ item.calls }}</strong>
+            <small>{% if item.failures %}{{ item.failures }} erro(s){% else %}ok{% endif %}</small>
+          </div>
+          {% endfor %}
+        {% else %}
+          <p class="t-muted t-small">Nenhuma chamada externa registrada neste projeto ainda.</p>
+        {% endif %}
+      </div>
+      <p class="t-small t-faint">Mede chamadas feitas pelo app; billing real depende de cada provedor.</p>
+    </section>
+
+    <section class="insight-panel">
+      <div class="row-between">
+        <span class="tag">Cenas para revisar</span>
+        <strong>{{ problem_scenes|length }}</strong>
+      </div>
+      {% if problem_scenes %}
+        <ul class="problem-scene-list">
+          {% for item in problem_scenes %}
+          <li>
+            <a href="#scene-{{ item.scene_db_id }}">{{ item.scene_id }}</a>
+            <span>{{ item.reasons|join(', ') }}</span>
+          </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="t-muted t-small">Nenhum alerta forte de curadoria agora.</p>
+      {% endif %}
+    </section>
+  </div>
+</details>
+
 {% endblock %}
 
 {% block scripts %}

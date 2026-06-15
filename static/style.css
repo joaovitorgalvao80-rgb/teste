@@ -64,6 +64,8 @@
 
   /* ---- Forma e movimento --------------------------------------------- */
   --radius: 3px;
+  --radius-sm: 2px;
+  --fs-title: 1.375rem;
   --speed: 130ms;
   --ease: cubic-bezier(0.2, 0, 0, 1);
 }
@@ -280,17 +282,6 @@ kbd {
 .btn:disabled, .btn[aria-disabled="true"] { cursor: not-allowed; opacity: 0.38; }
 
 .btn-sm { padding: 5px 12px; font-size: var(--fs-micro); }
-
-/* legacy aliases used by inline JS and older markup */
-button.primary, a.primary.btn { background: var(--white); color: var(--ink-0); border-color: transparent; }
-button.primary:hover { background: var(--paper-0); }
-button.secondary { background: transparent; color: var(--paper-0); border: 1px solid var(--line-2); }
-button.secondary:hover { border-color: var(--line-3); background: var(--ink-2); }
-button.ghost, a.btn.ghost { background: transparent; color: var(--paper-1); border: 1px solid var(--line-2); }
-button.ghost:hover:not(:disabled), a.btn.ghost:hover { color: var(--paper-0); background: var(--ink-2); }
-button.ghost.danger, button.ghost.danger:hover:not(:disabled) { color: var(--err); border-color: var(--err); background: transparent; }
-button.accent { background: var(--white); color: var(--ink-0); border-color: transparent; }
-button.accent:hover:not(:disabled) { background: var(--paper-0); }
 
 button, .btn {
   font-family: var(--font-sans);
@@ -1430,9 +1421,8 @@ label.check input { width: auto; accent-color: var(--paper-0); }
    Kaggle / jobs na tela de projeto
    ========================================================================== */
 .kaggle-panel {
-  margin-top: var(--sp-3);
   padding: var(--sp-4) var(--sp-5);
-  background: var(--ink-0);
+  background: var(--ink-1);
   border: 1px solid var(--line-1);
   border-radius: var(--radius);
 }
@@ -1467,7 +1457,6 @@ label.check input { width: auto; accent-color: var(--paper-0); }
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--sp-4);
   align-items: center;
-  margin: var(--sp-3) var(--sp-5) 0;
   padding: var(--sp-3) var(--sp-4);
   background: var(--ink-0);
   border: 1px solid var(--line-1);
@@ -1496,7 +1485,7 @@ label.check input { width: auto; accent-color: var(--paper-0); }
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: var(--sp-3);
-  margin: var(--sp-3) var(--sp-5) 0;
+  padding: var(--sp-4) var(--sp-5);
 }
 
 .insight-panel {
@@ -1667,6 +1656,80 @@ label.check input { width: auto; accent-color: var(--paper-0); }
 .toolbar-title h2 { margin-top: var(--sp-2); font-size: var(--fs-small); font-weight: 700; color: var(--paper-1); }
 
 /* ==========================================================================
+   Barra de curadoria — toolbar fixa acima da galeria de takes
+   ========================================================================== */
+.curation-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-5);
+  flex-wrap: wrap;
+  padding: var(--sp-5) 0 var(--sp-4);
+  margin-bottom: var(--sp-4);
+  border-bottom: 1px solid var(--line-1);
+}
+
+.curation-bar-info { display: grid; gap: var(--sp-1); }
+.curation-bar-info h2 { font-size: var(--fs-h3); font-weight: 700; font-stretch: 88%; }
+
+.curation-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.curation-bar-actions form { margin: 0; }
+
+.curation-bar-hint {
+  color: var(--paper-3);
+  font-size: var(--fs-micro);
+  font-family: var(--font-mono);
+  letter-spacing: 0.08em;
+  padding: 0 var(--sp-1);
+}
+
+/* ==========================================================================
+   Details accordion — painel colapsavel
+   ========================================================================== */
+details.panel > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-5);
+  cursor: pointer;
+  color: var(--paper-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  list-style: none;
+  user-select: none;
+  border-radius: var(--radius);
+  transition: background var(--speed) var(--ease), color var(--speed) var(--ease);
+}
+
+details.panel > summary::-webkit-details-marker { display: none; }
+
+details.panel > summary::after {
+  content: "▸";
+  color: var(--paper-3);
+  font-size: var(--fs-small);
+  flex: none;
+}
+
+details.panel[open] > summary {
+  border-bottom: 1px solid var(--line-0);
+  border-radius: var(--radius) var(--radius) 0 0;
+  color: var(--paper-1);
+}
+
+details.panel[open] > summary::after { content: "▾"; }
+details.panel > summary:hover { background: var(--ink-2); color: var(--paper-1); }
+
+/* ==========================================================================
    Responsive
    ========================================================================== */
 @media (max-width: 980px) {
@@ -1680,13 +1743,11 @@ label.check input { width: auto; accent-color: var(--paper-0); }
   .scene { grid-template-columns: 64px 1fr; }
   .pipeline { flex-direction: column; }
   .step { border-right: 0; border-bottom: 1px solid var(--line-1); }
-  .curation-switch { align-items: stretch; flex-direction: column; }
-  .curation-switch-actions { justify-content: flex-start; }
   .integration-row,
   .operational-state { grid-template-columns: 1fr; }
-  .operational-state { margin-left: var(--sp-3); margin-right: var(--sp-3); }
   .operational-state em { text-align: left; }
-  .console-insights { grid-template-columns: 1fr; margin-left: var(--sp-3); margin-right: var(--sp-3); }
+  .console-insights { grid-template-columns: 1fr; }
+  .curation-bar { flex-direction: column; align-items: flex-start; gap: var(--sp-3); }
   .usage-row { grid-template-columns: minmax(0, 1fr) auto; }
   .usage-row small { grid-column: 1 / -1; }
   .project-item { grid-template-columns: 1fr; }
