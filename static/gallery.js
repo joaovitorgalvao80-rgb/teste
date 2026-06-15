@@ -107,7 +107,7 @@ function updateSelectedCount() {
   // atualiza o texto do step no pipeline
   const nameSpan = btn.querySelector(".step-name");
   if (nameSpan) nameSpan.textContent = `Pacote (${selected}/${total})`;
-  btn.disabled = busy || total === 0 || selected !== total;
+  btn.disabled = busy || selected === 0;
 }
 
 async function searchMore(sceneId, btn, media) {

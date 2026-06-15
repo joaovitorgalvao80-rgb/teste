@@ -167,7 +167,7 @@
       <form method="post" action="/projects/{{ project.id }}/package" data-busy-submit style="display:inline">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button class="btn btn-primary btn-sm" id="btn-package-review" type="submit"
-                {% if accepted != total %}disabled{% endif %}>
+                {% if accepted == 0 %}disabled{% endif %}>
           Gerar pacote
         </button>
       </form>
@@ -179,7 +179,7 @@
       <form method="post" action="/projects/{{ project.id }}/finish-review" data-busy-submit style="display:inline">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button class="btn btn-primary btn-sm" id="btn-finish-review" type="submit"
-                {% if accepted != total %}disabled{% endif %}>
+                {% if accepted == 0 %}disabled{% endif %}>
           Concluir revisão{% if accepted != total %} ({{ accepted }}/{{ total }}){% endif %}
         </button>
       </form>
@@ -265,7 +265,7 @@ function updateReviewBar() {
   if (research) research.disabled = waiting === 0;
   const finish = document.getElementById("btn-finish-review");
   if (finish) {
-    finish.disabled = accepted !== cards.length;
+    finish.disabled = accepted === 0;
     finish.textContent = accepted === cards.length ? "Concluir revisão" : `Concluir revisão (${accepted}/${cards.length})`;
   }
   // O botao "Confirmar parte" nunca trava: o usuario confirma com os takes que

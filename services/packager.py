@@ -366,6 +366,9 @@ def build_zip(
     """Baixa assets selecionados, renomeia e monta o ZIP final. Retorna o caminho."""
     work_dir.mkdir(parents=True, exist_ok=True)
     guide = build_guide(project, config, scenes, selected_by_scene)
+    for scene, gscene in zip(scenes, guide["scenes"]):
+        if scene["id"] not in selected_by_scene and gscene.get("broll", True):
+            gscene["broll"] = False
     max_bytes = int(max_download_mb * 1024 * 1024)
 
     # baixa cada asset selecionado para uma pasta temporaria
@@ -403,10 +406,12 @@ def build_zip(
             "nenhum asset selecionado conseguiu ser baixado; "
             "verifique URLs expiradas, limite de MB ou conexao com Pexels/Pixabay"
         )
-    # cenas avatar-only (broll=False) nao tem asset de proposito: nao sao "faltando"
+    # cenas avatar-only (broll=False) nao tem asset de proposito: nao sao "faltando".
+    # Ja um take escolhido que falha no download continua sendo erro, porque o pacote
+    # ficaria com menos imagens do que o usuario decidiu usar.
     missing = [
-        gscene["id"] for gscene in guide["scenes"]
-        if not gscene.get("selected_asset") and gscene.get("broll", True)
+        gscene["id"] for scene, gscene in zip(scenes, guide["scenes"])
+        if scene["id"] in selected_by_scene and not gscene.get("selected_asset")
     ]
     if missing:
         preview = ", ".join(missing[:8])

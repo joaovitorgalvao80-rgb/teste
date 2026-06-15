@@ -45,14 +45,14 @@
     </form>
     <form method="post" action="/projects/{{ project.id }}/auto-select" style="flex:1;display:contents" data-busy-submit>
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button class="step {% if project.status in ['reviewing','reviewed','packaged','needs_package','packaging','package_failed'] and selected_count == broll_required_count and broll_required_count > 0 %}is-done{% endif %}"
+      <button class="step {% if project.status in ['reviewing','reviewed','packaged','needs_package','packaging','package_failed'] and selected_count > 0 %}is-done{% endif %}"
               type="submit"
               {% if broll_required_count == 0 or asset_count == 0 or project.status not in ['searched','reviewing'] or project.status in ['searching','packaging','mapping','auto_selecting','researching'] %}disabled{% endif %}>
         <span class="step-idx">02B</span>
         <span class="step-name">Seleção automática</span>
       </button>
     </form>
-    <a class="step {% if project.status == 'reviewed' or (broll_required_count > 0 and accepted_count == broll_required_count) %}is-done{% endif %} {% if project.status == 'reviewing' %}is-active{% endif %}"
+    <a class="step {% if project.status == 'reviewed' or accepted_count > 0 %}is-done{% endif %} {% if project.status == 'reviewing' %}is-active{% endif %}"
        href="/projects/{{ project.id }}/review">
       <span class="step-idx">2B</span>
       <span class="step-name">Revisão ({{ accepted_count }}/{{ broll_required_count }})</span>
@@ -64,7 +64,7 @@
               {% if config.long_mode %}
                 {% if not all_parts_curated or project.status in ['mapping','searching','packaging'] %}disabled{% endif %}
               {% else %}
-                {% if broll_required_count == 0 or selected_count != broll_required_count or project.status in ['mapping','searching','packaging'] %}disabled{% endif %}
+                {% if selected_count == 0 or project.status in ['mapping','searching','packaging'] %}disabled{% endif %}
               {% endif %}>
         <span class="step-idx">03</span>
         <span class="step-name">Pacote ({{ selected_count }}/{{ broll_required_count }})</span>

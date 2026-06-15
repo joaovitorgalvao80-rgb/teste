@@ -80,7 +80,7 @@ INVITE_CODE = os.getenv("INVITE_CODE", "").strip()
 STATIC_VERSION = (
     os.getenv("STATIC_VERSION")
     or os.getenv("RAILWAY_GIT_COMMIT_SHA", "")[:12]
-    or "20260613-job-cancel"
+    or "20260615-partial-package"
 )
 
 
@@ -2501,18 +2501,16 @@ def finish_review(request: Request, project_id: int, csrf_token: Annotated[str, 
     broll_required = {sid for sid, on in scene_broll_flags(scenes, project_config(project)).items() if on}
     assets_by_scene = db.list_assets_for_project(project_id)
     chosen_by_scene: dict[int, dict] = {}
-    not_accepted: list[str] = []
     for scene in scenes:
         assets = assets_by_scene.get(scene["id"], [])
         accepted = next((a for a in assets if a["state"] == "accepted"), None)
         if accepted:
             chosen_by_scene[scene["id"]] = accepted
-        elif scene["scene_id"] in broll_required:
-            not_accepted.append(scene["scene_id"])
-    if not_accepted:
-        preview = ", ".join(not_accepted[:8])
-        suffix = "..." if len(not_accepted) > 8 else ""
-        raise HTTPException(400, f"Aceite um take para todas as cenas de b-roll antes de concluir. Faltando: {preview}{suffix}")
+    required_scene_db_ids = {s["id"] for s in scenes if s["scene_id"] in broll_required}
+    if not broll_required and not chosen_by_scene:
+        raise HTTPException(400, "O plano atual nao tem cenas de b-roll para revisar.")
+    if broll_required and not any(scene_id in chosen_by_scene for scene_id in required_scene_db_ids):
+        raise HTTPException(400, "Aceite ao menos um take antes de concluir a revisao.")
 
     rejected_by_scene = {
         scene["id"]: [a for a in assets_by_scene.get(scene["id"], []) if a["state"] == "rejected"]
@@ -2808,11 +2806,18 @@ class _PackageCtx:
 
 def _validate_package_selection(scenes, selected_by_scene, broll_required, required_scene_db_ids) -> None:
     if not broll_required:
-        raise RuntimeError("Plano sem cenas de b-roll; ajuste o roteiro ou as regras antes de gerar pacote.")
-    if missing_selected_scene_ids(scenes, selected_by_scene, broll_required):
-        raise RuntimeError("Selecao incompleta; escolha um asset para cada cena de b-roll.")
+        if selected_by_scene:
+            return
+        raise RuntimeError("Selecao vazia; escolha ao menos um asset antes de gerar pacote.")
     if not any(scene_id in selected_by_scene for scene_id in required_scene_db_ids):
-        raise RuntimeError("Selecao incompleta; escolha um asset para cada cena de b-roll.")
+        raise RuntimeError("Selecao vazia; escolha ao menos um asset antes de gerar pacote.")
+
+
+def _fallback_unselected_brolls_to_avatar(scenes: list[dict], selected_by_scene: dict[int, dict]) -> None:
+    """Cenas b-roll sem take escolhido viram avatar no pacote/render."""
+    for scene in scenes:
+        if scene.get("broll") and scene["id"] not in selected_by_scene:
+            scene["broll"] = False
 
 
 def _build_part_zip(ctx: "_PackageCtx", part: dict, parts_count: int, avatar_input) -> Optional[str]:
@@ -2952,6 +2957,7 @@ def run_package_job(
         selected_by_scene = {row["scene_id"]: row for row in selected_rows}
         rejected = db.list_assets_by_state(project_id, ["rejected"])
         _validate_package_selection(scenes, selected_by_scene, broll_required, required_scene_db_ids)
+        _fallback_unselected_brolls_to_avatar(scenes, selected_by_scene)
         remove_project_artifacts(project_id)
         rejected_payload = [
             {"scene_id": r["scene_code"], "source": r["source"], "url": r["download_url"], "keyword": r["keyword"]}
@@ -2998,17 +3004,9 @@ def package(
     selected_by_scene = {row["scene_id"]: row for row in selected_rows}
     required_scene_db_ids = {s["id"] for s in scenes if s["scene_id"] in broll_required}
 
-    missing = missing_selected_scene_ids(scenes, selected_by_scene, broll_required)
-    if not broll_required:
+    if not broll_required and not selected_by_scene:
         raise HTTPException(400, "O plano atual nao tem cenas de b-roll para empacotar.")
-    if missing:
-        preview = ", ".join(missing[:8])
-        suffix = "..." if len(missing) > 8 else ""
-        raise HTTPException(
-            400,
-            f"Selecione um asset para todas as cenas de b-roll antes de gerar o pacote. Faltando: {preview}{suffix}",
-        )
-    if not any(scene_id in selected_by_scene for scene_id in required_scene_db_ids):
+    if broll_required and not any(scene_id in selected_by_scene for scene_id in required_scene_db_ids):
         raise HTTPException(400, "Selecione ao menos um asset antes de gerar o pacote.")
     ensure_no_active_job(project_id, "package")
     job_id = db.create_job(user["id"], "package", project_id, "Preparando pacote ZIP")

@@ -91,7 +91,7 @@ class DeployContractsTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 404)
         self.assertEqual(db.get_asset(asset["id"])["state"], "pending")
 
-    def test_package_route_requires_selection_for_every_scene(self) -> None:
+    def test_package_route_requires_at_least_one_selected_broll(self) -> None:
         with TestClient(webapp.app) as client:
             user_id = db.create_user("partial", "password123")
             project_id = db.create_project(user_id, "partial project", "script", {})
@@ -130,7 +130,7 @@ class DeployContractsTest(unittest.TestCase):
             resp = client.post(f"/projects/{project_id}/package", follow_redirects=False)
 
         self.assertEqual(resp.status_code, 400)
-        self.assertIn("scene_002", resp.text)
+        self.assertIn("ao menos um asset", resp.text)
 
     def test_project_page_shows_operational_diagnostics(self) -> None:
         with TestClient(webapp.app) as client:
@@ -563,6 +563,74 @@ class DeployContractsTest(unittest.TestCase):
                 packager.build_zip(project, config, scenes, selected, [], self.root / "work")
         finally:
             packager._download = original_download
+
+    def test_packager_turns_unselected_broll_scenes_into_avatar_segments(self) -> None:
+        project = {"name": "Parcial"}
+        config = {"avatar_safe_area": "right", "resolution": "1920x1080", "format": "16:9"}
+        scenes = [
+            {
+                "id": 1,
+                "scene_id": "scene_001",
+                "idx": 1,
+                "zone": "DESENVOLVIMENTO",
+                "start_time": 0.0,
+                "end_time": 4.0,
+                "duration": 4.0,
+                "narration": "parte um",
+                "visual_goal": "teste",
+                "keywords": [],
+                "must_show": [],
+                "must_not_show": [],
+                "asset_type": "video",
+                "overlay_text": "",
+                "avatar_safe_area": "right",
+                "broll": True,
+            },
+            {
+                "id": 2,
+                "scene_id": "scene_002",
+                "idx": 2,
+                "zone": "DESENVOLVIMENTO",
+                "start_time": 4.0,
+                "end_time": 8.0,
+                "duration": 4.0,
+                "narration": "parte dois",
+                "visual_goal": "teste",
+                "keywords": [],
+                "must_show": [],
+                "must_not_show": [],
+                "asset_type": "video",
+                "overlay_text": "",
+                "avatar_safe_area": "right",
+                "broll": True,
+            },
+        ]
+        selected = {
+            1: {
+                "source": "pexels",
+                "download_url": "https://example.com/a.mp4",
+                "asset_type": "video",
+                "keyword": "test",
+            }
+        }
+
+        def fake_download(_url, dest, _max_bytes):
+            dest.write_bytes(b"fake-video")
+            return True
+
+        original_download = packager._download
+        packager._download = fake_download
+        try:
+            zip_path = packager.build_zip(project, config, scenes, selected, [], self.root / "work")
+        finally:
+            packager._download = original_download
+
+        with zipfile.ZipFile(zip_path) as zf:
+            guide = json.loads(zf.read("guia_visual.json"))
+        self.assertTrue(guide["scenes"][0]["broll"])
+        self.assertIsNotNone(guide["scenes"][0]["selected_asset"])
+        self.assertFalse(guide["scenes"][1]["broll"])
+        self.assertIsNone(guide["scenes"][1]["selected_asset"])
 
     def test_montador_rejects_zip_slip_paths(self) -> None:
         bad_zip = self.root / "bad.zip"
