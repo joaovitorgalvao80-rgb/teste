@@ -164,7 +164,9 @@ function ensurePuterLoaded() {
   if (_puterLoadPromise) return _puterLoadPromise;
   _puterLoadPromise = new Promise((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = "https://js.puter.com/v2/"; // NOSONAR
+    script.integrity = "sha384-1cmgi3dLV4Dnuu9dMg1aR/7qlFou128Y3bxXvqFjnbRuv3+QrWQ6auJXdG5rMTRW";
+    script.crossOrigin = "anonymous";
+    script.src = "https://js.puter.com/v2/";
     script.async = true;
     script.onload = () => resolve();
     script.onerror = () => reject(new Error("Puter.js não carregou"));
