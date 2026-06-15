@@ -1492,6 +1492,86 @@ label.check input { width: auto; accent-color: var(--paper-0); }
 .operational-error,
 .operational-blocked { border-left-color: var(--err); }
 
+.console-insights {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-3);
+  margin: var(--sp-3) var(--sp-5) 0;
+}
+
+.insight-panel {
+  padding: var(--sp-4);
+  background: var(--ink-0);
+  border: 1px solid var(--line-1);
+  border-radius: var(--radius);
+}
+
+.insight-panel > .row-between {
+  margin-bottom: var(--sp-3);
+}
+
+.insight-panel > .row-between strong {
+  color: var(--paper-0);
+  font-family: var(--font-mono);
+}
+
+.api-total {
+  color: var(--paper-0);
+  font-family: var(--font-mono);
+  font-size: var(--fs-title);
+}
+
+.usage-bars,
+.problem-scene-list {
+  display: grid;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+}
+
+.usage-row,
+.problem-scene-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: var(--sp-3);
+  align-items: center;
+  min-height: 34px;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--ink-3);
+  border: 1px solid var(--line-0);
+  border-radius: var(--radius-sm);
+}
+
+.usage-row span,
+.problem-scene-list span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-row strong {
+  color: var(--paper-0);
+  font-family: var(--font-mono);
+}
+
+.usage-row small {
+  color: var(--paper-2);
+}
+
+.problem-scene-list {
+  list-style: none;
+  padding: 0;
+}
+
+.problem-scene-list li {
+  grid-template-columns: 86px minmax(0, 1fr);
+}
+
+.problem-scene-list a {
+  color: var(--paper-0);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+}
+
 .ops-card { display: grid; gap: var(--sp-4); }
 
 .ops-grid {
@@ -1606,6 +1686,9 @@ label.check input { width: auto; accent-color: var(--paper-0); }
   .operational-state { grid-template-columns: 1fr; }
   .operational-state { margin-left: var(--sp-3); margin-right: var(--sp-3); }
   .operational-state em { text-align: left; }
+  .console-insights { grid-template-columns: 1fr; margin-left: var(--sp-3); margin-right: var(--sp-3); }
+  .usage-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .usage-row small { grid-column: 1 / -1; }
   .project-item { grid-template-columns: 1fr; }
   .project-actions { justify-content: flex-start; }
   .page-head { align-items: stretch; flex-direction: column; }

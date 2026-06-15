@@ -150,6 +150,48 @@
     </div>
   {% endif %}
 
+  <div class="console-insights">
+    <section class="insight-panel">
+      <div class="row-between">
+        <span class="tag">Consumo de API</span>
+        <strong>{{ api_usage.total_calls }}</strong>
+      </div>
+      <div class="usage-bars">
+        {% if api_usage.providers %}
+          {% for item in api_usage.providers %}
+          <div class="usage-row">
+            <span>{{ item.provider }}</span>
+            <strong>{{ item.calls }}</strong>
+            <small>{% if item.failures %}{{ item.failures }} erro(s){% else %}ok{% endif %}</small>
+          </div>
+          {% endfor %}
+        {% else %}
+          <p class="t-muted t-small">Nenhuma chamada externa registrada neste projeto ainda.</p>
+        {% endif %}
+      </div>
+      <p class="t-small t-faint">Mede chamadas feitas pelo app; billing real depende de cada provedor.</p>
+    </section>
+
+    <section class="insight-panel">
+      <div class="row-between">
+        <span class="tag">Cenas para revisar</span>
+        <strong>{{ problem_scenes|length }}</strong>
+      </div>
+      {% if problem_scenes %}
+        <ul class="problem-scene-list">
+          {% for item in problem_scenes %}
+          <li>
+            <a href="#scene-{{ item.scene_db_id }}">{{ item.scene_id }}</a>
+            <span>{{ item.reasons|join(', ') }}</span>
+          </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="t-muted t-small">Nenhum alerta forte de curadoria agora.</p>
+      {% endif %}
+    </section>
+  </div>
+
   <!-- Kaggle status bar -->
   <div id="kaggle-status-bar" class="kaggle-panel"
        {% if not project.kaggle_kernel_slug %}style="display:none"{% endif %}>

@@ -43,6 +43,30 @@
 </div>
 
 <div class="panel panel-pad" style="margin-bottom:var(--sp-5)">
+  <div class="row-between">
+    <div>
+      <p class="tag">Consumo de API</p>
+      <h3 style="margin-top:var(--sp-2)">Uso local registrado</h3>
+      <p class="t-muted t-small" style="margin-top:var(--sp-2)">Conta chamadas externas feitas pelo app nesta instalacao. Custos e creditos reais continuam no painel de cada provedor.</p>
+    </div>
+    <strong class="api-total">{{ api_usage.total_calls }}</strong>
+  </div>
+  <div class="usage-bars" style="margin-top:var(--sp-4)">
+    {% if api_usage.providers %}
+      {% for item in api_usage.providers %}
+      <div class="usage-row">
+        <span>{{ item.provider }}</span>
+        <strong>{{ item.calls }}</strong>
+        <small>{% if item.failures %}{{ item.failures }} erro(s){% else %}ok{% endif %}</small>
+      </div>
+      {% endfor %}
+    {% else %}
+      <p class="t-muted t-small">Nenhuma chamada externa registrada ainda.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="panel panel-pad" style="margin-bottom:var(--sp-5)">
   <p class="tag">Importação rápida</p>
   <h3 style="margin-top:var(--sp-2)">Importar chaves de um arquivo</h3>
   <p class="t-muted t-small" style="margin-top:var(--sp-2)">

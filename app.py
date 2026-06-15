@@ -27,9 +27,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
 import database as db
-from services import asset_search, auto_select, diagnostics, edit_plan, groq_service, kaggle_service, ops_status, packager, scoring, vision
+from services import api_usage, asset_search, auto_select, diagnostics, edit_plan, groq_service, kaggle_service, ops_status, packager, scoring, vision
 from services.project_config import (
     DEFAULT_CONFIG,
+    LANGUAGES,
     _coerce_bool,
     _coerce_int,
     normalize_project_config,
@@ -418,6 +419,45 @@ def annotate_broll_requirements(scenes: list[dict], config: dict) -> dict:
     return stats
 
 
+def problem_scenes(scenes: list[dict], config: dict, limit: int = 8) -> list[dict]:
+    """Cenas de b-roll que merecem revisao antes de gastar render."""
+    target_w = resolution_width(config)
+    out: list[dict] = []
+    for scene in scenes:
+        if not scene.get("broll_required"):
+            continue
+        reasons: list[str] = []
+        assets = scene.get("assets") or []
+        chosen = scene.get("selected")
+        if not assets:
+            reasons.append("sem candidatos")
+        elif not chosen:
+            reasons.append("sem take escolhido")
+        else:
+            if chosen.get("low_relevance"):
+                reasons.append("take escolhido com baixa relevancia")
+            if chosen.get("vision_verdict") == "descartar":
+                reasons.append("visao sugere descartar")
+            if chosen.get("asset_type") == "video":
+                if float(chosen.get("duration") or 0) < float(scene.get("duration") or 0) * 0.5:
+                    reasons.append("video curto para a cena")
+            if int(chosen.get("width") or 0) and int(chosen.get("width") or 0) < target_w * 0.66:
+                reasons.append("resolucao baixa")
+        if scene.get("low_relevance_count", 0) >= max(2, len(assets) // 2) and assets:
+            reasons.append(f"{scene['low_relevance_count']} candidatos fracos")
+        if reasons:
+            out.append({
+                "scene_id": scene.get("scene_id", ""),
+                "scene_db_id": scene.get("id"),
+                "part": int(scene.get("part") or 1),
+                "narration": str(scene.get("narration") or "")[:120],
+                "reasons": reasons[:4],
+                "has_assets": bool(assets),
+                "has_choice": bool(chosen),
+            })
+    return out[:limit]
+
+
 _VISION_PROVIDER = vision.HeuristicVisionProvider()
 # Quantos candidatos por cena a IA de visao analisa de fato (os melhores pela
 # heuristica). Limita custo/tempo do LLM; o resto fica na heuristica offline.
@@ -709,6 +749,7 @@ def local_hyperframes_status(project_work: Path) -> Optional[dict]:
 def run_kaggle_send_job(
     job_id: int,
     project_id: int,
+    user_id: int,
     project_name: str,
     username: str,
     token: str,
@@ -719,11 +760,12 @@ def run_kaggle_send_job(
         db.update_job(job_id, status="running", message="Enviando dataset para o Kaggle")
         # copia o ZIP antes do upload: mark_project_dirty pode apagar o original
         # se o usuario alterar o projeto enquanto o envio roda em background
-        with tempfile.TemporaryDirectory(prefix="nwrch_kaggle_") as tmp:
-            zip_path = Path(tmp) / Path(zip_path_str).name
-            shutil.copy2(zip_path_str, zip_path)
-            check_job_canceled(job_id)
-            ds_slug = kaggle_service.upload_dataset(zip_path, project_name, username, token, project_id=project_id)
+        with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="kaggle_send"):
+            with tempfile.TemporaryDirectory(prefix="nwrch_kaggle_") as tmp:
+                zip_path = Path(tmp) / Path(zip_path_str).name
+                shutil.copy2(zip_path_str, zip_path)
+                check_job_canceled(job_id)
+                ds_slug = kaggle_service.upload_dataset(zip_path, project_name, username, token, project_id=project_id)
         check_job_canceled(job_id)
         db.update_job(
             job_id,
@@ -732,7 +774,8 @@ def run_kaggle_send_job(
             result={"dataset_slug": ds_slug},
         )
         check_job_canceled(job_id)
-        k_slug, push_out = kaggle_service.push_kernel(ds_slug, project_name, username, token, project_id=project_id)
+        with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="kaggle_send"):
+            k_slug, push_out = kaggle_service.push_kernel(ds_slug, project_name, username, token, project_id=project_id)
         db.update_kaggle_job(project_id, ds_slug, k_slug, "queued")
         kernel_url = f"https://www.kaggle.com/code/{username}/{k_slug}"
         db.finish_job(
@@ -842,6 +885,7 @@ def settings_page(request: Request, saved: str = ""):
             "groq_models": groq_service.GROQ_MODELS,
             "secret_masks": secret_masks,
             "integration_status": ops_status.integration_snapshot(user, APP_ENV),
+            "api_usage": db.api_usage_summary(user["id"]),
         },
     )
 
@@ -1016,6 +1060,7 @@ async def transcribe_audio(
     request: Request,
     audio: Annotated[UploadFile, File()],
     csrf_token: Annotated[str, Form()] = "",
+    language: Annotated[str, Form()] = DEFAULT_CONFIG["script_language"],
 ):
     user = require_user(request)
     verify_csrf(request, csrf_token)
@@ -1024,7 +1069,8 @@ async def transcribe_audio(
     raw = await read_upload_limited(audio, MAX_TRANSCRIBE_UPLOAD_MB * 1024 * 1024)
     try:
         data, fname = _extract_audio_bytes(raw, audio.filename or "audio.mp4")
-        transcript = groq_service.transcribe_audio(data, fname, user["groq_key"])
+        with api_usage.context(user_id=user["id"], operation="transcribe_audio"):
+            transcript = groq_service.transcribe_audio(data, fname, user["groq_key"], language=language)
         return JSONResponse({"transcript": transcript})
     except HTTPException:
         raise
@@ -1045,7 +1091,7 @@ def projects_page(request: Request):
 @app.get("/projects/new", response_class=HTMLResponse, responses=ERROR_RESPONSES)
 def new_project_page(request: Request):
     user = require_user(request)
-    return render_template(request, "new_project.html", {"user": user, "config": DEFAULT_CONFIG})
+    return render_template(request, "new_project.html", {"user": user, "config": DEFAULT_CONFIG, "languages": LANGUAGES})
 
 
 @app.post("/projects/new", responses=ERROR_RESPONSES)
@@ -1059,6 +1105,7 @@ async def new_project(
     scene_duration: Annotated[float, Form()] = 4.0,
     image_fallback: Annotated[str, Form()] = "",
     long_mode: Annotated[str, Form()] = "",
+    script_language: Annotated[str, Form()] = DEFAULT_CONFIG["script_language"],
     narration_media: Annotated[Optional[UploadFile], File()] = None,
     csrf_token: Annotated[str, Form()] = "",
 ):
@@ -1080,6 +1127,7 @@ async def new_project(
         "scene_duration": scene_duration,
         "image_fallback": image_fallback,
         "long_mode": is_long,
+        "script_language": script_language,
     })
     pid = db.create_project(user["id"], name.strip() or "projeto", script, config)
     if prepared_narration:
@@ -1142,6 +1190,8 @@ def project_page(request: Request, project_id: int):
         selected_count,
         curation_stats["required"],
     )
+    api_summary = db.api_usage_summary(user["id"], project_id=project_id)
+    scene_alerts = problem_scenes(scenes, config)
     operational_state = ops_status.project_state(
         project,
         scenes=scenes,
@@ -1174,6 +1224,8 @@ def project_page(request: Request, project_id: int):
             "edit_plan": local_edit_plan(project_id),
             "hyperframes_status": local_hyperframes_status(project_work) or {},
             "diagnostics": diagnostics_snapshot,
+            "api_usage": api_summary,
+            "problem_scenes": scene_alerts,
             "operational_state": operational_state,
             "jobs": jobs,
             "active_jobs": active_jobs,
@@ -1220,22 +1272,26 @@ def run_generate_map_job(
             raise RuntimeError("Roteiro vazio ou invalido.")
         check_job_canceled(job_id)
         # Tema global: ancora keywords e visao no assunto do video inteiro.
-        video_theme = groq_service.infer_video_theme(
-            base_scenes, groq_key, groq_model or groq_service.DEFAULT_MODEL
-        )
+        with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="generate_map"):
+            video_theme = groq_service.infer_video_theme(
+                base_scenes, groq_key, groq_model or groq_service.DEFAULT_MODEL,
+                language=config["script_language"],
+            )
         check_job_canceled(job_id)
         if video_theme:
             config["video_theme"] = video_theme
             db.set_project_config(project_id, config)
-        briefs = groq_service.generate_briefs(
-            base_scenes,
-            groq_key=groq_key,
-            style=config["visual_style"],
-            avatar_safe_area=config["avatar_safe_area"],
-            safe_ratio=config["avatar_safe_width_ratio"],
-            model=groq_model or groq_service.DEFAULT_MODEL,
-            video_theme=video_theme,
-        )
+        with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="generate_map"):
+            briefs = groq_service.generate_briefs(
+                base_scenes,
+                groq_key=groq_key,
+                style=config["visual_style"],
+                avatar_safe_area=config["avatar_safe_area"],
+                safe_ratio=config["avatar_safe_width_ratio"],
+                model=groq_model or groq_service.DEFAULT_MODEL,
+                video_theme=video_theme,
+                language=config["script_language"],
+            )
         check_job_canceled(job_id)
         brief_by_id = {b["scene_id"]: b for b in briefs}
         merged = []
@@ -1410,17 +1466,18 @@ def run_search_job(
             if not broll_map.get(scene["scene_id"], True):
                 continue
             db.update_job(job_id, status="running", message=f"Buscando {scene['scene_id']}")
-            results = asset_search.search_scene(
-                scene["keywords"],
-                pexels_key,
-                pixabay_key,
-                max_w=max_w,
-                per_keyword=config["per_keyword"],
-                allow_images=bool(config["image_fallback"]),
-                seen_urls=seen,
-                coverr_key=coverr_key,
-                extra_image_banks=True,
-            )
+            with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="search_assets"):
+                results = asset_search.search_scene(
+                    scene["keywords"],
+                    pexels_key,
+                    pixabay_key,
+                    max_w=max_w,
+                    per_keyword=config["per_keyword"],
+                    allow_images=bool(config["image_fallback"]),
+                    seen_urls=seen,
+                    coverr_key=coverr_key,
+                    extra_image_banks=True,
+                )
             check_job_canceled(job_id)
             added = db.add_assets(scene["id"], results)
             total_added += added
@@ -1502,17 +1559,18 @@ def run_part_search_job(
             if not broll_map.get(scene["scene_id"], True):
                 continue
             db.update_job(job_id, status="running", message=f"Buscando {scene['scene_id']}")
-            results = asset_search.search_scene(
-                scene["keywords"],
-                pexels_key,
-                pixabay_key,
-                max_w=max_w,
-                per_keyword=config["per_keyword"],
-                allow_images=bool(config["image_fallback"]),
-                seen_urls=seen,
-                coverr_key=coverr_key,
-                extra_image_banks=True,
-            )
+            with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="search_part"):
+                results = asset_search.search_scene(
+                    scene["keywords"],
+                    pexels_key,
+                    pixabay_key,
+                    max_w=max_w,
+                    per_keyword=config["per_keyword"],
+                    allow_images=bool(config["image_fallback"]),
+                    seen_urls=seen,
+                    coverr_key=coverr_key,
+                    extra_image_banks=True,
+                )
             check_job_canceled(job_id)
             added = db.add_assets(scene["id"], results)
             total_added += added
@@ -1525,10 +1583,11 @@ def run_part_search_job(
         # escolhe o melhor take de cada cena e a parte cai direto na revisao.
         check_job_canceled(job_id)
         db.update_job(job_id, status="running", message="Selecionando os melhores takes")
-        chosen = auto_select_for_project(
-            project_id, config, groq_key, groq_model, job_id=job_id,
-            review_round=int(project.get("review_round") or 0), part_idx=part_idx,
-        )
+        with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="search_part_auto_select"):
+            chosen = auto_select_for_project(
+                project_id, config, groq_key, groq_model, job_id=job_id,
+                review_round=int(project.get("review_round") or 0), part_idx=part_idx,
+            )
 
         check_job_canceled(job_id)
         db.update_part(project_id, part_idx, curation_status="reviewing")
@@ -1627,16 +1686,18 @@ def run_part_auto_select_vision_job(
             check_job_canceled(job_id)
             db.update_job(job_id, status="running", message=f"Analisando visao ({done}/{total})")
 
-        analyzed, provider_name = analyze_pending_vision(
-            project_id, user_id, groq_key, progress=progress,
-            nvidia_key=nvidia_key, part_idx=part_idx,
-        )
+        with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="part_vision"):
+            analyzed, provider_name = analyze_pending_vision(
+                project_id, user_id, groq_key, progress=progress,
+                nvidia_key=nvidia_key, part_idx=part_idx,
+            )
         check_job_canceled(job_id)
         db.update_job(job_id, status="running", message="Selecionando os melhores takes")
-        chosen = auto_select_for_project(
-            project_id, config, groq_key, groq_model, job_id=job_id,
-            review_round=int(project.get("review_round") or 0), part_idx=part_idx,
-        )
+        with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="part_vision_auto_select"):
+            chosen = auto_select_for_project(
+                project_id, config, groq_key, groq_model, job_id=job_id,
+                review_round=int(project.get("review_round") or 0), part_idx=part_idx,
+            )
         db.update_part(project_id, part_idx, curation_status="reviewing")
         db.set_project_status(project_id, "reviewing")
         db.finish_job(
@@ -1819,18 +1880,19 @@ def search_more(
     # busca manual: o usuario digitou uma keyword propria; senao usa as da cena
     custom = [k.strip() for k in str(keyword or "").split(",") if k.strip()][:5]
     search_keywords = custom or scene["keywords"]
-    results = asset_search.search_scene(
-        search_keywords,
-        user["pexels_key"],
-        user["pixabay_key"],
-        max_w=max_w,
-        per_keyword=config["per_keyword"] + 4,
-        allow_images=True,
-        seen_urls=existing,
-        media=media,
-        coverr_key=user.get("coverr_key", ""),
-        extra_image_banks=True,
-    )
+    with api_usage.context(user_id=user["id"], project_id=project["id"], operation="search_more"):
+        results = asset_search.search_scene(
+            search_keywords,
+            user["pexels_key"],
+            user["pixabay_key"],
+            max_w=max_w,
+            per_keyword=config["per_keyword"] + 4,
+            allow_images=True,
+            seen_urls=existing,
+            media=media,
+            coverr_key=user.get("coverr_key", ""),
+            extra_image_banks=True,
+        )
     added = db.add_assets(scene_db_id, results)
     if added:
         mark_project_dirty(project["id"])
@@ -1849,13 +1911,15 @@ def regen_keywords(request: Request, scene_db_id: int, csrf_token: Annotated[str
         raise HTTPException(404)
     ensure_project_not_busy(project)
     config = project_config(project)
-    kws = groq_service.regenerate_keywords(
-        scene.get("narration", ""),
-        scene.get("visual_goal", ""),
-        user["groq_key"],
-        config["visual_style"],
-        model=user.get("groq_model") or groq_service.DEFAULT_MODEL,
-    )
+    with api_usage.context(user_id=user["id"], project_id=project["id"], operation="regenerate_keywords"):
+        kws = groq_service.regenerate_keywords(
+            scene.get("narration", ""),
+            scene.get("visual_goal", ""),
+            user["groq_key"],
+            config["visual_style"],
+            model=user.get("groq_model") or groq_service.DEFAULT_MODEL,
+            language=config["script_language"],
+        )
     db.update_scene_keywords(scene_db_id, kws)
     mark_project_dirty(project["id"])
     return JSONResponse({"keywords": kws})
@@ -1978,10 +2042,11 @@ def run_auto_select_job(
         if not project:
             raise RuntimeError(MSG_PROJECT_NOT_FOUND)
         config = project_config(project)
-        chosen = auto_select_for_project(
-            project_id, config, groq_key, groq_model, job_id=job_id,
-            review_round=int(project.get("review_round") or 0),
-        )
+        with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="auto_select"):
+            chosen = auto_select_for_project(
+                project_id, config, groq_key, groq_model, job_id=job_id,
+                review_round=int(project.get("review_round") or 0),
+            )
         if chosen <= 0:
             raise RuntimeError("Nenhuma cena com candidatos pendentes para selecionar.")
         db.set_project_status(project_id, "reviewing")
@@ -2147,9 +2212,10 @@ def run_vision_job(
             check_job_canceled(job_id)
             db.update_job(job_id, status="running", message=f"Analisando assets ({done}/{total})")
 
-        analyzed, provider_name = analyze_pending_vision(
-            project_id, user_id, groq_key, progress=progress, nvidia_key=nvidia_key
-        )
+        with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="vision"):
+            analyzed, provider_name = analyze_pending_vision(
+                project_id, user_id, groq_key, progress=progress, nvidia_key=nvidia_key
+            )
         if analyzed == 0:
             db.finish_job(job_id, "Nada novo para analisar", {"analyzed": 0, "provider": provider_name})
             return
@@ -2249,17 +2315,28 @@ def review_page(request: Request, project_id: int, part: Optional[int] = None):
     )
 
 
-def _research_one_scene(scene: dict, label: str, job_id: int, keys: dict, config: dict, max_w: int, assets_by_scene: dict) -> int:
+def _research_one_scene(
+    scene: dict,
+    label: str,
+    job_id: int,
+    user_id: int,
+    keys: dict,
+    config: dict,
+    max_w: int,
+    assets_by_scene: dict,
+) -> int:
     """Re-busca de uma cena rejeitada: novas keywords + nova busca. Retorna adicionados."""
     db.update_job(job_id, status="running", message=label)
     # keywords novas para fugir dos resultados que o usuario rejeitou
-    kws = groq_service.regenerate_keywords(
-        scene.get("narration", ""),
-        scene.get("visual_goal", ""),
-        keys["groq"],
-        config["visual_style"],
-        model=keys["groq_model"] or groq_service.DEFAULT_MODEL,
-    )
+    with api_usage.context(user_id=user_id, project_id=scene.get("project_id"), job_id=job_id, operation="research_keywords"):
+        kws = groq_service.regenerate_keywords(
+            scene.get("narration", ""),
+            scene.get("visual_goal", ""),
+            keys["groq"],
+            config["visual_style"],
+            model=keys["groq_model"] or groq_service.DEFAULT_MODEL,
+            language=config["script_language"],
+        )
     check_job_canceled(job_id)
     if kws:
         roles = scoring.assign_roles(kws)
@@ -2267,17 +2344,18 @@ def _research_one_scene(scene: dict, label: str, job_id: int, keys: dict, config
         scene["keywords"] = kws
         scene["keyword_roles"] = roles
     existing = {a["download_url"] for a in assets_by_scene.get(scene["id"], [])}
-    results = asset_search.search_scene(
-        scene["keywords"],
-        keys["pexels"],
-        keys["pixabay"],
-        max_w=max_w,
-        per_keyword=config["per_keyword"] + 4,
-        allow_images=True,
-        seen_urls=existing,
-        coverr_key=keys["coverr"],
-        extra_image_banks=True,
-    )
+    with api_usage.context(user_id=user_id, project_id=scene.get("project_id"), job_id=job_id, operation="research_assets"):
+        results = asset_search.search_scene(
+            scene["keywords"],
+            keys["pexels"],
+            keys["pixabay"],
+            max_w=max_w,
+            per_keyword=config["per_keyword"] + 4,
+            allow_images=True,
+            seen_urls=existing,
+            coverr_key=keys["coverr"],
+            extra_image_banks=True,
+        )
     check_job_canceled(job_id)
     return db.add_assets(scene["id"], results)
 
@@ -2322,7 +2400,7 @@ def run_research_job(
         for i, scene in enumerate(targets, 1):
             check_job_canceled(job_id)
             label = f"Nova busca {i}/{len(targets)}: {scene['scene_id']}"
-            added_total += _research_one_scene(scene, label, job_id, keys, config, max_w, assets_by_scene)
+            added_total += _research_one_scene(scene, label, job_id, user_id, keys, config, max_w, assets_by_scene)
 
         # pontua os novos takes antes de escolher, para a selecao usar a visao.
         # No fluxo por-parte pulamos a visao em massa (e sob demanda e ficaria
@@ -2331,13 +2409,14 @@ def run_research_job(
             try:
                 check_job_canceled(job_id)
                 db.update_job(job_id, status="running", message="Analisando visao dos novos takes")
-                analyze_pending_vision(
-                    project_id,
-                    user_id,
-                    groq_key,
-                    progress=lambda done, total: check_job_canceled(job_id),
-                    nvidia_key=nvidia_key,
-                )
+                with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="research_vision"):
+                    analyze_pending_vision(
+                        project_id,
+                        user_id,
+                        groq_key,
+                        progress=lambda done, total: check_job_canceled(job_id),
+                        nvidia_key=nvidia_key,
+                    )
             except Exception as vexc:  # noqa: BLE001
                 if isinstance(vexc, JobCanceled):
                     raise
@@ -2345,10 +2424,11 @@ def run_research_job(
 
         check_job_canceled(job_id)
         db.update_job(job_id, status="running", message="Selecionando os melhores takes novos")
-        chosen = auto_select_for_project(
-            project_id, config, groq_key, groq_model, job_id=job_id,
-            review_round=new_round, part_idx=part_idx,
-        )
+        with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="research_auto_select"):
+            chosen = auto_select_for_project(
+                project_id, config, groq_key, groq_model, job_id=job_id,
+                review_round=new_round, part_idx=part_idx,
+            )
         db.set_project_status(project_id, "reviewing")
         db.finish_job(
             job_id,
@@ -3003,6 +3083,7 @@ def send_to_kaggle(
         run_kaggle_send_job,
         job_id,
         project_id,
+        user["id"],
         project["name"],
         user["kaggle_username"],
         user["kaggle_token"],
@@ -3039,7 +3120,16 @@ def _poll_part_render(job_id: int, k_slug: str, username: str, token: str) -> tu
     return "timeout", ""
 
 
-def _upload_and_render_part(job_id: int, project_id: int, project: dict, part: dict, total: int, username: str, token: str) -> None:
+def _upload_and_render_part(
+    job_id: int,
+    project_id: int,
+    user_id: int,
+    project: dict,
+    part: dict,
+    total: int,
+    username: str,
+    token: str,
+) -> None:
     """Sobe o ZIP da parte, dispara o kernel, aguarda e baixa o MP4. Raise em falha."""
     idx = part["part_idx"]
     label = f"parte {idx}/{total}"
@@ -3050,17 +3140,21 @@ def _upload_and_render_part(job_id: int, project_id: int, project: dict, part: d
     db.update_part(project_id, idx, status="uploading", error="")
     part_name = f"{project['name']} pt{idx:02d}"
     check_job_canceled(job_id)
-    ds_slug = kaggle_service.upload_dataset(zip_path, part_name, username, token, project_id=project_id)
+    with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="kaggle_part"):
+        ds_slug = kaggle_service.upload_dataset(zip_path, part_name, username, token, project_id=project_id)
     check_job_canceled(job_id)
-    k_slug, _push = kaggle_service.push_kernel(ds_slug, part_name, username, token, project_id=project_id)
+    with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="kaggle_part"):
+        k_slug, _push = kaggle_service.push_kernel(ds_slug, part_name, username, token, project_id=project_id)
     db.update_part(project_id, idx, dataset_slug=ds_slug, kernel_slug=k_slug, status="running")
     check_job_canceled(job_id)
 
     db.update_job(job_id, status="running", message=f"Renderizando {label} no Kaggle")
-    final_status, error_detail = _poll_part_render(job_id, k_slug, username, token)
+    with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="kaggle_part_poll"):
+        final_status, error_detail = _poll_part_render(job_id, k_slug, username, token)
     if final_status == "complete":
         out_dir = part_dir(project_id, idx) / "kaggle_output"
-        video = kaggle_service.pull_output_video(k_slug, username, token, out_dir)
+        with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="kaggle_part_pull"):
+            video = kaggle_service.pull_output_video(k_slug, username, token, out_dir)
         if not video:
             raise RuntimeError("Render concluiu mas o MP4 nao foi encontrado no output.")
         db.update_part(project_id, idx, status="done", video_path=str(video), error="")
@@ -3092,7 +3186,7 @@ def run_kaggle_parts_job(
             check_job_canceled(job_id)
             idx = part["part_idx"]
             try:
-                _upload_and_render_part(job_id, project_id, project, part, total, username, token)
+                _upload_and_render_part(job_id, project_id, user_id, project, part, total, username, token)
                 ok += 1
             except JobCanceled:
                 db.update_part(project_id, idx, status="error", error="render interrompido pelo usuario")
@@ -3334,9 +3428,10 @@ def project_diagnostics_json(request: Request, project_id: int, refresh: str = "
     scenes = db.list_scenes(project_id)
     assets_by_scene = db.list_assets_for_project(project_id)
     for scene in scenes:
-        scene_assets = assets_by_scene.get(scene["id"], [])
+        scene_assets = annotate_assets_with_vision(scene, assets_by_scene.get(scene["id"], []), project_config(project))
         scene["assets"] = scene_assets
         scene["selected"] = next((a for a in scene_assets if a["state"] in CHOSEN_ASSET_STATES), None)
+        scene["low_relevance_count"] = sum(1 for a in scene_assets if a.get("low_relevance"))
     curation_stats = annotate_broll_requirements(scenes, project_config(project))
     broll_required = {sid for sid, on in scene_broll_flags(scenes, project_config(project)).items() if on}
     scene_code_by_id = {scene["id"]: scene["scene_id"] for scene in scenes}
@@ -3368,6 +3463,8 @@ def project_diagnostics_json(request: Request, project_id: int, refresh: str = "
         {
             "project": {"id": project_id, "name": project["name"], "status": project["status"]},
             "diagnostics": snapshot,
+            "api_usage": db.api_usage_summary(user["id"], project_id=project_id),
+            "problem_scenes": problem_scenes(scenes, project_config(project)),
             "operational_state": ops_status.project_state(
                 project,
                 scenes=scenes,
@@ -3444,12 +3541,13 @@ def _enrich_complete_kaggle_status(info: dict, project_id: int, k_slug: str, use
     project_work = project_work_dir(project_id)
     outputs = local_output_videos(project_work)
     if not outputs["base"] and not outputs["master"]:
-        kaggle_service.pull_output_video(
-            k_slug,
-            user["kaggle_username"],
-            user["kaggle_token"],
-            project_work / "kaggle_output",
-        )
+        with api_usage.context(user_id=user["id"], project_id=project_id, operation="kaggle_pull_output"):
+            kaggle_service.pull_output_video(
+                k_slug,
+                user["kaggle_username"],
+                user["kaggle_token"],
+                project_work / "kaggle_output",
+            )
         outputs = local_output_videos(project_work)
     if outputs["master"]:
         info["master_video_url"] = f"/projects/{project_id}/download-master-video"
@@ -3479,7 +3577,8 @@ def kaggle_status(request: Request, project_id: int):
     if not user.get("kaggle_username") or not user.get("kaggle_token"):
         return JSONResponse({"status": "error", "error": "Credenciais Kaggle nao configuradas em /settings."})
     try:
-        info = kaggle_service.get_status(k_slug, user["kaggle_username"], user["kaggle_token"])
+        with api_usage.context(user_id=user["id"], project_id=project_id, operation="kaggle_status"):
+            info = kaggle_service.get_status(k_slug, user["kaggle_username"], user["kaggle_token"])
         if info.get("status") == "complete":
             _enrich_complete_kaggle_status(info, project_id, k_slug, user)
         db.update_kaggle_status(project_id, info["status"])

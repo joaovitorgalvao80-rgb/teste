@@ -152,6 +152,59 @@ class DeployContractsTest(unittest.TestCase):
         self.assertIn("Parar", resp.text)
         self.assertIn("atualizado", resp.text)
 
+    def test_project_page_shows_api_usage_and_problem_scenes(self) -> None:
+        with TestClient(webapp.app) as client:
+            user_id = db.create_user("usage", "password123")
+            project_id = db.create_project(
+                user_id,
+                "usage project",
+                "script",
+                {"image_fallback": True, "resolution": "1920x1080"},
+            )
+            db.replace_scenes(
+                project_id,
+                [
+                    {"scene_id": "scene_001", "idx": 1, "start_time": 0, "end_time": 4, "duration": 4, "narration": "Oi, eu sou o apresentador."},
+                    {"scene_id": "scene_002", "idx": 2, "start_time": 4, "end_time": 8, "duration": 4, "narration": "Mostre larvas de mosquito na agua.", "visual_goal": "mosquito larvae in water", "keywords": ["mosquito larvae"]},
+                    {"scene_id": "scene_003", "idx": 3, "start_time": 8, "end_time": 12, "duration": 4, "narration": "Obrigado por assistir."},
+                ],
+            )
+            scene = db.list_scenes(project_id)[1]
+            db.add_assets(
+                scene["id"],
+                [{
+                    "source": "pexels",
+                    "asset_type": "video",
+                    "download_url": "https://example.com/chicken.mp4",
+                    "preview_url": "https://example.com/chicken.jpg",
+                    "width": 640,
+                    "height": 360,
+                    "duration": 1,
+                    "keyword": "chicken eggs cooking",
+                }],
+            )
+            asset = db.list_assets(scene["id"])[0]
+            db.set_asset_state(asset["id"], "selected")
+            db.record_api_usage(user_id, project_id, None, "pexels", "video_search", status_code=200, ok=True, latency_ms=120)
+            db.record_api_usage(user_id, project_id, None, "groq", "generate_briefs", status_code=429, ok=False, latency_ms=600)
+            client.post(
+                "/login",
+                data={"username": "usage", "password": "password123"},
+                follow_redirects=False,
+            )
+            page = client.get(f"/projects/{project_id}")
+            diag = client.get(f"/projects/{project_id}/diagnostics.json")
+
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Consumo de API", page.text)
+        self.assertIn("Cenas para revisar", page.text)
+        self.assertIn("scene_002", page.text)
+        self.assertIn("pexels", page.text)
+        payload = diag.json()
+        self.assertEqual(payload["api_usage"]["total_calls"], 2)
+        self.assertEqual(payload["api_usage"]["failed_calls"], 1)
+        self.assertEqual(payload["problem_scenes"][0]["scene_id"], "scene_002")
+
     def test_settings_integration_status_is_masked(self) -> None:
         with TestClient(webapp.app) as client:
             user_id = db.create_user("masked", "password123")
@@ -175,6 +228,7 @@ class DeployContractsTest(unittest.TestCase):
 
         self.assertEqual(page.status_code, 200)
         self.assertIn("Status das integracoes", page.text)
+        self.assertIn("Consumo de API", page.text)
         self.assertIn("Pexels: configurado", page.text)
         self.assertNotIn("pexels-secret-value", page.text)
         self.assertEqual(status.status_code, 200)

@@ -17,7 +17,7 @@ from typing import Optional
 
 import requests
 
-from . import scoring
+from . import api_usage, scoring
 from .groq_service import GROQ_URL, DEFAULT_MODEL, resolve_model
 
 logger = logging.getLogger("nwrch.autoselect")
@@ -173,6 +173,9 @@ def rank_with_groq(
     }
     code_to_db = {s["scene_id"]: s["id"] for s, _ in scenes_with_candidates}
     try:
+        import time
+
+        start = time.monotonic()
         resp = requests.post(
             GROQ_URL,
             headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
@@ -183,6 +186,13 @@ def rank_with_groq(
                 "response_format": {"type": "json_object"},
             },
             timeout=120,
+        )
+        api_usage.record(
+            "groq",
+            "auto_select_rank",
+            status_code=resp.status_code,
+            ok=resp.status_code < 400,
+            latency_ms=api_usage.elapsed_ms(start),
         )
         if resp.status_code >= 400:
             logger.warning("Groq rank HTTP %s: %s", resp.status_code, resp.text[:300])

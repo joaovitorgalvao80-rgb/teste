@@ -24,6 +24,8 @@ import io
 from pathlib import Path
 from typing import Iterable
 
+from . import api_usage
+
 ROOT = Path(__file__).resolve().parent.parent
 MONTADOR_FILENAME = "montador.py"
 BASE_VIDEO_NAME = "video_broll_base.mp4"
@@ -177,7 +179,26 @@ def _run(args: list[str], username: str, token: str, **kwargs) -> subprocess.Com
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
     cmd = [sys.executable, "-m", "kaggle"] + args
-    result = subprocess.run(cmd, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", **kwargs)
+    start = time.monotonic()
+    operation = " ".join(args[:2]) if args else "cli"
+    try:
+        result = subprocess.run(cmd, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", **kwargs)
+        api_usage.record(
+            "kaggle",
+            operation,
+            status_code=result.returncode,
+            ok=result.returncode == 0,
+            latency_ms=api_usage.elapsed_ms(start),
+        )
+    except Exception as exc:
+        api_usage.record(
+            "kaggle",
+            operation,
+            ok=False,
+            latency_ms=api_usage.elapsed_ms(start),
+            detail=type(exc).__name__,
+        )
+        raise
     if result.returncode != 0:
         out = (result.stderr or "") + (result.stdout or "")
         raise RuntimeError((out or "erro desconhecido")[-800:])

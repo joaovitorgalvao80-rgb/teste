@@ -17,6 +17,8 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import requests
 
+from . import api_usage
+
 logger = logging.getLogger("nwrch.assets")
 
 PEXELS_VIDEO_URL = "https://api.pexels.com/v1/videos/search"
@@ -51,7 +53,30 @@ _MAX_RETRIES = 2
 _RETRY_BACKOFF = (1.5, 3.0)
 
 
-def _pexels_get(url: str, *, headers: dict, params: dict):
+def _tracked_get(provider: str, operation: str, url: str, **kwargs):
+    start = time.monotonic()
+    try:
+        resp = requests.get(url, **kwargs)
+        api_usage.record(
+            provider,
+            operation,
+            status_code=resp.status_code,
+            ok=resp.status_code < 400,
+            latency_ms=api_usage.elapsed_ms(start),
+        )
+        return resp
+    except Exception as exc:
+        api_usage.record(
+            provider,
+            operation,
+            ok=False,
+            latency_ms=api_usage.elapsed_ms(start),
+            detail=type(exc).__name__,
+        )
+        raise
+
+
+def _pexels_get(url: str, *, headers: dict, params: dict, operation: str = "request"):
     """GET a Pexels serializado, espacado e com retry/backoff em 401/429."""
     resp = None
     for attempt in range(_MAX_RETRIES + 1):
@@ -59,7 +84,7 @@ def _pexels_get(url: str, *, headers: dict, params: dict):
             wait = _PEXELS_MIN_INTERVAL - (time.monotonic() - _PEXELS_LAST[0])
             if wait > 0:
                 time.sleep(wait)
-            resp = requests.get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT)
+            resp = _tracked_get("pexels", operation, url, headers=headers, params=params, timeout=REQUEST_TIMEOUT)
             _PEXELS_LAST[0] = time.monotonic()
         if resp.status_code not in _RETRY_STATUSES:
             return resp
@@ -107,6 +132,7 @@ def search_pexels_videos(keyword: str, key: str, max_w: int, per_page: int = 8) 
             PEXELS_VIDEO_URL,
             headers={"Authorization": key},
             params={"query": keyword, "orientation": "landscape", "per_page": per_page},
+            operation="video_search",
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Pexels video erro: %s", exc)
@@ -144,7 +170,9 @@ def search_pixabay_videos(keyword: str, key: str, max_w: int, per_page: int = 8)
         return []
     per_page = _bounded_per_page(per_page, default=8, minimum=3)
     try:
-        resp = requests.get(
+        resp = _tracked_get(
+            "pixabay",
+            "video_search",
             PIXABAY_VIDEO_URL,
             params={"key": key, "q": keyword, "video_type": "film", "per_page": per_page, "safesearch": "true"},
             timeout=REQUEST_TIMEOUT,
@@ -194,6 +222,7 @@ def search_pexels_images(keyword: str, key: str, per_page: int = 6) -> list[dict
             PEXELS_IMAGE_URL,
             headers={"Authorization": key},
             params={"query": keyword, "orientation": "landscape", "per_page": per_page},
+            operation="image_search",
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Pexels image erro: %s", exc)
@@ -227,7 +256,9 @@ def search_pixabay_images(keyword: str, key: str, per_page: int = 6) -> list[dic
         return []
     per_page = _bounded_per_page(per_page, default=6, minimum=3)
     try:
-        resp = requests.get(
+        resp = _tracked_get(
+            "pixabay",
+            "image_search",
             PIXABAY_IMAGE_URL,
             params={"key": key, "q": keyword, "image_type": "photo", "orientation": "horizontal",
                     "per_page": per_page, "safesearch": "true"},
@@ -265,7 +296,9 @@ def search_coverr_videos(keyword: str, key: str, per_page: int = 8) -> list[dict
     per_page = _bounded_per_page(per_page)
     try:
         with _COVERR_GATE:
-            resp = requests.get(
+            resp = _tracked_get(
+                "coverr",
+                "video_search",
                 COVERR_URL,
                 params={"query": keyword, "page_size": per_page, "api_key": key},
                 timeout=REQUEST_TIMEOUT,
@@ -308,7 +341,9 @@ def search_openverse_images(keyword: str, per_page: int = 5) -> list[dict]:
     (uso anonimo, com rate limit). Fallback dirigido para cenas com pool fraco."""
     per_page = _bounded_per_page(per_page, default=5, minimum=1)
     try:
-        resp = requests.get(
+        resp = _tracked_get(
+            "openverse",
+            "image_search",
             OPENVERSE_URL,
             params={"q": keyword, "page_size": per_page, "aspect_ratio": "wide",
                     "mature": "false", "license_type": "all"},
@@ -379,7 +414,9 @@ def search_wikimedia_images(keyword: str, max_w: int, per_page: int = 5) -> list
     per_page = _bounded_per_page(per_page, default=5, minimum=1)
     iiurlwidth = max(640, min(int(max_w or 1280), 1920))
     try:
-        resp = requests.get(
+        resp = _tracked_get(
+            "wikimedia",
+            "image_search",
             WIKIMEDIA_URL,
             params={
                 "action": "query", "format": "json", "generator": "search",

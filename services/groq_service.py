@@ -15,7 +15,8 @@ from typing import Optional
 
 import requests
 
-from . import scoring
+from . import api_usage, scoring
+from .project_config import DEFAULT_LANGUAGE, language_name, language_whisper_code
 from .script_parser import remove_accents
 
 logger = logging.getLogger("nwrch.groq")
@@ -33,6 +34,31 @@ GROQ_MODELS = [
 ]
 # Modelos removidos da API da Groq; redireciona para o padrao em vez de falhar.
 DECOMMISSIONED_MODELS = {"mixtral-8x7b-32768", "gemma2-9b-it", "llama3-70b-8192", "llama3-8b-8192"}
+
+
+def _tracked_post(operation: str, *args, **kwargs):
+    import time
+
+    start = time.monotonic()
+    try:
+        resp = requests.post(*args, **kwargs)
+        api_usage.record(
+            "groq",
+            operation,
+            status_code=resp.status_code,
+            ok=resp.status_code < 400,
+            latency_ms=api_usage.elapsed_ms(start),
+        )
+        return resp
+    except Exception as exc:
+        api_usage.record(
+            "groq",
+            operation,
+            ok=False,
+            latency_ms=api_usage.elapsed_ms(start),
+            detail=type(exc).__name__,
+        )
+        raise
 
 
 def resolve_model(model: str) -> str:
@@ -85,7 +111,9 @@ def fallback_scene_brief(scene: dict, avatar_safe_area: str) -> dict:
     }
 
 
-def infer_video_theme(scenes: list[dict], groq_key: str, model: str = DEFAULT_MODEL) -> str:
+def infer_video_theme(
+    scenes: list[dict], groq_key: str, model: str = DEFAULT_MODEL, language: str = DEFAULT_LANGUAGE
+) -> str:
     """Resume o ASSUNTO do vídeo inteiro numa frase curta em inglês.
 
     Esse tema vira a âncora de contexto: tanto a geração de keywords quanto a IA
@@ -98,7 +126,8 @@ def infer_video_theme(scenes: list[dict], groq_key: str, model: str = DEFAULT_MO
         return ""
     if groq_key:
         try:
-            resp = requests.post(
+            resp = _tracked_post(
+                "infer_theme",
                 GROQ_URL,
                 headers={"Authorization": f"Bearer {groq_key}", "Content-Type": CONTENT_TYPE_JSON},
                 json={
@@ -106,7 +135,7 @@ def infer_video_theme(scenes: list[dict], groq_key: str, model: str = DEFAULT_MO
                     "messages": [{
                         "role": "user",
                         "content": (
-                            "Read this Brazilian Portuguese video script and state its MAIN SUBJECT "
+                            f"Read this {language_name(language)} video script and state its MAIN SUBJECT "
                             "in ONE short English sentence (max 14 words). Be concrete and specific "
                             "(the actual topic, place, domain), not generic.\n"
                             'Return JSON only: {"theme": "..."}\n\nSCRIPT:\n' + narration[:6000]
@@ -135,8 +164,14 @@ def infer_video_theme(scenes: list[dict], groq_key: str, model: str = DEFAULT_MO
 
 
 def _build_prompt(
-    scenes: list[dict], style: str, avatar_safe_area: str, safe_ratio: float, video_theme: str = ""
+    scenes: list[dict],
+    style: str,
+    avatar_safe_area: str,
+    safe_ratio: float,
+    video_theme: str = "",
+    language: str = DEFAULT_LANGUAGE,
 ) -> str:
+    lang_name = language_name(language)
     blocks = []
     for s in scenes:
         blocks.append(
@@ -149,7 +184,7 @@ def _build_prompt(
         "(e.g. if the video is about mosquito eggs, NEVER search generic 'eggs' that returns chicken eggs).\n"
         if video_theme else ""
     )
-    return f"""You are a senior YouTube editor planning a 100% B-roll video from a Brazilian Portuguese script.
+    return f"""You are a senior YouTube editor planning a 100% B-roll video from a {lang_name} script.
 {theme_line}
 For EACH scene below, produce concrete visual search intent for Pexels/Pixabay.
 
@@ -163,7 +198,7 @@ Return ONE JSON object only, shape:
       "must_show": ["concrete element", "concrete element"],
       "must_not_show": ["thing to reject", "thing to reject"],
       "asset_type": "video",
-      "overlay_text": "PT-BR uppercase, max 5 words, may be empty"
+      "overlay_text": "{lang_name} uppercase, max 5 words, may be empty"
     }}
   ]
 }}
@@ -200,6 +235,7 @@ def _fetch_briefs_from_groq(
     safe_ratio: float,
     model: str,
     video_theme: str,
+    language: str = DEFAULT_LANGUAGE,
 ) -> dict[str, dict]:
     """Chama a Groq em lotes e devolve {scene_id: brief_bruto} para as cenas cobertas."""
     by_id: dict[str, dict] = {}
@@ -207,13 +243,14 @@ def _fetch_briefs_from_groq(
     for start in range(0, len(scenes), BRIEF_BATCH_SIZE):
         chunk = scenes[start:start + BRIEF_BATCH_SIZE]
         try:
-            resp = requests.post(
+            resp = _tracked_post(
+                "generate_briefs",
                 GROQ_URL,
                 headers={"Authorization": f"Bearer {groq_key}", "Content-Type": CONTENT_TYPE_JSON},
                 json={
                     "model": resolve_model(model),
                     "messages": [
-                        {"role": "user", "content": _build_prompt(chunk, style, avatar_safe_area, safe_ratio, video_theme)}
+                        {"role": "user", "content": _build_prompt(chunk, style, avatar_safe_area, safe_ratio, video_theme, language)}
                     ],
                     "temperature": 0.3,
                     "response_format": {"type": "json_object"},
@@ -259,6 +296,7 @@ def generate_briefs(
     safe_ratio: float = 0.30,
     model: str = DEFAULT_MODEL,
     video_theme: str = "",
+    language: str = DEFAULT_LANGUAGE,
 ) -> list[dict]:
     """Devolve uma lista de briefs (1 por cena), sempre completa.
 
@@ -267,7 +305,7 @@ def generate_briefs(
     no assunto do video inteiro (evita drift de tema).
     """
     by_id = (
-        _fetch_briefs_from_groq(scenes, groq_key, style, avatar_safe_area, safe_ratio, model, video_theme)
+        _fetch_briefs_from_groq(scenes, groq_key, style, avatar_safe_area, safe_ratio, model, video_theme, language)
         if groq_key else {}
     )
 
@@ -285,7 +323,9 @@ def _fmt_stamp(seconds: float) -> str:
     return f"{m:02d}:{s:04.1f}"
 
 
-def transcribe_audio(audio_bytes: bytes, filename: str, groq_key: str) -> str:
+def transcribe_audio(
+    audio_bytes: bytes, filename: str, groq_key: str, language: str = DEFAULT_LANGUAGE
+) -> str:
     """Transcreve áudio via Groq Whisper e retorna o roteiro no formato de timestamps.
 
     Retorna string pronta pra colar no campo de roteiro:
@@ -295,7 +335,8 @@ def transcribe_audio(audio_bytes: bytes, filename: str, groq_key: str) -> str:
     if not groq_key:
         raise ValueError("Chave Groq necessária para transcrição de áudio.")
 
-    resp = requests.post(
+    resp = _tracked_post(
+        "transcribe_audio",
         GROQ_TRANSCRIBE_URL,
         headers={"Authorization": f"Bearer {groq_key}"},
         files={"file": (filename, audio_bytes, "application/octet-stream")},
@@ -303,7 +344,7 @@ def transcribe_audio(audio_bytes: bytes, filename: str, groq_key: str) -> str:
             "model": "whisper-large-v3-turbo",
             "response_format": "verbose_json",
             "timestamp_granularities[]": "segment",
-            "language": "pt",
+            "language": language_whisper_code(language),
         },
         timeout=300,
     )
@@ -330,6 +371,7 @@ def regenerate_keywords(
     groq_key: str,
     style: str,
     model: str = DEFAULT_MODEL,
+    language: str = DEFAULT_LANGUAGE,
 ) -> list[str]:
     """Gera um novo conjunto de keywords para uma unica cena (botao 'gerar novas keywords')."""
     if groq_key:
@@ -342,11 +384,12 @@ def regenerate_keywords(
                 "(background/business/concept). If the narration is metaphorical, search the "
                 "real underlying meaning, not the literal words.\n"
                 f"Visual style: {style}.\n"
-                f"Narration (pt-BR): {narration}\n"
+                f"Narration ({language_name(language)}): {narration}\n"
                 f"Visual goal: {visual_goal}\n"
                 'Return JSON only: {"keywords": ["...", "...", "..."]}'
             )
-            resp = requests.post(
+            resp = _tracked_post(
+                "regenerate_keywords",
                 GROQ_URL,
                 headers={"Authorization": f"Bearer {groq_key}", "Content-Type": CONTENT_TYPE_JSON},
                 json={

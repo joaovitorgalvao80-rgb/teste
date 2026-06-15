@@ -16,7 +16,7 @@ DEFAULT_CONFIG = {
     "asset_type_priority": "video",
     "image_fallback": False,
     "visual_style": "realistic editorial YouTube B-roll, concrete scenes, rural Brazil when relevant",
-    "script_language": "pt-BR",
+    "script_language": "pt",
     "keyword_language": "english",
     "scene_duration": 4.0,
     "per_keyword": 8,
@@ -24,6 +24,47 @@ DEFAULT_CONFIG = {
     "long_mode": False,
     "part_target_seconds": 150,
 }
+
+# Idiomas suportados para roteiro/transcrição/overlay. Fonte única de verdade.
+#   whisper: código ISO 639-1 enviado ao Whisper na transcrição.
+#   name:    nome em inglês usado nos prompts da Groq (descrição do roteiro
+#            e instrução de idioma do overlay_text).
+#   label:   rótulo exibido no seletor da UI.
+# As keywords de busca (Pexels/Pixabay) permanecem SEMPRE em inglês,
+# independentemente do idioma — melhor cobertura de resultados.
+LANGUAGES = {
+    "pt": {"whisper": "pt", "name": "Brazilian Portuguese", "label": "Português (BR)"},
+    "en": {"whisper": "en", "name": "English", "label": "English"},
+    "es": {"whisper": "es", "name": "Spanish", "label": "Español"},
+    "fr": {"whisper": "fr", "name": "French", "label": "Français"},
+    "pl": {"whisper": "pl", "name": "Polish", "label": "Polski"},
+    "de": {"whisper": "de", "name": "German", "label": "Deutsch"},
+    "it": {"whisper": "it", "name": "Italian", "label": "Italiano"},
+}
+DEFAULT_LANGUAGE = "pt"
+
+
+def normalize_language(value: object) -> str:
+    """Normaliza um código de idioma para uma chave válida de LANGUAGES.
+
+    Aceita o legado "pt-BR" e variantes com região (ex.: "en-US") reduzindo ao
+    código base; cai em DEFAULT_LANGUAGE para qualquer valor desconhecido.
+    """
+    code = str(value or "").strip().lower().replace("_", "-")
+    if code in LANGUAGES:
+        return code
+    base = code.split("-", 1)[0]
+    return base if base in LANGUAGES else DEFAULT_LANGUAGE
+
+
+def language_whisper_code(value: object) -> str:
+    return LANGUAGES[normalize_language(value)]["whisper"]
+
+
+def language_name(value: object) -> str:
+    """Nome em inglês do idioma, para usar nos prompts da Groq."""
+    return LANGUAGES[normalize_language(value)]["name"]
+
 
 ALLOWED_RESOLUTIONS = {"1920x1080", "1280x720"}
 ALLOWED_SAFE_AREAS = {"left", "right"}
@@ -88,6 +129,7 @@ def normalize_project_config(raw_config: Optional[dict] = None) -> dict:
     )
     visual_style = str(cfg.get("visual_style") or "").strip()
     cfg["visual_style"] = visual_style or DEFAULT_CONFIG["visual_style"]
+    cfg["script_language"] = normalize_language(cfg.get("script_language"))
     return cfg
 
 

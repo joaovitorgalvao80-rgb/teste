@@ -26,7 +26,7 @@ from typing import Optional, Protocol
 
 import requests
 
-from . import scoring
+from . import api_usage, scoring
 
 logger = logging.getLogger("nwrch.vision")
 
@@ -262,7 +262,15 @@ class LLMVisionProvider:
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         resp = None
         for attempt in range(_VISION_MAX_RETRIES + 1):
+            start = time.monotonic()
             resp = requests.post(self.url, headers=headers, json=payload, timeout=self.timeout)
+            api_usage.record(
+                self.name,
+                "vision_analyze",
+                status_code=resp.status_code,
+                ok=resp.status_code < 400,
+                latency_ms=api_usage.elapsed_ms(start),
+            )
             if resp.status_code not in _VISION_RETRY_STATUSES:
                 break
             if attempt < _VISION_MAX_RETRIES:
@@ -398,7 +406,17 @@ class NvidiaVisionProvider(LLMVisionProvider):
                          url=self.NVIDIA_URL, timeout=timeout, name=self.name)
 
     def _analyze_remote(self, asset: dict, scene: dict, thumb: str) -> VisionAnalysis:
-        img = requests.get(thumb, timeout=self.timeout).content
+        start = time.monotonic()
+        img_resp = requests.get(thumb, timeout=self.timeout)
+        api_usage.record(
+            "asset-thumbnail",
+            "nvidia_thumbnail_fetch",
+            status_code=img_resp.status_code,
+            ok=img_resp.status_code < 400,
+            latency_ms=api_usage.elapsed_ms(start),
+        )
+        img_resp.raise_for_status()
+        img = img_resp.content
         if not img or len(img) > self.MAX_IMG_BYTES:
             raise RuntimeError(f"thumbnail invalida/grande para NVIDIA ({len(img)} bytes)")
         b64 = base64.b64encode(img).decode()

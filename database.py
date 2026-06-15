@@ -211,6 +211,24 @@ CREATE TABLE IF NOT EXISTS jobs (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS api_usage (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER,
+    project_id  INTEGER,
+    job_id      INTEGER,
+    provider    TEXT NOT NULL,
+    operation   TEXT DEFAULT '',
+    status_code INTEGER DEFAULT 0,
+    ok          INTEGER DEFAULT 1,
+    units       INTEGER DEFAULT 1,
+    latency_ms  REAL DEFAULT 0,
+    detail      TEXT DEFAULT '',
+    created_at  REAL NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE SET NULL
+);
 """
 
 
@@ -581,6 +599,101 @@ def list_project_jobs(project_id: int, user_id: int, limit: int = 8) -> list[dic
             (project_id, user_id, limit),
         ).fetchall()
         return [_job_to_dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+# ----------------------------------------------------------------------------
+# API usage telemetry
+# ----------------------------------------------------------------------------
+def record_api_usage(
+    user_id: Optional[int],
+    project_id: Optional[int],
+    job_id: Optional[int],
+    provider: str,
+    operation: str = "",
+    status_code: Optional[int] = None,
+    ok: bool = True,
+    units: int = 1,
+    latency_ms: float = 0,
+    detail: str = "",
+) -> None:
+    provider = str(provider or "").strip().lower()
+    if not provider or not user_id:
+        return
+    conn = _connect()
+    try:
+        conn.execute(
+            """INSERT INTO api_usage
+               (user_id, project_id, job_id, provider, operation, status_code,
+                ok, units, latency_ms, detail, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                user_id,
+                project_id,
+                job_id,
+                provider[:40],
+                str(operation or "")[:80],
+                int(status_code or 0),
+                1 if ok else 0,
+                max(1, int(units or 1)),
+                float(latency_ms or 0),
+                str(detail or "")[:240],
+                time.time(),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def api_usage_summary(user_id: int, project_id: Optional[int] = None, limit: int = 8) -> dict:
+    where = ["user_id = ?"]
+    params: list[Any] = [user_id]
+    if project_id is not None:
+        where.append("project_id = ?")
+        params.append(project_id)
+    clause = " AND ".join(where)
+    conn = _connect()
+    try:
+        totals = conn.execute(
+            f"""SELECT COUNT(*) AS calls,
+                       COALESCE(SUM(CASE WHEN ok = 0 THEN 1 ELSE 0 END), 0) AS failures,
+                       COALESCE(SUM(units), 0) AS units,
+                       COALESCE(AVG(NULLIF(latency_ms, 0)), 0) AS avg_latency
+                FROM api_usage
+                WHERE {clause}""",
+            params,
+        ).fetchone()
+        providers = conn.execute(
+            f"""SELECT provider,
+                       COUNT(*) AS calls,
+                       COALESCE(SUM(CASE WHEN ok = 0 THEN 1 ELSE 0 END), 0) AS failures,
+                       COALESCE(SUM(units), 0) AS units,
+                       COALESCE(AVG(NULLIF(latency_ms, 0)), 0) AS avg_latency
+                FROM api_usage
+                WHERE {clause}
+                GROUP BY provider
+                ORDER BY calls DESC, provider
+                LIMIT ?""",
+            (*params, limit),
+        ).fetchall()
+        recent = conn.execute(
+            f"""SELECT provider, operation, status_code, ok, units, latency_ms, detail, created_at
+                FROM api_usage
+                WHERE {clause}
+                ORDER BY created_at DESC
+                LIMIT ?""",
+            (*params, limit),
+        ).fetchall()
+        return {
+            "total_calls": int(totals["calls"] or 0),
+            "failed_calls": int(totals["failures"] or 0),
+            "total_units": int(totals["units"] or 0),
+            "avg_latency_ms": round(float(totals["avg_latency"] or 0), 1),
+            "providers": [dict(row) for row in providers],
+            "recent": [dict(row) for row in recent],
+        }
     finally:
         conn.close()
 
