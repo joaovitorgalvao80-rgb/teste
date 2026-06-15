@@ -164,7 +164,7 @@ function ensurePuterLoaded() {
   if (_puterLoadPromise) return _puterLoadPromise;
   _puterLoadPromise = new Promise((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = "https://js.puter.com/v2/"; // NOSONAR: SDK remoto sem hash SRI estavel publicado.
+    script.src = "https://js.puter.com/v2/"; // NOSONAR
     script.async = true;
     script.onload = () => resolve();
     script.onerror = () => reject(new Error("Puter.js não carregou"));

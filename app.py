@@ -967,6 +967,12 @@ _ALLOWED_UPLOAD_EXTS = _VIDEO_EXTS | _AUDIO_EXTS
 _GROQ_MAX_BYTES = 24 * 1024 * 1024  # 25 MB hard limit da API; 24 MB de margem
 
 
+def _write_temp_upload(raw: bytes, tmp_dir: str) -> Path:
+    with tempfile.NamedTemporaryFile(prefix="upload_", suffix=".bin", dir=tmp_dir, delete=False) as src_file:
+        src_file.write(raw)
+        return Path(src_file.name)
+
+
 def _extract_audio_bytes(raw: bytes, filename: str) -> tuple[bytes, str]:
     """Se for vídeo ou arquivo grande, extrai/comprime para MP3 mono 64k via FFmpeg."""
     raw_ext = Path(filename).suffix.lower()
@@ -980,8 +986,7 @@ def _extract_audio_bytes(raw: bytes, filename: str) -> tuple[bytes, str]:
             "Instale o FFmpeg ou envie um arquivo de áudio (mp3/wav) direto.",
         )
     with tempfile.TemporaryDirectory() as tmp:
-        src = Path(tmp) / "input.upload"
-        src.write_bytes(raw)
+        src = _write_temp_upload(raw, tmp)
         out = Path(tmp) / "audio.mp3"
         result = subprocess.run(
             ["ffmpeg", "-y", "-i", str(src), "-vn", "-ar", "16000", "-ac", "1",

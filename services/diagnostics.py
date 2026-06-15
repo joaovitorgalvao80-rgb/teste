@@ -45,7 +45,7 @@ def read_validation(project_work: Path) -> Optional[dict]:
 def write_validation(project_work: Path, payload: dict) -> Path:
     path = _ensure_within(project_work, validation_path(project_work))
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")  # NOSONAR: path is constrained by _ensure_within.
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")  # NOSONAR
     return path
 
 
