@@ -545,7 +545,7 @@ def cancel_project_status(project_id: int, kind: str) -> Optional[str]:
         if any(db.list_assets_for_project(project_id).values()):
             return "searched"
         return "mapped" if db.list_scenes(project_id) else "created"
-    if kind == "auto_select":
+    if kind in ("auto_select", "auto_select_vision"):
         return "reviewing" if any(db.list_assets_for_project(project_id).values()) else "searched"
     if kind == "research_rejected":
         return "reviewing"
@@ -1125,6 +1125,17 @@ def project_page(request: Request, project_id: int):
     jobs = db.list_project_jobs(project_id, user["id"])
     active_jobs = [job for job in jobs if job.get("status") in ACTIVE_JOB_STATUSES]
     parts = db.list_parts(project_id) if config.get("long_mode") else []
+    # No modo longo a galeria de curadoria mostra so as cenas da parte atual
+    # (a primeira ainda nao curada); evita misturar partes numa lista enorme.
+    current_part = None
+    if parts:
+        current_part = next(
+            (p["part_idx"] for p in parts if p.get("curation_status") != "curated"),
+            parts[-1]["part_idx"],
+        )
+        gallery_scenes = [s for s in scenes if int(s.get("part") or 1) == current_part]
+    else:
+        gallery_scenes = scenes
     diagnostics_snapshot = project_diagnostics_snapshot(
         project_id,
         scenes,
@@ -1175,12 +1186,14 @@ def project_page(request: Request, project_id: int):
             "search_part_active": any(
                 j["kind"] == "search_part" and j["status"] in ACTIVE_JOB_STATUSES for j in jobs
             ),
+            "auto_select_active": any(
+                j["kind"] in {"auto_select", "auto_select_vision"} and j["status"] in ACTIVE_JOB_STATUSES
+                for j in jobs
+            ),
             "all_parts_curated": bool(parts)
             and all(p.get("curation_status") == "curated" for p in parts),
-            "current_part": next(
-                (p["part_idx"] for p in parts if p.get("curation_status") != "curated"),
-                (parts[-1]["part_idx"] if parts else None),
-            ),
+            "current_part": current_part,
+            "gallery_scenes": gallery_scenes,
         },
     )
 
@@ -1587,15 +1600,93 @@ def search_part(
     return RedirectResponse(f"/projects/{project_id}/review?part={part_idx}", status_code=303)
 
 
-def _missing_broll_takes(scenes: list[dict], assets_by_scene: dict, broll_required: set) -> list[str]:
-    """Cenas de b-roll sem nenhum take aceito (bloqueiam a confirmacao da parte)."""
-    missing: list[str] = []
-    for scene in scenes:
-        assets = assets_by_scene.get(scene["id"], [])
-        accepted = next((a for a in assets if a["state"] == "accepted"), None)
-        if not accepted and scene["scene_id"] in broll_required:
-            missing.append(scene["scene_id"])
-    return missing
+def run_part_auto_select_vision_job(
+    job_id: int,
+    project_id: int,
+    user_id: int,
+    part_idx: int,
+    groq_key: str = "",
+    groq_model: str = "",
+    nvidia_key: str = "",
+) -> None:
+    """Analisa a visao (IA) das cenas da parte e ja re-seleciona o melhor take.
+
+    Diferente da auto-selecao embutida na busca (que usa so a relevancia por
+    keyword), aqui a IA de visao pontua os candidatos antes de escolher — mesma
+    qualidade do fluxo dos videos curtos, mas restrito a uma parte.
+    """
+    try:
+        check_job_canceled(job_id)
+        db.update_job(job_id, status="running", message=f"Analisando visao da parte {part_idx}")
+        project = db.get_project(project_id, user_id)
+        if not project:
+            raise RuntimeError(MSG_PROJECT_NOT_FOUND)
+        config = project_config(project)
+
+        def progress(done: int, total: int) -> None:
+            check_job_canceled(job_id)
+            db.update_job(job_id, status="running", message=f"Analisando visao ({done}/{total})")
+
+        analyzed, provider_name = analyze_pending_vision(
+            project_id, user_id, groq_key, progress=progress,
+            nvidia_key=nvidia_key, part_idx=part_idx,
+        )
+        check_job_canceled(job_id)
+        db.update_job(job_id, status="running", message="Selecionando os melhores takes")
+        chosen = auto_select_for_project(
+            project_id, config, groq_key, groq_model, job_id=job_id,
+            review_round=int(project.get("review_round") or 0), part_idx=part_idx,
+        )
+        db.update_part(project_id, part_idx, curation_status="reviewing")
+        db.set_project_status(project_id, "reviewing")
+        db.finish_job(
+            job_id,
+            f"Parte {part_idx}: {analyzed} assets analisados ({provider_name}), {chosen} selecionados",
+            {"part": part_idx, "vision_analyzed": analyzed, "provider": provider_name, "auto_selected": chosen},
+        )
+    except JobCanceled:
+        finish_canceled_job(job_id, project_id, "auto_select_vision")
+    except Exception as exc:  # noqa: BLE001
+        db.fail_job(job_id, f"Falha na selecao com visao da parte {part_idx}", str(exc))
+
+
+@app.post("/projects/{project_id}/parts/{part_idx}/auto-select-vision", responses=ERROR_RESPONSES)
+def part_auto_select_vision(
+    request: Request,
+    project_id: int,
+    part_idx: int,
+    background_tasks: BackgroundTasks,
+    csrf_token: Annotated[str, Form()] = "",
+):
+    user = require_user(request)
+    verify_csrf(request, csrf_token)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    ensure_project_not_busy(project)
+    part = db.get_part(project_id, part_idx)
+    if not part:
+        raise HTTPException(404, "Parte nao encontrada.")
+    assets_by_scene = db.list_assets_for_project(project_id)
+    scenes = [s for s in db.list_scenes(project_id) if int(s.get("part") or 1) == part_idx]
+    if not any(assets_by_scene.get(s["id"]) for s in scenes):
+        raise HTTPException(400, "Busque os assets desta parte antes da selecao com visao.")
+    ensure_no_active_job(project_id, "auto_select_vision")
+    job_id = db.create_job(
+        user["id"], "auto_select_vision", project_id, f"Selecao com visao da parte {part_idx} na fila"
+    )
+    db.set_project_status(project_id, "auto_selecting")
+    background_tasks.add_task(
+        run_part_auto_select_vision_job,
+        job_id,
+        project_id,
+        user["id"],
+        part_idx,
+        user.get("groq_key", ""),
+        user.get("groq_model") or groq_service.DEFAULT_MODEL,
+        user.get("nvidia_key", ""),
+    )
+    return RedirectResponse(f"/projects/{project_id}/review?part={part_idx}", status_code=303)
 
 
 def _write_full_curation_report(project: dict, project_id: int, assets_by_scene: dict) -> None:
@@ -1641,19 +1732,13 @@ def confirm_part(
     part = db.get_part(project_id, part_idx)
     if not part:
         raise HTTPException(404, "Parte nao encontrada.")
-    config = project_config(project)
     scenes = [s for s in db.list_scenes(project_id) if int(s.get("part") or 1) == part_idx]
     if not scenes:
         raise HTTPException(400, "Parte sem cenas.")
-    # cenas avatar-only nao precisam de take aceito (nao levam b-roll)
-    broll_required = {sid for sid, on in scene_broll_flags(scenes, config).items() if on}
+    # Sem trava de contagem: o usuario confirma com os takes que escolheu, mesmo
+    # que faltem cenas. Cenas sem take aceito ficam sem b-roll (o avatar cobre),
+    # igual ao comportamento das cenas avatar-only.
     assets_by_scene = db.list_assets_for_project(project_id)
-    not_accepted = _missing_broll_takes(scenes, assets_by_scene, broll_required)
-    if not_accepted:
-        preview = ", ".join(not_accepted[:8])
-        suffix = "..." if len(not_accepted) > 8 else ""
-        raise HTTPException(400, f"Aceite um take para todas as cenas de b-roll da parte {part_idx}. Faltando: {preview}{suffix}")
-
     db.update_part(project_id, part_idx, curation_status="curated")
 
     # Se todas as partes ficaram curadas, gera o relatorio de curadoria completo
@@ -1989,6 +2074,7 @@ def analyze_pending_vision(
     groq_key: str = "",
     progress: Optional[callable] = None,
     nvidia_key: str = "",
+    part_idx: Optional[int] = None,
 ) -> tuple[int, str]:
     """Analisa (e persiste) os assets ainda nao analisados do projeto.
 
@@ -2005,6 +2091,8 @@ def analyze_pending_vision(
         raise RuntimeError(MSG_PROJECT_NOT_FOUND)
     config = project_config(project)
     scenes = db.list_scenes(project_id)
+    if part_idx is not None:
+        scenes = [s for s in scenes if int(s.get("part") or 1) == part_idx]
     # Tema global do video ancora o julgamento da visao (rejeita fora-do-tema).
     video_theme = str(config.get("video_theme") or "").strip()
     if video_theme:

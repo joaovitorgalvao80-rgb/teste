@@ -212,6 +212,12 @@
             {% elif p.part_idx == current_part %}
               {% if p.curation_status in ['searched', 'reviewing'] %}
                 <a class="btn btn-primary btn-sm" href="/projects/{{ project.id }}/review?part={{ p.part_idx }}">Revisar parte →</a>
+                <form method="post" action="/projects/{{ project.id }}/parts/{{ p.part_idx }}/auto-select-vision" style="display:inline" data-busy-submit>
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <button class="btn btn-secondary btn-sm" type="submit"
+                          title="A IA de visão pontua cada candidato e reescolhe o melhor take desta parte"
+                          {% if search_part_active or auto_select_active %}disabled{% endif %}>✦ seleção automática (visão)</button>
+                </form>
                 <form method="post" action="/projects/{{ project.id }}/parts/{{ p.part_idx }}/search" style="display:inline" data-busy-submit>
                   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                   <button class="btn btn-ghost btn-sm" type="submit" {% if search_part_active %}disabled{% endif %}>rebuscar</button>
@@ -491,9 +497,9 @@
   .scene .ov-no-broll.is-active { opacity: 1; }
 </style>
 
-{% for scene in scenes %}
-  {% if config.long_mode and (loop.first or scene.part != scenes[loop.index0 - 1].part) %}
-    <h3 class="part-divider" id="part-{{ scene.part }}">Parte {{ '%02d'|format(scene.part or 1) }}</h3>
+{% for scene in gallery_scenes %}
+  {% if config.long_mode and loop.first %}
+    <h3 class="part-divider" id="part-{{ scene.part }}">Parte {{ '%02d'|format(scene.part or 1) }} · curando esta parte</h3>
   {% endif %}
   <section class="scene scene-zone-{{ scene.zone|lower }}{% if scene.avatar_only %} is-avatar-only{% endif %}" id="scene-{{ scene.id }}" data-scene="{{ scene.id }}" data-broll-required="{{ 1 if scene.broll_required else 0 }}">
     <div class="scene-rail">
@@ -609,6 +615,13 @@
     </div>
   </section>
 {% endfor %}
+
+{% if config.long_mode and gallery_scenes and current_part %}
+  <div class="row-between" style="margin:var(--sp-5) 0;padding-top:var(--sp-4);border-top:1px solid var(--line-0)">
+    <span class="t-small t-faint">Terminou de marcar os takes da parte {{ '%02d'|format(current_part) }}? Confira na tela de revisão antes de confirmar.</span>
+    <a class="btn btn-primary" href="/projects/{{ project.id }}/review?part={{ current_part }}">Confirmar seleção → revisar parte</a>
+  </div>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}

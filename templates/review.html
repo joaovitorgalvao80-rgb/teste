@@ -158,9 +158,8 @@
       {% else %}
         <form method="post" action="/projects/{{ project.id }}/parts/{{ part_idx }}/confirm" data-busy-submit style="display:inline">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <button class="btn btn-primary btn-sm" id="btn-confirm-part" type="submit"
-                  {% if accepted != total %}disabled{% endif %}>
-            Confirmar parte {{ part_idx }}{% if accepted != total %} ({{ accepted }}/{{ total }}){% endif %}
+          <button class="btn btn-primary btn-sm" id="btn-confirm-part" type="submit">
+            Confirmar parte {{ part_idx }}
           </button>
         </form>
       {% endif %}
@@ -269,15 +268,8 @@ function updateReviewBar() {
     finish.disabled = accepted !== cards.length;
     finish.textContent = accepted === cards.length ? "Concluir revisão" : `Concluir revisão (${accepted}/${cards.length})`;
   }
-  const confirmPart = document.getElementById("btn-confirm-part");
-  if (confirmPart) {
-    const base = confirmPart.dataset.label || confirmPart.textContent.trim();
-    confirmPart.dataset.label = base.replace(/\s*\(\d+\/\d+\)\s*$/, "");
-    confirmPart.disabled = accepted !== cards.length;
-    confirmPart.textContent = accepted === cards.length
-      ? confirmPart.dataset.label
-      : `${confirmPart.dataset.label} (${accepted}/${cards.length})`;
-  }
+  // O botao "Confirmar parte" nunca trava: o usuario confirma com os takes que
+  // escolheu, mesmo que falte aceitar alguma cena (ela fica sem b-roll).
 }
 </script>
 {% endblock %}
