@@ -1712,6 +1712,7 @@ def search_more(
     request: Request,
     scene_db_id: int,
     media: Annotated[str, Form()] = "all",
+    keyword: Annotated[str, Form()] = "",
     csrf_token: Annotated[str, Form()] = "",
 ):
     user = require_user(request)
@@ -1730,8 +1731,11 @@ def search_more(
         media = "all"
     max_w = resolution_width(config)
     existing = {a["download_url"] for a in db.list_assets(scene_db_id)}
+    # busca manual: o usuario digitou uma keyword propria; senao usa as da cena
+    custom = [k.strip() for k in str(keyword or "").split(",") if k.strip()][:5]
+    search_keywords = custom or scene["keywords"]
     results = asset_search.search_scene(
-        scene["keywords"],
+        search_keywords,
         user["pexels_key"],
         user["pixabay_key"],
         max_w=max_w,
@@ -1770,6 +1774,32 @@ def regen_keywords(request: Request, scene_db_id: int, csrf_token: Annotated[str
     db.update_scene_keywords(scene_db_id, kws)
     mark_project_dirty(project["id"])
     return JSONResponse({"keywords": kws})
+
+
+@app.post("/scenes/{scene_db_id}/avatar-override", responses=ERROR_RESPONSES)
+def set_avatar_override(
+    request: Request,
+    scene_db_id: int,
+    mode: Annotated[str, Form()] = "auto",
+    csrf_token: Annotated[str, Form()] = "",
+):
+    """Override manual por cena: 'no_avatar' (forca b-roll em tela cheia),
+    'no_broll' (forca o avatar) ou 'auto' (decisao automatica)."""
+    user = require_user(request)
+    verify_csrf(request, csrf_token)
+    scene = db.get_scene(scene_db_id)
+    if not scene:
+        raise HTTPException(404)
+    project = db.get_project(scene["project_id"], user["id"])
+    if not project:
+        raise HTTPException(404)
+    ensure_project_not_busy(project)
+    value = {"no_avatar": 1, "no_broll": -1, "auto": 0}.get(mode)
+    if value is None:
+        raise HTTPException(400, "modo invalido (use auto, no_avatar ou no_broll)")
+    db.update_scene_broll_override(scene_db_id, value)
+    mark_project_dirty(project["id"])
+    return JSONResponse({"mode": mode, "broll_override": value})
 
 
 # ------------------------------------------------------------------

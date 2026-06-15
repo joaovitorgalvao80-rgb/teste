@@ -144,6 +144,7 @@ CREATE TABLE IF NOT EXISTS scenes (
     overlay_text    TEXT DEFAULT '',
     avatar_safe_area TEXT DEFAULT 'right',
     part            INTEGER DEFAULT 1,
+    broll_override  INTEGER DEFAULT 0,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
 
@@ -226,6 +227,7 @@ _MIGRATIONS = [
     "ALTER TABLE projects ADD COLUMN review_round INTEGER DEFAULT 0",
     "ALTER TABLE scenes ADD COLUMN part INTEGER DEFAULT 1",
     "ALTER TABLE scenes ADD COLUMN keyword_roles_json TEXT DEFAULT '[]'",
+    "ALTER TABLE scenes ADD COLUMN broll_override INTEGER DEFAULT 0",
     "ALTER TABLE assets ADD COLUMN auto_score REAL DEFAULT 0",
     "ALTER TABLE assets ADD COLUMN auto_reason TEXT DEFAULT ''",
     "ALTER TABLE assets ADD COLUMN review_round INTEGER DEFAULT 0",
@@ -730,6 +732,7 @@ def _scene_to_dict(row: sqlite3.Row) -> dict:
     d["keyword_roles"] = roles
     d["must_show"] = json.loads(d.pop("must_show_json") or "[]")
     d["must_not_show"] = json.loads(d.pop("must_not_show_json") or "[]")
+    d["broll_override"] = int(d.get("broll_override") or 0)
     return d
 
 
@@ -765,6 +768,20 @@ def update_scene_keywords(
                 json.dumps(roles or scoring.assign_roles(keywords), ensure_ascii=False),
                 scene_db_id,
             ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_scene_broll_override(scene_db_id: int, value: int) -> None:
+    """Override manual de b-roll/avatar por cena: 0=auto, 1=forcar b-roll
+    (cena sem avatar), -1=forcar avatar (cena sem b-roll)."""
+    value = max(-1, min(1, int(value)))
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE scenes SET broll_override = ? WHERE id = ?", (value, scene_db_id)
         )
         conn.commit()
     finally:

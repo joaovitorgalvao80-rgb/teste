@@ -23,6 +23,26 @@ _PRESENT_GREETING = (
 )
 
 
+def _broll_override(scene: dict) -> int:
+    """Override manual por cena: 0=auto, 1=forcar b-roll (sem avatar),
+    -1=forcar avatar (sem b-roll). Vale como 'lock' nas policies abaixo."""
+    try:
+        value = int(scene.get("broll_override") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(-1, min(1, value))
+
+
+def _apply_overrides(flags: list[bool], scenes: list[dict]) -> None:
+    """Aplica os overrides manuais sobre os flags (in-place)."""
+    for i, scene in enumerate(scenes):
+        ov = _broll_override(scene)
+        if ov == 1:
+            flags[i] = True
+        elif ov == -1:
+            flags[i] = False
+
+
 def _is_presentation(narration: str) -> bool:
     """True quando a cena e apresentacao/saudacao (apresentador, sem b-roll)."""
     text = " " + remove_accents(str(narration or "")).lower().strip() + " "
@@ -182,6 +202,7 @@ def _broll_flags(scenes: list[dict]) -> list[bool]:
             continue
         flags[i] = True
         run += duration
+    _apply_overrides(flags, scenes)
     return flags
 
 
@@ -219,14 +240,21 @@ def _find_oversized_run(plan_scenes: list[dict]) -> "list[int] | None":
     return None
 
 
-def _pick_broll_target(oversized: list[int], source_scenes: list[dict], n: int) -> int:
-    """Escolhe a cena mais forte do trecho para virar b-roll (preserva gancho/apresentacao)."""
+def _pick_broll_target(oversized: list[int], source_scenes: list[dict], n: int) -> "int | None":
+    """Escolhe a cena mais forte do trecho para virar b-roll (preserva gancho/apresentacao).
+
+    Nunca escolhe uma cena travada em avatar (override -1): o pedido manual do
+    usuario vence o guard de avatar-solo. Retorna None quando todo o trecho esta
+    travado em avatar (nada a fazer)."""
+    free = [i for i in oversized if _broll_override(source_scenes[i]) != -1]
     candidates = [
-        i for i in oversized
+        i for i in free
         if i != 0 and not _is_presentation(source_scenes[i].get("narration"))
     ]
     if not candidates:
-        candidates = [i for i in oversized if i != 0] or oversized
+        candidates = [i for i in free if i != 0] or free
+    if not candidates:
+        return None
     middle = oversized[len(oversized) // 2]
     return max(
         candidates,
@@ -245,19 +273,34 @@ def enforce_broll_policy(plan_scenes: list[dict], source_scenes: list[dict]) -> 
     if n == 0:
         return {"coverage": 0.0, "max_avatar_solo_seconds": MAX_AVATAR_SOLO_SECONDS}
 
-    # apresentacao/saudacao nunca leva b-roll (vale p/ deterministico e LLM)
+    # apresentacao/saudacao nunca leva b-roll (vale p/ deterministico e LLM),
+    # exceto quando o usuario travou a cena manualmente.
     for scene, src in zip(plan_scenes, source_scenes):
-        if _is_presentation(src.get("narration")):
+        if _broll_override(src) == 0 and _is_presentation(src.get("narration")):
             scene["broll"] = False
 
+    # overrides manuais vencem as heuristicas acima (locks).
+    for scene, src in zip(plan_scenes, source_scenes):
+        ov = _broll_override(src)
+        if ov == 1:
+            scene["broll"] = True
+        elif ov == -1:
+            scene["broll"] = False
+
+    # nunca 100% b-roll: o avatar precisa abrir o video. Cede numa cena livre
+    # (nao travada em b-roll) para nao desfazer um pedido manual.
     if all(scene.get("broll") for scene in plan_scenes):
-        plan_scenes[0]["broll"] = False
+        free = next((i for i, s in enumerate(source_scenes) if _broll_override(s) != 1), 0)
+        plan_scenes[free]["broll"] = False
 
     while True:
         oversized = _find_oversized_run(plan_scenes)
         if not oversized:
             break
-        plan_scenes[_pick_broll_target(oversized, source_scenes, n)]["broll"] = True
+        target = _pick_broll_target(oversized, source_scenes, n)
+        if target is None:
+            break
+        plan_scenes[target]["broll"] = True
 
     total = sum(float(scene.get("duration") or 0) for scene in plan_scenes)
     covered = sum(

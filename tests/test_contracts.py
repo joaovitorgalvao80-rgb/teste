@@ -1020,6 +1020,46 @@ class DeployContractsTest(unittest.TestCase):
         self.assertFalse(flags[-1], "ultima cena e avatar-only")
         self.assertTrue(any(flags[1:3]), "cenas de conteudo levam b-roll")
 
+    def test_broll_override_forces_broll_over_presentation(self) -> None:
+        """Override 'sem avatar' (1) vence ate a deteccao de apresentacao."""
+        from services import edit_plan as ep
+        scenes = [
+            {"scene_id": "s1", "start_time": 0, "end_time": 5, "duration": 5,
+             "narration": "Olá, eu sou o Valdir e hoje vou te ensinar", "broll_override": 1},
+            {"scene_id": "s2", "start_time": 5, "end_time": 10, "duration": 5,
+             "narration": "o mosquito se reproduz na agua parada"},
+            {"scene_id": "s3", "start_time": 10, "end_time": 15, "duration": 5,
+             "narration": "obrigado por assistir"},
+        ]
+        flags = ep.decide_broll(scenes)
+        self.assertTrue(flags[0], "override 1 forca b-roll mesmo em apresentacao")
+
+    def test_broll_override_forces_avatar_survives_solo_guard(self) -> None:
+        """Override 'so avatar' (-1) nao e revertido pelo guard de avatar-solo."""
+        from services import edit_plan as ep
+        scenes = [
+            {"scene_id": f"s{i}", "start_time": i * 20.0, "end_time": (i + 1) * 20.0,
+             "duration": 20.0, "narration": f"conteudo {i}",
+             "broll_override": -1 if i in (1, 2, 3) else 0}
+            for i in range(5)
+        ]
+        flags = ep.decide_broll(scenes)
+        for i in (1, 2, 3):
+            self.assertFalse(flags[i], f"cena {i} travada em avatar permanece avatar")
+
+    def test_broll_override_flows_into_edit_plan(self) -> None:
+        from services import edit_plan as ep
+        scenes = [
+            {"scene_id": f"scene_{i:03d}", "start_time": i * 10.0, "end_time": (i + 1) * 10.0,
+             "duration": 10.0, "narration": f"cena {i}", "overlay_text": "",
+             "broll_override": -1 if i == 2 else 0}
+            for i in range(6)
+        ]
+        plan = ep.build_edit_plan(
+            {"name": "Avatar"}, {"avatar_safe_area": "right"}, scenes, avatar_file="avatar.mp4"
+        )
+        self.assertFalse(plan["scenes"][2]["broll"], "cena travada em avatar fica sem b-roll no plano")
+
     def test_caption_falls_back_to_narration_when_overlay_empty(self) -> None:
         from services import edit_plan as ep
 

@@ -114,8 +114,11 @@ async function searchMore(sceneId, btn, media) {
   const original = btn.textContent;
   btn.textContent = "buscando...";
   btn.disabled = true;
+  // caixa de keyword propria da cena: quando preenchida, manda a busca
+  const kwInput = document.getElementById("kw-search-" + sceneId);
+  const keyword = kwInput ? kwInput.value.trim() : "";
   try {
-    const res = await postForm(`/scenes/${sceneId}/search-more`, { media: media || "all" });
+    const res = await postForm(`/scenes/${sceneId}/search-more`, { media: media || "all", keyword });
     btn.textContent = `+${res.added} novos`;
     if (res.added > 0) {
       notify(`+${res.added} takes adicionados — recarregando...`, "ok");
@@ -737,5 +740,34 @@ async function regenKeywords(sceneId) {
   } catch (e) {
     metaKws.forEach((el, i) => { el.textContent = old.split(", ")[i] || el.textContent; });
     notify("Falha ao gerar keywords: " + e.message, "error");
+  }
+}
+
+// ------------------------------------------------------------------
+// Override manual de avatar/b-roll por cena
+// ------------------------------------------------------------------
+const AVATAR_OVERRIDE_LABELS = {
+  no_avatar: "cena marcada como SEM avatar (b-roll em tela cheia)",
+  no_broll: "cena marcada como SEM b-roll (só o avatar)",
+  auto: "cena voltou para a decisão automática",
+};
+
+async function setAvatarOverride(sceneId, mode, btn) {
+  const group = document.getElementById("avatar-override-" + sceneId);
+  if (btn && btn.classList.contains("is-active")) return; // ja esta nesse modo
+  try {
+    const res = await postForm(`/scenes/${sceneId}/avatar-override`, { mode });
+    if (group) {
+      group.dataset.mode = String(res.broll_override);
+      group.querySelectorAll(".btn").forEach((b) => b.classList.remove("is-active"));
+      if (btn) btn.classList.add("is-active");
+    }
+    // a decisao muda quais cenas exigem take e como o render compoe; recarrega
+    // para a galeria refletir o estado real calculado no servidor.
+    notify((AVATAR_OVERRIDE_LABELS[mode] || "preferência salva") + " — recarregando...", "ok");
+    globalThis.location.hash = "scene-" + sceneId;
+    setTimeout(() => location.reload(), 600);
+  } catch (e) {
+    notify("Falha ao mudar o avatar da cena: " + e.message, "error");
   }
 }

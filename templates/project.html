@@ -482,6 +482,15 @@
 </style>
 {% endif %}
 
+<style>
+  .scene-controls { margin: var(--sp-2) 0 var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2); }
+  .kw-search { min-width: 200px; flex: 1 1 200px; max-width: 320px; }
+  .avatar-override { align-items: center; gap: var(--sp-1); }
+  .avatar-override .btn.is-active { outline: 2px solid var(--accent, #5b8def); outline-offset: -1px; font-weight: 600; }
+  .scene.is-avatar-only .ov-no-avatar.is-active,
+  .scene .ov-no-broll.is-active { opacity: 1; }
+</style>
+
 {% for scene in scenes %}
   {% if config.long_mode and (loop.first or scene.part != scenes[loop.index0 - 1].part) %}
     <h3 class="part-divider" id="part-{{ scene.part }}">Parte {{ '%02d'|format(scene.part or 1) }}</h3>
@@ -514,6 +523,42 @@
       {% if scene.must_not_show %}
         <p class="t-small t-faint">Evitar: {{ scene.must_not_show|join(', ') }}</p>
       {% endif %}
+
+      <div class="scene-controls">
+        <div class="row">
+          <input type="text" class="kw-search" id="kw-search-{{ scene.id }}"
+                 placeholder="palavra-chave própria…" aria-label="Buscar com palavra-chave própria"
+                 onkeydown="if(event.key==='Enter'){event.preventDefault();searchMore({{ scene.id }}, this, 'all')}">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="searchMore({{ scene.id }}, this, 'all')">buscar</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="searchMore({{ scene.id }}, this, 'video')">+ vídeos</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="searchMore({{ scene.id }}, this, 'image')">+ imagens</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="toggleGenPanel({{ scene.id }})">✦ gerar imagem</button>
+          <button type="button" class="btn btn-ghost btn-sm" onclick="regenKeywords({{ scene.id }})">
+            novas keywords
+            <span id="kw-{{ scene.id }}" style="display:none">{{ scene.keywords|join(', ') }}</span>
+          </button>
+        </div>
+        <div class="row avatar-override" id="avatar-override-{{ scene.id }}" data-mode="{{ scene.broll_override }}">
+          <span class="t-small t-faint">avatar:</span>
+          <button type="button" class="btn btn-ghost btn-sm ov-auto{% if scene.broll_override == 0 %} is-active{% endif %}"
+                  onclick="setAvatarOverride({{ scene.id }}, 'auto', this)">automático</button>
+          <button type="button" class="btn btn-ghost btn-sm ov-no-broll{% if scene.broll_override == -1 %} is-active{% endif %}"
+                  onclick="setAvatarOverride({{ scene.id }}, 'no_broll', this)">sem b-roll (só avatar)</button>
+          <span class="t-small t-faint" style="margin-left:auto">posição: {{ scene.avatar_safe_area }}</span>
+        </div>
+      </div>
+
+      <div class="gen-panel" id="gen-panel-{{ scene.id }}" style="display:none;margin-bottom:var(--sp-3);padding:var(--sp-3);border:1px solid var(--line-0);border-radius:6px">
+        <p class="t-small t-faint" style="margin-bottom:var(--sp-2)">
+          O gerador externo carrega somente quando você clicar em Gerar. A imagem entra como take normal.
+        </p>
+        <textarea id="gen-prompt-{{ scene.id }}" rows="3" style="width:100%;resize:vertical"
+          >{{ (scene.visual_goal or scene.narration or '')[:160] }}{% if scene.keywords %}, {{ scene.keywords[:3]|join(', ') }}{% endif %}, {{ config.visual_style }}, photorealistic, 16:9 wide shot, no text, no watermark</textarea>
+        <div class="row" style="margin-top:var(--sp-2)">
+          <button class="btn btn-secondary btn-sm" type="button" onclick="generateImage({{ scene.id }}, this)">Gerar</button>
+          <span class="t-small t-faint" id="gen-status-{{ scene.id }}"></span>
+        </div>
+      </div>
 
       <div class="takes" id="grid-{{ scene.id }}">
         {% for a in scene.assets %}
@@ -559,31 +604,8 @@
       </div>
 
       {% if not scene.assets %}
-        <p class="empty-grid">Nenhum asset buscado para esta cena. Use <strong>02 Buscar assets</strong> ou busque mais abaixo.</p>
+        <p class="empty-grid">Nenhum asset buscado para esta cena. Use <strong>02 Buscar assets</strong> ou busque mais acima.</p>
       {% endif %}
-
-      <div class="row">
-        <button type="button" class="btn btn-secondary btn-sm" onclick="searchMore({{ scene.id }}, this, 'video')">+ vídeos</button>
-        <button type="button" class="btn btn-secondary btn-sm" onclick="searchMore({{ scene.id }}, this, 'image')">+ imagens</button>
-        <button type="button" class="btn btn-secondary btn-sm" onclick="toggleGenPanel({{ scene.id }})">✦ gerar imagem</button>
-        <button type="button" class="btn btn-ghost btn-sm" onclick="regenKeywords({{ scene.id }})">
-          novas keywords
-          <span id="kw-{{ scene.id }}" style="display:none">{{ scene.keywords|join(', ') }}</span>
-        </button>
-        <span class="t-small t-faint" style="margin-left:auto">avatar: {{ scene.avatar_safe_area }}</span>
-      </div>
-
-      <div class="gen-panel" id="gen-panel-{{ scene.id }}" style="display:none;margin-top:var(--sp-3);padding:var(--sp-3);border:1px solid var(--line-0);border-radius:6px">
-        <p class="t-small t-faint" style="margin-bottom:var(--sp-2)">
-          O gerador externo carrega somente quando você clicar em Gerar. A imagem entra como take normal.
-        </p>
-        <textarea id="gen-prompt-{{ scene.id }}" rows="3" style="width:100%;resize:vertical"
-          >{{ (scene.visual_goal or scene.narration or '')[:160] }}{% if scene.keywords %}, {{ scene.keywords[:3]|join(', ') }}{% endif %}, {{ config.visual_style }}, photorealistic, 16:9 wide shot, no text, no watermark</textarea>
-        <div class="row" style="margin-top:var(--sp-2)">
-          <button class="btn btn-secondary btn-sm" type="button" onclick="generateImage({{ scene.id }}, this)">Gerar</button>
-          <span class="t-small t-faint" id="gen-status-{{ scene.id }}"></span>
-        </div>
-      </div>
     </div>
   </section>
 {% endfor %}
