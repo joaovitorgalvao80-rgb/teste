@@ -100,7 +100,10 @@ document.getElementById("audio-upload").addEventListener("change", async functio
     if (!res.ok) {
       let msg = `HTTP ${res.status}`;
       try { const j = await res.json(); msg = j.detail || j.error || msg; }
-      catch (_) { try { msg = (await res.text()).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300); } catch (_) { /* corpo ilegivel: mantem msg padrao */ } }
+      catch (jsonError) {
+        console.debug("Resposta nao-JSON na transcricao", jsonError);
+        try { msg = (await res.text()).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300); } catch (textError) { console.debug("Corpo ilegivel na transcricao", textError); }
+      }
       throw new Error(msg);
     }
     const data = await res.json();

@@ -19,7 +19,7 @@ from typing import Annotated, Optional
 from urllib.parse import urlparse
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, Request, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, FileResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, FileResponse, PlainTextResponse
 from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -979,11 +979,8 @@ def _extract_audio_bytes(raw: bytes, filename: str) -> tuple[bytes, str]:
             "FFmpeg não encontrado no servidor; necessário para extrair áudio de vídeo. "
             "Instale o FFmpeg ou envie um arquivo de áudio (mp3/wav) direto.",
         )
-    # Só usamos a extensão se ela estiver na allowlist; caso contrário, nome fixo.
-    # Evita construir o caminho do tempfile a partir de dado controlado pelo usuário.
-    safe_ext = raw_ext if raw_ext in _ALLOWED_UPLOAD_EXTS else (".mp4" if is_video else ".bin")
     with tempfile.TemporaryDirectory() as tmp:
-        src = Path(tmp) / ("input" + safe_ext)
+        src = Path(tmp) / "input.upload"
         src.write_bytes(raw)
         out = Path(tmp) / "audio.mp3"
         result = subprocess.run(
@@ -1002,6 +999,11 @@ def _extract_audio_bytes(raw: bytes, filename: str) -> tuple[bytes, str]:
             "Divida em partes menores."
         )
     return extracted, "audio.mp3"
+
+
+@app.get("/static/empty.vtt", include_in_schema=False)
+def empty_vtt() -> PlainTextResponse:
+    return PlainTextResponse("WEBVTT\n\n", media_type="text/vtt")
 
 
 @app.post("/transcribe-audio", responses=ERROR_RESPONSES)
@@ -1928,6 +1930,24 @@ def _score_scene_assets(scene: dict, pend: list, provider, heuristic, config: di
     return ranked, results
 
 
+def _analyze_scene_pending_assets(
+    scene: dict,
+    pending_assets: list,
+    provider,
+    heuristic,
+    config: dict,
+    sheet_n: int,
+) -> int:
+    ranked, results = _score_scene_assets(scene, pending_assets, provider, heuristic, config, sheet_n)
+    for asset in ranked:
+        res = results.get(asset["id"]) or heuristic.analyze(asset, scene, config)
+        db.set_asset_vision(
+            asset["id"], res.score, res.verdict,
+            "; ".join(res.reasons)[:300], res.flags, res.provider,
+        )
+    return len(ranked)
+
+
 def analyze_pending_vision(
     project_id: int,
     user_id: int,
@@ -1981,16 +2001,10 @@ def analyze_pending_vision(
             continue
         provider = providers[rr % len(providers)] if providers else heuristic
         rr += 1
-        ranked, results = _score_scene_assets(scene, pend, provider, heuristic, config, sheet_n)
-        for asset in ranked:
-            res = results.get(asset["id"]) or heuristic.analyze(asset, scene, config)
-            db.set_asset_vision(
-                asset["id"], res.score, res.verdict,
-                "; ".join(res.reasons)[:300], res.flags, res.provider,
-            )
-            analyzed += 1
-            if progress and analyzed % 10 == 0:
-                progress(analyzed, total_pending)
+        before = analyzed
+        analyzed += _analyze_scene_pending_assets(scene, pend, provider, heuristic, config, sheet_n)
+        if progress and analyzed // 10 > before // 10:
+            progress(analyzed, total_pending)
     return analyzed, primary_name
 
 

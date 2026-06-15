@@ -46,7 +46,10 @@
           <video class="preview-thumb" muted loop preload="none" poster="{{ a.preview_url }}"
                  src="{{ a.download_url }}" tabindex="0"
                  onmouseover="this.play()" onmouseout="this.pause()"
-                 onfocus="this.play()" onblur="this.pause()"></video>
+                 onfocus="this.play()" onblur="this.pause()">
+            <track kind="captions" src="/static/empty.vtt" srclang="pt-BR" label="Sem legendas">
+            <track kind="descriptions" src="/static/empty.vtt" srclang="pt-BR" label="Sem descricoes">
+          </video>
         {% elif a %}
           <img class="preview-thumb" loading="lazy" src="{{ a.preview_url or a.download_url }}" alt="">
         {% else %}

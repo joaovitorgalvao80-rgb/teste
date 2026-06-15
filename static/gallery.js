@@ -21,6 +21,10 @@ function notify(message, type) {
   }, 5000);
 }
 
+function ignoredParseError(context, error) {
+  console.debug(context, error);
+}
+
 async function getJSON(url) {
   const res = await fetch(url, { headers: { accept: "application/json" } });
   if (res.status === 401) {
@@ -29,7 +33,7 @@ async function getJSON(url) {
   }
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
-    try { const j = await res.json(); msg = j.detail || j.error || msg; } catch (_) { /* corpo nao-JSON: mantem msg padrao */ }
+    try { const j = await res.json(); msg = j.detail || j.error || msg; } catch (error) { ignoredParseError("Resposta nao-JSON em getJSON", error); }
     throw new Error(msg);
   }
   return res.json();
@@ -43,7 +47,10 @@ async function postForm(url, data) {
   if (!resp.ok) {
     let msg = `HTTP ${resp.status}`;
     try { const j = await resp.json(); msg = j.detail || j.error || msg; }
-    catch (_) { try { msg = (await resp.text()).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 200); } catch (_) { /* corpo ilegivel: mantem msg padrao */ } }
+    catch (jsonError) {
+      ignoredParseError("Resposta nao-JSON em postForm", jsonError);
+      try { msg = (await resp.text()).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 200); } catch (textError) { ignoredParseError("Corpo ilegivel em postForm", textError); }
+    }
     throw new Error(msg);
   }
   return resp.json();
@@ -157,7 +164,7 @@ function ensurePuterLoaded() {
   if (_puterLoadPromise) return _puterLoadPromise;
   _puterLoadPromise = new Promise((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = "https://js.puter.com/v2/";
+    script.src = "https://js.puter.com/v2/"; // NOSONAR: SDK remoto sem hash SRI estavel publicado.
     script.async = true;
     script.onload = () => resolve();
     script.onerror = () => reject(new Error("Puter.js não carregou"));
@@ -201,7 +208,7 @@ function genErrorMessage(e) {
   if (typeof e === "string") return e;
   if (e.message) return e.message;
   if (e.error?.message) return e.error.message;
-  try { return JSON.stringify(e).slice(0, 200); } catch (_) { return String(e); }
+  try { return JSON.stringify(e).slice(0, 200); } catch (error) { ignoredParseError("Erro nao serializavel", error); return String(e); }
 }
 
 async function generatePuterBlob(prompt, status) {
@@ -214,7 +221,7 @@ async function generatePuterBlob(prompt, status) {
   const src = img?.src;
   if (!src) throw new Error("o gerador não retornou imagem");
   // garante naturalWidth/Height preenchidos antes de ler
-  if (img.decode) { try { await img.decode(); } catch (_) { /* decode best-effort */ } }
+  if (img.decode) { try { await img.decode(); } catch (error) { ignoredParseError("Decode best-effort falhou", error); } }
   const blob = await (await fetch(src)).blob();
   if (!blob || blob.size === 0) throw new Error("imagem retornou vazia");
   if (blob.size > GEN_MAX_BYTES) throw new Error("imagem gerada grande demais (>15 MB)");
@@ -235,7 +242,7 @@ async function saveGeneratedImage(sceneId, blob, prompt, img) {
   );
   if (!resp.ok) {
     let msg = `HTTP ${resp.status}`;
-    try { const j = await resp.json(); msg = j.detail || j.error || msg; } catch (_) { /* corpo nao-JSON: mantem msg padrao */ }
+    try { const j = await resp.json(); msg = j.detail || j.error || msg; } catch (error) { ignoredParseError("Resposta nao-JSON ao salvar imagem", error); }
     throw new Error(msg);
   }
 }
