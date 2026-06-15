@@ -686,12 +686,37 @@ def api_usage_summary(user_id: int, project_id: Optional[int] = None, limit: int
                 LIMIT ?""",
             (*params, limit),
         ).fetchall()
+        now = time.time()
+        hourly_rows = conn.execute(
+            f"""SELECT provider, COUNT(*) AS calls,
+                       COALESCE(SUM(CASE WHEN ok = 0 THEN 1 ELSE 0 END), 0) AS failures
+                FROM api_usage
+                WHERE {clause} AND created_at >= ?
+                GROUP BY provider ORDER BY calls DESC""",
+            (*params, now - 3600),
+        ).fetchall()
+        daily_rows = conn.execute(
+            f"""SELECT provider, COUNT(*) AS calls,
+                       COALESCE(SUM(CASE WHEN ok = 0 THEN 1 ELSE 0 END), 0) AS failures
+                FROM api_usage
+                WHERE {clause} AND created_at >= ?
+                GROUP BY provider ORDER BY calls DESC""",
+            (*params, now - 86400),
+        ).fetchall()
+        hourly = {row["provider"]: int(row["calls"]) for row in hourly_rows}
+        daily  = {row["provider"]: int(row["calls"]) for row in daily_rows}
+        providers_enriched = []
+        for row in providers:
+            p = dict(row)
+            p["calls_1h"]  = hourly.get(p["provider"], 0)
+            p["calls_24h"] = daily.get(p["provider"], 0)
+            providers_enriched.append(p)
         return {
             "total_calls": int(totals["calls"] or 0),
             "failed_calls": int(totals["failures"] or 0),
             "total_units": int(totals["units"] or 0),
             "avg_latency_ms": round(float(totals["avg_latency"] or 0), 1),
-            "providers": [dict(row) for row in providers],
+            "providers": providers_enriched,
             "recent": [dict(row) for row in recent],
         }
     finally:

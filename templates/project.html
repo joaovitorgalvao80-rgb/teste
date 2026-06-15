@@ -365,11 +365,38 @@
 </div>
 
 <!-- Refinamento (narração + avatar) -->
-<div class="panel" style="margin-bottom:var(--sp-7)">
+<div class="panel" style="margin-bottom:var(--sp-7)" id="refinamento">
   <div class="panel-head">
     <span class="tag">Refinamento · narração e avatar</span>
   </div>
   <div style="padding:var(--sp-4) var(--sp-5)">
+
+    <!-- Estilo de edição -->
+    <div style="margin-bottom:var(--sp-5);padding-bottom:var(--sp-4);border-bottom:1px solid var(--line-0)">
+      <p class="tag" style="margin-bottom:var(--sp-3)">Estilo de edição</p>
+      <form method="post" action="/projects/{{ project.id }}/update-style" class="row" style="gap:var(--sp-3);flex-wrap:wrap;align-items:flex-end">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label style="flex:1;min-width:200px">Estilo de vídeo
+          <select name="video_style">
+            <option value="avatar_broll"{% if config.video_style == 'avatar_broll' %} selected{% endif %}>Avatar + B-roll</option>
+            <option value="broll_only"{% if config.video_style == 'broll_only' %} selected{% endif %}>Só B-roll (sem avatar)</option>
+          </select>
+        </label>
+        <label style="flex:1;min-width:220px">Distribuição de B-rolls
+          <select name="broll_density">
+            <option value="key_moments"{% if config.broll_density == 'key_moments' %} selected{% endif %}>Só em pontos-chave (~30-40%)</option>
+            <option value="moderate"{% if config.broll_density == 'moderate' %} selected{% endif %}>Equilibrado — padrão (~50-65%)</option>
+            <option value="full_coverage"{% if config.broll_density == 'full_coverage' %} selected{% endif %}>Vídeo inteiro, poucas pausas (~80-90%)</option>
+          </select>
+        </label>
+        <button class="btn btn-secondary btn-sm" type="submit" style="align-self:flex-end">Salvar estilo</button>
+      </form>
+      <p class="t-muted t-small" style="margin-top:var(--sp-2)">
+        Alterar esses valores invalida o pacote atual — gere a etapa <strong>03 Pacote</strong> novamente para aplicar.
+      </p>
+    </div>
+    <!-- /Estilo de edição -->
+
     <p class="t-muted t-small" style="margin-bottom:var(--sp-4)">
       Esses arquivos entram no <code>final_master.mp4</code> composto no render do Kaggle (FFmpeg).
       Envie antes de <strong>03 Preparar pacote</strong> para que sigam no ZIP.
@@ -514,6 +541,19 @@
             novas keywords
             <span id="kw-{{ scene.id }}" style="display:none">{{ scene.keywords|join(', ') }}</span>
           </button>
+          <button type="button" class="btn btn-ghost btn-sm" id="btn-edit-kw-{{ scene.id }}"
+                  onclick="editKeywords({{ scene.id }}, this)">editar</button>
+          <span id="kw-edit-{{ scene.id }}" class="row" style="display:none;flex:1;gap:var(--sp-2)">
+            <input type="text" id="kw-input-{{ scene.id }}" class="kw-search"
+                   value="{{ scene.keywords|join(', ') }}"
+                   placeholder="keyword1, keyword2, keyword3"
+                   onkeydown="if(event.key==='Enter'){event.preventDefault();saveKeywords({{ scene.id }})}
+                              else if(event.key==='Escape'){cancelEditKeywords({{ scene.id }})}">
+            <button type="button" class="btn btn-primary btn-sm" id="kw-save-{{ scene.id }}"
+                    onclick="saveKeywords({{ scene.id }})">salvar</button>
+            <button type="button" class="btn btn-ghost btn-sm"
+                    onclick="cancelEditKeywords({{ scene.id }})">cancelar</button>
+          </span>
         </div>
         <div class="row avatar-override" id="avatar-override-{{ scene.id }}" data-mode="{{ scene.broll_override }}">
           <span class="t-small t-faint">avatar:</span>
@@ -605,11 +645,15 @@
       </div>
       <div class="usage-bars">
         {% if api_usage.providers %}
+          <div class="usage-row usage-row-header" style="font-size:11px;color:var(--paper-3);margin-bottom:var(--sp-1)">
+            <span>provedor</span><strong>total</strong><small>1h</small><small>24h</small>
+          </div>
           {% for item in api_usage.providers %}
           <div class="usage-row">
             <span>{{ item.provider }}</span>
             <strong>{{ item.calls }}</strong>
-            <small>{% if item.failures %}{{ item.failures }} erro(s){% else %}ok{% endif %}</small>
+            <small title="última hora">{{ item.calls_1h }}</small>
+            <small title="últimas 24h">{{ item.calls_24h }}</small>
           </div>
           {% endfor %}
         {% else %}
@@ -644,4 +688,77 @@
 
 {% block scripts %}
 <script>window.NWRCH_PROJECT_ID = {{ project.id }};</script>
+<script>
+// Intercepta o form de pacote para checar qualidade antes de submeter.
+// Usa capture:true para rodar ANTES do initBusySubmitForms do gallery.js.
+document.addEventListener("DOMContentLoaded", () => {
+  const pkgForm = document.querySelector('form[action$="/package"]');
+  if (!pkgForm) return;
+  pkgForm.addEventListener("submit", async function qualityGuard(e) {
+    if (pkgForm.dataset.qualityOk) return; // já verificado, deixa passar
+    e.preventDefault();
+    let proceed = true;
+    try {
+      const pid = window.NWRCH_PROJECT_ID;
+      const data = await getJSON(`/projects/${pid}/quality-warnings`);
+      if (data.warnings && data.warnings.length > 0) {
+        const lines = data.warnings
+          .map(w => `• ${w.scene_id}: ${w.issues.join(", ")}`)
+          .join("\n");
+        proceed = confirm(`Alertas de qualidade (${data.total} cena${data.total !== 1 ? "s" : ""}):\n\n${lines}\n\nGerar o pacote mesmo assim?`);
+      }
+    } catch (_) { /* falha silenciosa: deixa o submit normal acontecer */ }
+    if (proceed) {
+      pkgForm.dataset.qualityOk = "1";
+      pkgForm.requestSubmit();
+    }
+  }, true /* capture phase = antes do initBusySubmitForms */);
+});
+
+// Edição manual de keywords sem chamar o Groq
+function editKeywords(sceneId, btn) {
+  const panel = document.getElementById("kw-edit-" + sceneId);
+  if (panel) panel.style.display = "";
+  if (btn) btn.style.display = "none";
+}
+
+function cancelEditKeywords(sceneId) {
+  const panel = document.getElementById("kw-edit-" + sceneId);
+  if (panel) panel.style.display = "none";
+  const btn = document.getElementById("btn-edit-kw-" + sceneId);
+  if (btn) btn.style.display = "";
+}
+
+async function saveKeywords(sceneId) {
+  const input  = document.getElementById("kw-input-" + sceneId);
+  const saveBtn = document.getElementById("kw-save-" + sceneId);
+  if (!input) return;
+  const keywords = input.value.trim();
+  if (!keywords) { notify("Informe ao menos uma keyword.", "info"); return; }
+  if (saveBtn) saveBtn.disabled = true;
+  try {
+    const res = await postForm(`/scenes/${sceneId}/set-keywords`, { keywords });
+    // Atualizar chips de keyword na cena
+    const scene = document.getElementById("scene-" + sceneId);
+    const meta = scene ? scene.querySelector(".scene-meta") : null;
+    if (meta) {
+      meta.querySelectorAll(".kw").forEach(el => el.remove());
+      const tally = meta.querySelector(".tally");
+      (res.keywords || []).forEach(kw => {
+        const chip = document.createElement("span");
+        chip.className = "kw";
+        chip.textContent = kw;
+        meta.insertBefore(chip, tally || null);
+      });
+    }
+    // Atualizar o input com os valores normalizados retornados
+    input.value = (res.keywords || []).join(", ");
+    cancelEditKeywords(sceneId);
+    notify("Keywords salvas.", "ok");
+  } catch (e) {
+    notify("Falha ao salvar: " + e.message, "error");
+  }
+  if (saveBtn) saveBtn.disabled = false;
+}
+</script>
 {% endblock %}

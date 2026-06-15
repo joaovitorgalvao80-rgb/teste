@@ -29,6 +29,8 @@ from starlette.middleware.sessions import SessionMiddleware
 import database as db
 from services import api_usage, asset_search, auto_select, diagnostics, edit_plan, groq_service, kaggle_service, ops_status, packager, scoring, vision
 from services.project_config import (
+    ALLOWED_BROLL_DENSITIES,
+    ALLOWED_VIDEO_STYLES,
     DEFAULT_CONFIG,
     LANGUAGES,
     _coerce_bool,
@@ -366,10 +368,10 @@ def scene_broll_flags(scenes: list[dict], config: dict) -> dict:
             by_part.setdefault(int(s.get("part") or 1), []).append(s)
         for idx in sorted(by_part):
             grp = by_part[idx]
-            for s, flag in zip(grp, edit_plan.decide_broll(grp)):
+            for s, flag in zip(grp, edit_plan.decide_broll(grp, config=config)):
                 out[s["scene_id"]] = flag
     else:
-        for s, flag in zip(scenes, edit_plan.decide_broll(scenes)):
+        for s, flag in zip(scenes, edit_plan.decide_broll(scenes, config=config)):
             out[s["scene_id"]] = flag
     return out
 
@@ -1106,6 +1108,8 @@ async def new_project(
     image_fallback: Annotated[str, Form()] = "",
     long_mode: Annotated[str, Form()] = "",
     script_language: Annotated[str, Form()] = DEFAULT_CONFIG["script_language"],
+    broll_density: Annotated[str, Form()] = DEFAULT_CONFIG["broll_density"],
+    video_style: Annotated[str, Form()] = DEFAULT_CONFIG["video_style"],
     narration_media: Annotated[Optional[UploadFile], File()] = None,
     csrf_token: Annotated[str, Form()] = "",
 ):
@@ -1128,6 +1132,8 @@ async def new_project(
         "image_fallback": image_fallback,
         "long_mode": is_long,
         "script_language": script_language,
+        "broll_density": broll_density,
+        "video_style": video_style,
     })
     pid = db.create_project(user["id"], name.strip() or "projeto", script, config)
     if prepared_narration:
@@ -1145,6 +1151,29 @@ def delete_project(request: Request, project_id: int, csrf_token: Annotated[str,
         db.delete_project(project_id, user["id"])
         remove_project_workspace(project_id)
     return RedirectResponse(PROJECTS_PATH, status_code=303)
+
+
+@app.post("/projects/{project_id}/update-style", responses=ERROR_RESPONSES)
+def update_project_style(
+    request: Request,
+    project_id: int,
+    broll_density: Annotated[str, Form()] = "",
+    video_style: Annotated[str, Form()] = "",
+    csrf_token: Annotated[str, Form()] = "",
+):
+    user = require_user(request)
+    verify_csrf(request, csrf_token)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    cfg = project_config(project)
+    if broll_density and broll_density in ALLOWED_BROLL_DENSITIES:
+        cfg["broll_density"] = broll_density
+    if video_style and video_style in ALLOWED_VIDEO_STYLES:
+        cfg["video_style"] = video_style
+    db.set_project_config(project_id, cfg)
+    mark_project_dirty(project_id)
+    return RedirectResponse(f"/projects/{project_id}#refinamento", status_code=303)
 
 
 @app.get("/projects/{project_id}", response_class=HTMLResponse, responses=ERROR_RESPONSES)
@@ -1406,6 +1435,20 @@ def auto_select_for_project(
     if not target_scenes:
         return 0
 
+    # Coletar assinaturas de assets já aceitos/selecionados fora das cenas-alvo
+    # para que a penalidade de diversidade se aplique cross-cena e cross-rodada.
+    target_scene_ids = {s["id"] for s in target_scenes}
+    seed_signatures: set[tuple[str, str]] = set()
+    seed_authors: set[str] = set()
+    for scene_id, assets in assets_by_scene.items():
+        if scene_id in target_scene_ids:
+            continue
+        for a in assets:
+            if a.get("state") in {"accepted", "selected"}:
+                seed_signatures.add(scoring.asset_signature(a))
+                if a.get("author"):
+                    seed_authors.add(str(a["author"]))
+
     def progress(done: int, total: int) -> None:
         if job_id:
             check_job_canceled(job_id)
@@ -1418,6 +1461,8 @@ def auto_select_for_project(
         groq_key=groq_key,
         model=groq_model or groq_service.DEFAULT_MODEL,
         progress=progress,
+        seed_signatures=seed_signatures,
+        seed_authors=seed_authors,
     )
     if job_id:
         check_job_canceled(job_id)
@@ -1460,12 +1505,11 @@ def run_search_job(
         # decide de antemao quais cenas levam b-roll; nao busca imagem para as
         # cenas avatar-only (apresentacao/respiros) -> menos API, pool mais limpo.
         broll_map = scene_broll_flags(scenes, config)
-        broll_count = sum(1 for s in scenes if broll_map.get(s["scene_id"], True))
-        for scene in scenes:
+        broll_scenes = [s for s in scenes if broll_map.get(s["scene_id"], True)]
+        broll_count = len(broll_scenes)
+        for scene_idx, scene in enumerate(broll_scenes, 1):
             check_job_canceled(job_id)
-            if not broll_map.get(scene["scene_id"], True):
-                continue
-            db.update_job(job_id, status="running", message=f"Buscando {scene['scene_id']}")
+            db.update_job(job_id, status="running", message=f"[{scene_idx}/{broll_count}] {scene['scene_id']} — buscando assets")
             with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="search_assets"):
                 results = asset_search.search_scene(
                     scene["keywords"],
@@ -1483,6 +1527,8 @@ def run_search_job(
             total_added += added
             if added == 0:
                 empty_scenes.append(scene["scene_id"])
+            else:
+                db.update_job(job_id, status="running", message=f"[{scene_idx}/{broll_count}] {scene['scene_id']} → {added} assets")
         # so e erro se HAVIA cenas de b-roll para buscar e nada veio (chaves/APIs);
         # um projeto so de avatar (sem b-roll) legitimamente nao busca nada.
         if broll_count > 0 and total_added <= 0:
@@ -1553,12 +1599,11 @@ def run_part_search_job(
         total_added = 0
         empty_scenes: list[str] = []
         broll_map = scene_broll_flags(scenes, config)
-        broll_count = sum(1 for s in scenes if broll_map.get(s["scene_id"], True))
-        for scene in scenes:
+        broll_scenes = [s for s in scenes if broll_map.get(s["scene_id"], True)]
+        broll_count = len(broll_scenes)
+        for scene_idx, scene in enumerate(broll_scenes, 1):
             check_job_canceled(job_id)
-            if not broll_map.get(scene["scene_id"], True):
-                continue
-            db.update_job(job_id, status="running", message=f"Buscando {scene['scene_id']}")
+            db.update_job(job_id, status="running", message=f"[{scene_idx}/{broll_count}] {scene['scene_id']} — buscando (parte {part_idx})")
             with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="search_part"):
                 results = asset_search.search_scene(
                     scene["keywords"],
@@ -1576,6 +1621,8 @@ def run_part_search_job(
             total_added += added
             if added == 0:
                 empty_scenes.append(scene["scene_id"])
+            else:
+                db.update_job(job_id, status="running", message=f"[{scene_idx}/{broll_count}] {scene['scene_id']} → {added} assets (parte {part_idx})")
         if broll_count > 0 and total_added <= 0:
             raise RuntimeError("Busca retornou zero assets. Verifique chaves, keywords ou disponibilidade das APIs.")
 
@@ -1920,6 +1967,31 @@ def regen_keywords(request: Request, scene_db_id: int, csrf_token: Annotated[str
             model=user.get("groq_model") or groq_service.DEFAULT_MODEL,
             language=config["script_language"],
         )
+    db.update_scene_keywords(scene_db_id, kws)
+    mark_project_dirty(project["id"])
+    return JSONResponse({"keywords": kws})
+
+
+@app.post("/scenes/{scene_db_id}/set-keywords", responses=ERROR_RESPONSES)
+def set_keywords_manual(
+    request: Request,
+    scene_db_id: int,
+    keywords: Annotated[str, Form()],
+    csrf_token: Annotated[str, Form()] = "",
+):
+    """Salva keywords editadas manualmente, sem chamar o Groq."""
+    user = require_user(request)
+    verify_csrf(request, csrf_token)
+    scene = db.get_scene(scene_db_id)
+    if not scene:
+        raise HTTPException(404)
+    project = db.get_project(scene["project_id"], user["id"])
+    if not project:
+        raise HTTPException(404)
+    ensure_project_not_busy(project)
+    kws = [k.strip() for k in (keywords or "").split(",") if k.strip()][:3]
+    if not kws:
+        raise HTTPException(400, "Informe ao menos uma keyword.")
     db.update_scene_keywords(scene_db_id, kws)
     mark_project_dirty(project["id"])
     return JSONResponse({"keywords": kws})
@@ -2974,6 +3046,41 @@ def run_package_job(
     except Exception as exc:  # noqa: BLE001
         db.set_project_status(project_id, "package_failed")
         db.fail_job(job_id, "Falha ao gerar pacote", str(exc))
+
+
+@app.get("/projects/{project_id}/quality-warnings", responses=ERROR_RESPONSES)
+def quality_warnings(request: Request, project_id: int):
+    """Retorna alertas de qualidade dos assets selecionados antes de gerar o pacote."""
+    user = require_user(request)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    config = project_config(project)
+    target_w = resolution_width(config)
+    selected_rows = db.list_assets_by_state(project_id, CHOSEN_ASSET_STATES)
+    scenes = {s["id"]: s for s in db.list_scenes(project_id)}
+    warnings = []
+    for row in selected_rows:
+        scene = scenes.get(row.get("scene_id"))
+        scene_dur = float(scene.get("duration") or 4.0) if scene else 4.0
+        scene_code = scene.get("scene_id", "?") if scene else "?"
+        issues = []
+        w = int(row.get("width") or 0)
+        h = int(row.get("height") or 0)
+        dur = float(row.get("duration") or 0)
+        if row.get("asset_type") == "video":
+            if w > 0 and w < target_w * 0.66:
+                issues.append(f"resolução baixa ({w}x{h}, mínimo recomendado {int(target_w * 0.66)}p)")
+            if dur > 0 and dur < scene_dur * 0.4:
+                issues.append(f"clip curto ({dur:.1f}s para cena de {scene_dur:.1f}s — será loopado)")
+        elif row.get("asset_type") == "image":
+            if w > 0 and w < target_w * 0.5:
+                issues.append(f"imagem pequena ({w}x{h})")
+        if (row.get("vision_verdict") or "") == "descartar":
+            issues.append("IA de visão marcou como inadequado")
+        if issues:
+            warnings.append({"scene_id": scene_code, "issues": issues})
+    return JSONResponse({"warnings": warnings, "total": len(warnings)})
 
 
 @app.post("/projects/{project_id}/package", responses=ERROR_RESPONSES)

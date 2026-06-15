@@ -62,12 +62,16 @@
             <video class="review-thumb" muted loop preload="none" poster="{{ a.preview_url }}"
                    src="{{ a.download_url }}" tabindex="0"
                    onmouseover="this.play()" onmouseout="this.pause()"
-                   onfocus="this.play()" onblur="this.pause()">
+                   onfocus="this.play()" onblur="this.pause()"
+                   onclick="openMediaModal('video', '{{ a.download_url }}', '{{ a.source }} · {{ a.width }}x{{ a.height }}{% if a.duration %} · {{ a.duration }}s{% endif %}{% if a.author %} · {{ a.author }}{% endif %}')"
+                   title="Clique para assistir com som">
               <track kind="captions" src="/static/empty.vtt" srclang="pt-BR" label="Sem legendas">
               <track kind="descriptions" src="/static/empty.vtt" srclang="pt-BR" label="Sem descricoes">
             </video>
           {% else %}
-            <img class="review-thumb" loading="lazy" src="{{ a.preview_url or a.download_url }}" alt="">
+            <img class="review-thumb" loading="lazy" src="{{ a.preview_url or a.download_url }}" alt=""
+                 onclick="openMediaModal('image', '{{ a.preview_url or a.download_url }}', '{{ a.source }} · {{ a.width }}x{{ a.height }}{% if a.author %} · {{ a.author }}{% endif %}')"
+                 title="Clique para ampliar">
           {% endif %}
         </div>
         <div class="take-meta">
@@ -192,7 +196,74 @@
 
 {% block scripts %}
 <script>window.NWRCH_PROJECT_ID = {{ project.id }};</script>
+<style>
+dialog.media-modal {
+  border: none; background: var(--ink-0); border-radius: 6px;
+  padding: var(--sp-4); max-width: min(92vw, 900px); width: 100%;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.7);
+}
+dialog.media-modal::backdrop { background: rgba(0,0,0,0.75); }
+.media-modal-inner { position: relative; }
+.media-modal-close {
+  position: absolute; top: -2px; right: -2px; z-index: 1;
+  background: var(--ink-1); border: 1px solid var(--line-0);
+  color: var(--paper-1); border-radius: 3px; cursor: pointer;
+  width: 28px; height: 28px; font-size: 14px; line-height: 1;
+}
+.media-modal video, .media-modal img {
+  display: block; width: 100%; max-height: 70vh; object-fit: contain;
+  border-radius: 3px; background: #000;
+}
+.media-modal-meta { margin-top: var(--sp-2); font-size: 12px; color: var(--paper-2); text-align: center; }
+.review-thumb { cursor: zoom-in; }
+</style>
+<dialog id="media-modal" class="media-modal">
+  <div class="media-modal-inner">
+    <button type="button" class="media-modal-close" onclick="closeMediaModal()" aria-label="Fechar">&times;</button>
+    <video id="modal-video" controls loop playsinline style="display:none">
+      <track kind="captions" src="/static/empty.vtt" srclang="pt-BR" label="Sem legendas">
+    </video>
+    <img id="modal-image" alt="" style="display:none">
+    <p class="media-modal-meta" id="modal-meta"></p>
+  </div>
+</dialog>
 <script>
+function openMediaModal(type, url, meta) {
+  const modal = document.getElementById("media-modal");
+  const video = document.getElementById("modal-video");
+  const img   = document.getElementById("modal-image");
+  const metaEl = document.getElementById("modal-meta");
+  if (type === "video") {
+    video.src = url;
+    video.style.display = "";
+    img.style.display = "none";
+    video.play().catch(() => {});
+  } else {
+    img.src = url;
+    img.style.display = "";
+    video.style.display = "none";
+    video.pause();
+    video.src = "";
+  }
+  if (metaEl) metaEl.textContent = meta || "";
+  modal.showModal();
+}
+
+function closeMediaModal() {
+  const modal = document.getElementById("media-modal");
+  const video = document.getElementById("modal-video");
+  video.pause();
+  video.src = "";
+  modal.close();
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    const modal = document.getElementById("media-modal");
+    if (modal && modal.open) closeMediaModal();
+  }
+});
+
 // With JS, decision forms become fetch requests; without JS, they POST and 303 back.
 document.addEventListener("DOMContentLoaded", () => {
   document.querySelectorAll("form.review-decision").forEach((form) => {

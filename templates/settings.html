@@ -53,13 +53,19 @@
   </div>
   <div class="usage-bars" style="margin-top:var(--sp-4)">
     {% if api_usage.providers %}
+      <div class="usage-row usage-row-header" style="font-size:11px;color:var(--paper-3);margin-bottom:var(--sp-1)">
+        <span>provedor</span><strong>total</strong><small>1h</small><small>24h</small><small>erros</small>
+      </div>
       {% for item in api_usage.providers %}
       <div class="usage-row">
         <span>{{ item.provider }}</span>
         <strong>{{ item.calls }}</strong>
-        <small>{% if item.failures %}{{ item.failures }} erro(s){% else %}ok{% endif %}</small>
+        <small title="última hora">{{ item.calls_1h }}</small>
+        <small title="últimas 24h">{{ item.calls_24h }}</small>
+        <small>{% if item.failures %}<span style="color:var(--err)">{{ item.failures }} erro(s)</span>{% else %}ok{% endif %}</small>
       </div>
       {% endfor %}
+      <p class="t-small t-faint" style="margin-top:var(--sp-2)">Limites aproximados: Pexels 200/h · Coverr 50/h · Pixabay 5000/mês</p>
     {% else %}
       <p class="t-muted t-small">Nenhuma chamada externa registrada ainda.</p>
     {% endif %}

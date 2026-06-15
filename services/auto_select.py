@@ -275,17 +275,21 @@ def choose_best_takes(
     groq_key: str = "",
     model: str = DEFAULT_MODEL,
     progress: Optional[callable] = None,
+    seed_signatures: Optional[set] = None,
+    seed_authors: Optional[set] = None,
 ) -> dict[int, tuple[int, float, str]]:
     """Escolhe o melhor take por cena.
 
     Retorna {scene_db_id: (asset_id, score, reason)}. Cenas sem candidatos
     ficam de fora. `progress(done, total)` é chamado por lote, se passado.
+    seed_signatures/seed_authors: assinaturas de assets já selecionados em outras
+    cenas (rodadas anteriores), para aplicar a penalidade de diversidade cross-cena.
     """
     pending = _prepare_pending(scenes, candidates_by_scene, config)
 
     results: dict[int, tuple[int, float, str]] = {}
-    used_signatures: set[tuple[str, str]] = set()
-    used_authors: set[str] = set()
+    used_signatures: set[tuple[str, str]] = set(seed_signatures or ())
+    used_authors: set[str] = set(seed_authors or ())
     done = 0
     for start in range(0, len(pending), SCENES_PER_CALL):
         batch = pending[start:start + SCENES_PER_CALL]
