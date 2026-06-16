@@ -24,6 +24,7 @@ import shutil
 import unicodedata
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
@@ -393,9 +394,8 @@ def build_zip(
         jobs.append((scene, gscene, asset, filename, dest))
 
     if jobs:
-        fetch = lambda job: _fetch_asset(job, work_dir, max_bytes)  # noqa: E731
         with ThreadPoolExecutor(max_workers=min(DOWNLOAD_WORKERS, len(jobs))) as pool:
-            ok_flags = list(pool.map(fetch, jobs))
+            ok_flags = list(pool.map(partial(_fetch_asset, work_dir=work_dir, max_bytes=max_bytes), jobs))
     else:
         ok_flags = []
 

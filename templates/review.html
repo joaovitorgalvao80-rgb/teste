@@ -70,11 +70,11 @@
               <track kind="descriptions" src="/static/empty.vtt" srclang="pt-BR" label="Sem descricoes">
             </video>
           {% else %}
-            <img class="review-thumb" loading="lazy" src="{{ a.preview_url or a.download_url }}" alt="Preview do asset {{ a.source }}"
-                 role="button" tabindex="0"
-                 onclick="openMediaModal('image', '{{ a.preview_url or a.download_url }}', '{{ a.source }} · {{ a.width }}x{{ a.height }}{% if a.author %} · {{ a.author }}{% endif %}')"
-                 onkeydown="if(event.key==='Enter'||event.key===' ')this.click()"
-                 title="Clique para ampliar">
+            <button type="button" class="review-thumb-btn"
+                    onclick="openMediaModal('image', '{{ a.preview_url or a.download_url }}', '{{ a.source }} · {{ a.width }}x{{ a.height }}{% if a.author %} · {{ a.author }}{% endif %}')"
+                    title="Clique para ampliar">
+              <img class="review-thumb" loading="lazy" src="{{ a.preview_url or a.download_url }}" alt="Preview do asset {{ a.source }}">
+            </button>
           {% endif %}
         </div>
         <div class="take-meta">
