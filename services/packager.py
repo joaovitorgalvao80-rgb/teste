@@ -359,6 +359,21 @@ def _fetch_asset(job: tuple, work_dir: Path, max_bytes: int) -> bool:
     return _download(asset["download_url"], dest, max_bytes)
 
 
+def _build_download_jobs(
+    scenes: list[dict], guide: dict, selected_by_scene: dict, tmp: Path
+) -> list[tuple]:
+    jobs = []
+    for scene, gscene in zip(scenes, guide["scenes"]):
+        asset = selected_by_scene.get(scene["id"])
+        if not asset or not gscene.get("selected_asset"):
+            continue
+        filename = Path(gscene["selected_asset"]).name
+        dest = tmp / filename
+        logger.info("zip: baixando %s <- %s %sx%s", scene["scene_id"], asset["source"], asset.get("width"), asset.get("height"))
+        jobs.append((scene, gscene, asset, filename, dest))
+    return jobs
+
+
 def build_zip(
     project: dict,
     config: dict,
@@ -383,15 +398,7 @@ def build_zip(
     tmp.mkdir(parents=True, exist_ok=True)
     file_by_scene: dict[str, Path] = {}
 
-    jobs = []
-    for scene, gscene in zip(scenes, guide["scenes"]):
-        asset = selected_by_scene.get(scene["id"])
-        if not asset or not gscene.get("selected_asset"):
-            continue
-        filename = Path(gscene["selected_asset"]).name
-        dest = tmp / filename
-        logger.info("zip: baixando %s <- %s %sx%s", scene["scene_id"], asset["source"], asset.get("width"), asset.get("height"))
-        jobs.append((scene, gscene, asset, filename, dest))
+    jobs = _build_download_jobs(scenes, guide, selected_by_scene, tmp)
 
     if jobs:
         with ThreadPoolExecutor(max_workers=min(DOWNLOAD_WORKERS, len(jobs))) as pool:
