@@ -64,13 +64,16 @@
                    onmouseover="this.play()" onmouseout="this.pause()"
                    onfocus="this.play()" onblur="this.pause()"
                    onclick="openMediaModal('video', '{{ a.download_url }}', '{{ a.source }} · {{ a.width }}x{{ a.height }}{% if a.duration %} · {{ a.duration }}s{% endif %}{% if a.author %} · {{ a.author }}{% endif %}')"
+                   onkeydown="if(event.key==='Enter'||event.key===' ')this.click()"
                    title="Clique para assistir com som">
               <track kind="captions" src="/static/empty.vtt" srclang="pt-BR" label="Sem legendas">
               <track kind="descriptions" src="/static/empty.vtt" srclang="pt-BR" label="Sem descricoes">
             </video>
           {% else %}
-            <img class="review-thumb" loading="lazy" src="{{ a.preview_url or a.download_url }}" alt=""
+            <img class="review-thumb" loading="lazy" src="{{ a.preview_url or a.download_url }}" alt="Preview do asset {{ a.source }}"
+                 role="button" tabindex="0"
                  onclick="openMediaModal('image', '{{ a.preview_url or a.download_url }}', '{{ a.source }} · {{ a.width }}x{{ a.height }}{% if a.author %} · {{ a.author }}{% endif %}')"
+                 onkeydown="if(event.key==='Enter'||event.key===' ')this.click()"
                  title="Clique para ampliar">
           {% endif %}
         </div>

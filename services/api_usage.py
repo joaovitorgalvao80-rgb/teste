@@ -11,7 +11,7 @@ import time
 from typing import Iterator, Optional
 
 
-_CTX = contextvars.ContextVar("nwrch_api_usage_ctx", default={})
+_CTX = contextvars.ContextVar("nwrch_api_usage_ctx", default=None)
 
 
 @contextlib.contextmanager

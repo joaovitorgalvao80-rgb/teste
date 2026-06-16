@@ -82,7 +82,7 @@
   <form id="import-keys-form" style="margin-top:var(--sp-3)" enctype="multipart/form-data">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="row">
-      <input type="file" name="keys_file" accept=".txt,.json,text/plain,application/json" required>
+      <input type="file" name="keys_file" accept=".txt,.json,text/plain,application/json" required aria-label="Arquivo de chaves de API (.txt ou kaggle.json)">
       <button class="btn btn-secondary btn-sm" type="submit">Importar e detectar</button>
     </div>
     <p class="t-small" id="import-keys-result" style="margin-top:var(--sp-2)"></p>

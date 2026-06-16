@@ -351,6 +351,13 @@ def _write_package_zip(
                 zf.write(extra, extra.name)
 
 
+def _fetch_asset(job: tuple, work_dir: Path, max_bytes: int) -> bool:
+    _scene, _gscene, asset, _filename, dest = job
+    if asset.get("source") == "generated":
+        return _copy_generated(asset, work_dir, dest, max_bytes)
+    return _download(asset["download_url"], dest, max_bytes)
+
+
 def build_zip(
     project: dict,
     config: dict,
@@ -371,12 +378,10 @@ def build_zip(
             gscene["broll"] = False
     max_bytes = int(max_download_mb * 1024 * 1024)
 
-    # baixa cada asset selecionado para uma pasta temporaria
     tmp = work_dir / "assets_tmp"
     tmp.mkdir(parents=True, exist_ok=True)
     file_by_scene: dict[str, Path] = {}
 
-    # baixa em paralelo (I/O bound); resultados processados na ordem das cenas
     jobs = []
     for scene, gscene in zip(scenes, guide["scenes"]):
         asset = selected_by_scene.get(scene["id"])
@@ -387,15 +392,10 @@ def build_zip(
         logger.info("zip: baixando %s <- %s %sx%s", scene["scene_id"], asset["source"], asset.get("width"), asset.get("height"))
         jobs.append((scene, gscene, asset, filename, dest))
 
-    def _fetch(job):
-        _scene, _gscene, asset, _filename, dest = job
-        if asset.get("source") == "generated":
-            return _copy_generated(asset, work_dir, dest, max_bytes)
-        return _download(asset["download_url"], dest, max_bytes)
-
     if jobs:
+        fetch = lambda job: _fetch_asset(job, work_dir, max_bytes)  # noqa: E731
         with ThreadPoolExecutor(max_workers=min(DOWNLOAD_WORKERS, len(jobs))) as pool:
-            ok_flags = list(pool.map(_fetch, jobs))
+            ok_flags = list(pool.map(fetch, jobs))
     else:
         ok_flags = []
 

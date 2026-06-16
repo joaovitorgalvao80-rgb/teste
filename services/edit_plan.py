@@ -184,6 +184,19 @@ def _scene_duration(scene: dict) -> float:
 _KEY_MOMENTS_SCORE_THRESHOLD = 2
 
 
+def _apply_density(
+    flags: list[bool], i: int, scene: dict, total: int, run: float, density: str
+) -> float:
+    """Aplica o critério de densidade e marca flags[i]. Retorna o novo run."""
+    if density == "key_moments":
+        if _scene_score(scene, i, total) < _KEY_MOMENTS_SCORE_THRESHOLD:
+            return 0.0
+    elif density != "full_coverage" and run >= MAX_BROLL_RUN_SECONDS:
+        return 0.0
+    flags[i] = True
+    return run + _scene_duration(scene)
+
+
 def _broll_flags(scenes: list[dict], density: str = "moderate", video_style: str = "avatar_broll") -> list[bool]:
     """Decide, cena a cena, se o b-roll cobre o avatar (deterministico).
 
@@ -198,40 +211,15 @@ def _broll_flags(scenes: list[dict], density: str = "moderate", video_style: str
     n = len(scenes)
     flags = [False] * n
     run = 0.0
-    total = n
 
     for i, scene in enumerate(scenes):
-        # apresentacao/saudacao nunca leva b-roll (indep. do density)
         if _is_presentation(scene.get("narration")):
             run = 0.0
             continue
-
-        if video_style != "broll_only":
-            # Com avatar: primeira e última cena ficam com o apresentador
-            if i == 0 or i == n - 1:
-                run = 0.0
-                continue
-
-        if density == "key_moments":
-            score = _scene_score(scene, i, total)
-            if score < _KEY_MOMENTS_SCORE_THRESHOLD:
-                run = 0.0
-                continue
-            flags[i] = True
-            run += _scene_duration(scene)
-
-        elif density == "full_coverage":
-            # Sem limite de corrida de b-roll — quase tudo coberto
-            flags[i] = True
-            run += _scene_duration(scene)
-
-        else:  # moderate (padrão)
-            duration = _scene_duration(scene)
-            if run >= MAX_BROLL_RUN_SECONDS:
-                run = 0.0
-                continue
-            flags[i] = True
-            run += duration
+        if video_style != "broll_only" and (i == 0 or i == n - 1):
+            run = 0.0
+            continue
+        run = _apply_density(flags, i, scene, n, run, density)
 
     _apply_overrides(flags, scenes)
     return flags
@@ -296,6 +284,18 @@ def _pick_broll_target(oversized: list[int], source_scenes: list[dict], n: int) 
     )
 
 
+def _apply_plan_overrides(plan_scenes: list[dict], source_scenes: list[dict]) -> None:
+    for scene, src in zip(plan_scenes, source_scenes):
+        if _broll_override(src) == 0 and _is_presentation(src.get("narration")):
+            scene["broll"] = False
+    for scene, src in zip(plan_scenes, source_scenes):
+        ov = _broll_override(src)
+        if ov == 1:
+            scene["broll"] = True
+        elif ov == -1:
+            scene["broll"] = False
+
+
 def enforce_broll_policy(plan_scenes: list[dict], source_scenes: list[dict]) -> dict:
     """Garante as regras de alternancia mesmo quando o LLM decide o b-roll.
 
@@ -307,19 +307,7 @@ def enforce_broll_policy(plan_scenes: list[dict], source_scenes: list[dict]) -> 
     if n == 0:
         return {"coverage": 0.0, "max_avatar_solo_seconds": MAX_AVATAR_SOLO_SECONDS}
 
-    # apresentacao/saudacao nunca leva b-roll (vale p/ deterministico e LLM),
-    # exceto quando o usuario travou a cena manualmente.
-    for scene, src in zip(plan_scenes, source_scenes):
-        if _broll_override(src) == 0 and _is_presentation(src.get("narration")):
-            scene["broll"] = False
-
-    # overrides manuais vencem as heuristicas acima (locks).
-    for scene, src in zip(plan_scenes, source_scenes):
-        ov = _broll_override(src)
-        if ov == 1:
-            scene["broll"] = True
-        elif ov == -1:
-            scene["broll"] = False
+    _apply_plan_overrides(plan_scenes, source_scenes)
 
     # nunca 100% b-roll: o avatar precisa abrir o video. Cede numa cena livre
     # (nao travada em b-roll) para nao desfazer um pedido manual.

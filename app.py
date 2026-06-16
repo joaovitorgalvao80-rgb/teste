@@ -117,6 +117,8 @@ MEDIA_TYPE_JSON = "application/json"
 MEDIA_TYPE_MP4 = "video/mp4"
 MSG_PROJECT_NOT_FOUND = "Projeto nao encontrado."
 MSG_NO_API_KEYS = "Cadastre ao menos uma chave de API em /settings."
+MSG_SELECTING_TAKES = "Selecionando os melhores takes"
+MSG_PART_NOT_FOUND = "Parte nao encontrada."
 
 # Respostas de erro comuns documentadas no OpenAPI (responses=) das rotas que
 # levantam HTTPException. Centraliza a documentacao em vez de repetir por rota.
@@ -421,6 +423,20 @@ def annotate_broll_requirements(scenes: list[dict], config: dict) -> dict:
     return stats
 
 
+def _chosen_asset_reasons(chosen: dict, scene: dict, target_w: int) -> list[str]:
+    reasons: list[str] = []
+    if chosen.get("low_relevance"):
+        reasons.append("take escolhido com baixa relevancia")
+    if chosen.get("vision_verdict") == "descartar":
+        reasons.append("visao sugere descartar")
+    if chosen.get("asset_type") == "video":
+        if float(chosen.get("duration") or 0) < float(scene.get("duration") or 0) * 0.5:
+            reasons.append("video curto para a cena")
+    if int(chosen.get("width") or 0) and int(chosen.get("width") or 0) < target_w * 0.66:
+        reasons.append("resolucao baixa")
+    return reasons
+
+
 def problem_scenes(scenes: list[dict], config: dict, limit: int = 8) -> list[dict]:
     """Cenas de b-roll que merecem revisao antes de gastar render."""
     target_w = resolution_width(config)
@@ -428,23 +444,14 @@ def problem_scenes(scenes: list[dict], config: dict, limit: int = 8) -> list[dic
     for scene in scenes:
         if not scene.get("broll_required"):
             continue
-        reasons: list[str] = []
         assets = scene.get("assets") or []
         chosen = scene.get("selected")
         if not assets:
-            reasons.append("sem candidatos")
+            reasons: list[str] = ["sem candidatos"]
         elif not chosen:
-            reasons.append("sem take escolhido")
+            reasons = ["sem take escolhido"]
         else:
-            if chosen.get("low_relevance"):
-                reasons.append("take escolhido com baixa relevancia")
-            if chosen.get("vision_verdict") == "descartar":
-                reasons.append("visao sugere descartar")
-            if chosen.get("asset_type") == "video":
-                if float(chosen.get("duration") or 0) < float(scene.get("duration") or 0) * 0.5:
-                    reasons.append("video curto para a cena")
-            if int(chosen.get("width") or 0) and int(chosen.get("width") or 0) < target_w * 0.66:
-                reasons.append("resolucao baixa")
+            reasons = _chosen_asset_reasons(chosen, scene, target_w)
         if scene.get("low_relevance_count", 0) >= max(2, len(assets) // 2) and assets:
             reasons.append(f"{scene['low_relevance_count']} candidatos fracos")
         if reasons:
@@ -1398,6 +1405,41 @@ def generate_map(
 # ------------------------------------------------------------------
 # Buscar assets + selecao automatica opcional
 # ------------------------------------------------------------------
+def _collect_pending_targets(
+    scenes: list[dict], assets_by_scene: dict, broll_map: dict
+) -> tuple[list[dict], dict]:
+    target_scenes: list[dict] = []
+    candidates_by_scene: dict[int, list[dict]] = {}
+    for scene in scenes:
+        if not broll_map.get(scene["scene_id"], True):
+            continue
+        assets = assets_by_scene.get(scene["id"], [])
+        if any(a["state"] == "accepted" for a in assets):
+            continue
+        pending = [a for a in assets if a["state"] in {"pending", "selected", "favorite"}]
+        if not pending:
+            continue
+        target_scenes.append(scene)
+        candidates_by_scene[scene["id"]] = pending
+    return target_scenes, candidates_by_scene
+
+
+def _collect_seed_diversity(
+    assets_by_scene: dict, target_scene_ids: set
+) -> tuple[set, set]:
+    seed_signatures: set[tuple[str, str]] = set()
+    seed_authors: set[str] = set()
+    for scene_id, assets in assets_by_scene.items():
+        if scene_id in target_scene_ids:
+            continue
+        for a in assets:
+            if a.get("state") in {"accepted", "selected"}:
+                seed_signatures.add(scoring.asset_signature(a))
+                if a.get("author"):
+                    seed_authors.add(str(a["author"]))
+    return seed_signatures, seed_authors
+
+
 def auto_select_for_project(
     project_id: int,
     config: dict,
@@ -1418,36 +1460,13 @@ def auto_select_for_project(
         scenes = [s for s in scenes if int(s.get("part") or 1) == part_idx]
     assets_by_scene = db.list_assets_for_project(project_id)
     broll_map = scene_broll_flags(scenes, config)
-    target_scenes = []
-    candidates_by_scene: dict[int, list[dict]] = {}
-    for scene in scenes:
-        if not broll_map.get(scene["scene_id"], True):
-            continue
-        assets = assets_by_scene.get(scene["id"], [])
-        if any(a["state"] == "accepted" for a in assets):
-            continue
-        pending = [a for a in assets if a["state"] in {"pending", "selected", "favorite"}]
-        if not pending:
-            continue
-        target_scenes.append(scene)
-        candidates_by_scene[scene["id"]] = pending
+    target_scenes, candidates_by_scene = _collect_pending_targets(scenes, assets_by_scene, broll_map)
 
     if not target_scenes:
         return 0
 
-    # Coletar assinaturas de assets já aceitos/selecionados fora das cenas-alvo
-    # para que a penalidade de diversidade se aplique cross-cena e cross-rodada.
     target_scene_ids = {s["id"] for s in target_scenes}
-    seed_signatures: set[tuple[str, str]] = set()
-    seed_authors: set[str] = set()
-    for scene_id, assets in assets_by_scene.items():
-        if scene_id in target_scene_ids:
-            continue
-        for a in assets:
-            if a.get("state") in {"accepted", "selected"}:
-                seed_signatures.add(scoring.asset_signature(a))
-                if a.get("author"):
-                    seed_authors.add(str(a["author"]))
+    seed_signatures, seed_authors = _collect_seed_diversity(assets_by_scene, target_scene_ids)
 
     def progress(done: int, total: int) -> None:
         if job_id:
@@ -1629,7 +1648,7 @@ def run_part_search_job(
         # Selecao automatica embutida: ao terminar a busca da parte, a IA ja
         # escolhe o melhor take de cada cena e a parte cai direto na revisao.
         check_job_canceled(job_id)
-        db.update_job(job_id, status="running", message="Selecionando os melhores takes")
+        db.update_job(job_id, status="running", message=MSG_SELECTING_TAKES)
         with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="search_part_auto_select"):
             chosen = auto_select_for_project(
                 project_id, config, groq_key, groq_model, job_id=job_id,
@@ -1679,7 +1698,7 @@ def search_part(
         raise HTTPException(400, "Gere o mapa visual antes de buscar assets.")
     part = db.get_part(project_id, part_idx)
     if not part:
-        raise HTTPException(404, "Parte nao encontrada.")
+        raise HTTPException(404, MSG_PART_NOT_FOUND)
     # Fluxo estritamente sequencial: so libera esta parte se a anterior ja foi curada.
     if part_idx > 1:
         prev = db.get_part(project_id, part_idx - 1)
@@ -1739,7 +1758,7 @@ def run_part_auto_select_vision_job(
                 nvidia_key=nvidia_key, part_idx=part_idx,
             )
         check_job_canceled(job_id)
-        db.update_job(job_id, status="running", message="Selecionando os melhores takes")
+        db.update_job(job_id, status="running", message=MSG_SELECTING_TAKES)
         with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="part_vision_auto_select"):
             chosen = auto_select_for_project(
                 project_id, config, groq_key, groq_model, job_id=job_id,
@@ -1774,7 +1793,7 @@ def part_auto_select_vision(
     ensure_project_not_busy(project)
     part = db.get_part(project_id, part_idx)
     if not part:
-        raise HTTPException(404, "Parte nao encontrada.")
+        raise HTTPException(404, MSG_PART_NOT_FOUND)
     assets_by_scene = db.list_assets_for_project(project_id)
     scenes = [s for s in db.list_scenes(project_id) if int(s.get("part") or 1) == part_idx]
     if not any(assets_by_scene.get(s["id"]) for s in scenes):
@@ -1839,7 +1858,7 @@ def confirm_part(
     ensure_project_not_busy(project)
     part = db.get_part(project_id, part_idx)
     if not part:
-        raise HTTPException(404, "Parte nao encontrada.")
+        raise HTTPException(404, MSG_PART_NOT_FOUND)
     scenes = [s for s in db.list_scenes(project_id) if int(s.get("part") or 1) == part_idx]
     if not scenes:
         raise HTTPException(400, "Parte sem cenas.")
@@ -2109,7 +2128,7 @@ def run_auto_select_job(
 ) -> None:
     try:
         check_job_canceled(job_id)
-        db.update_job(job_id, status="running", message="Selecionando os melhores takes")
+        db.update_job(job_id, status="running", message=MSG_SELECTING_TAKES)
         project = db.get_project(project_id, user_id)
         if not project:
             raise RuntimeError(MSG_PROJECT_NOT_FOUND)
@@ -2205,6 +2224,13 @@ def _analyze_scene_pending_assets(
     return len(ranked)
 
 
+def _inject_video_theme(scenes: list[dict], config: dict) -> None:
+    video_theme = str(config.get("video_theme") or "").strip()
+    if video_theme:
+        for s in scenes:
+            s["video_theme"] = video_theme
+
+
 def analyze_pending_vision(
     project_id: int,
     user_id: int,
@@ -2230,11 +2256,7 @@ def analyze_pending_vision(
     scenes = db.list_scenes(project_id)
     if part_idx is not None:
         scenes = [s for s in scenes if int(s.get("part") or 1) == part_idx]
-    # Tema global do video ancora o julgamento da visao (rejeita fora-do-tema).
-    video_theme = str(config.get("video_theme") or "").strip()
-    if video_theme:
-        for s in scenes:
-            s["video_theme"] = video_theme
+    _inject_video_theme(scenes, config)
     assets_by_scene = db.list_assets_for_project(project_id)
 
     providers = _build_vision_providers(groq_key, nvidia_key)
@@ -2876,7 +2898,7 @@ class _PackageCtx:
         self.rejected_payload = rejected_payload
 
 
-def _validate_package_selection(scenes, selected_by_scene, broll_required, required_scene_db_ids) -> None:
+def _validate_package_selection(selected_by_scene, broll_required, required_scene_db_ids) -> None:
     if not broll_required:
         if selected_by_scene:
             return
@@ -3028,7 +3050,7 @@ def run_package_job(
         selected_rows = db.list_assets_by_state(project_id, CHOSEN_ASSET_STATES)
         selected_by_scene = {row["scene_id"]: row for row in selected_rows}
         rejected = db.list_assets_by_state(project_id, ["rejected"])
-        _validate_package_selection(scenes, selected_by_scene, broll_required, required_scene_db_ids)
+        _validate_package_selection(selected_by_scene, broll_required, required_scene_db_ids)
         _fallback_unselected_brolls_to_avatar(scenes, selected_by_scene)
         remove_project_artifacts(project_id)
         rejected_payload = [
@@ -3048,6 +3070,23 @@ def run_package_job(
         db.fail_job(job_id, "Falha ao gerar pacote", str(exc))
 
 
+def _asset_quality_issues(row: dict, scene_dur: float, target_w: int) -> list[str]:
+    issues: list[str] = []
+    w = int(row.get("width") or 0)
+    h = int(row.get("height") or 0)
+    dur = float(row.get("duration") or 0)
+    if row.get("asset_type") == "video":
+        if 0 < w < target_w * 0.66:
+            issues.append(f"resolução baixa ({w}x{h}, mínimo recomendado {int(target_w * 0.66)}p)")
+        if 0 < dur < scene_dur * 0.4:
+            issues.append(f"clip curto ({dur:.1f}s para cena de {scene_dur:.1f}s — será loopado)")
+    elif row.get("asset_type") == "image" and 0 < w < target_w * 0.5:
+        issues.append(f"imagem pequena ({w}x{h})")
+    if (row.get("vision_verdict") or "") == "descartar":
+        issues.append("IA de visão marcou como inadequado")
+    return issues
+
+
 @app.get("/projects/{project_id}/quality-warnings", responses=ERROR_RESPONSES)
 def quality_warnings(request: Request, project_id: int):
     """Retorna alertas de qualidade dos assets selecionados antes de gerar o pacote."""
@@ -3064,20 +3103,7 @@ def quality_warnings(request: Request, project_id: int):
         scene = scenes.get(row.get("scene_id"))
         scene_dur = float(scene.get("duration") or 4.0) if scene else 4.0
         scene_code = scene.get("scene_id", "?") if scene else "?"
-        issues = []
-        w = int(row.get("width") or 0)
-        h = int(row.get("height") or 0)
-        dur = float(row.get("duration") or 0)
-        if row.get("asset_type") == "video":
-            if w > 0 and w < target_w * 0.66:
-                issues.append(f"resolução baixa ({w}x{h}, mínimo recomendado {int(target_w * 0.66)}p)")
-            if dur > 0 and dur < scene_dur * 0.4:
-                issues.append(f"clip curto ({dur:.1f}s para cena de {scene_dur:.1f}s — será loopado)")
-        elif row.get("asset_type") == "image":
-            if w > 0 and w < target_w * 0.5:
-                issues.append(f"imagem pequena ({w}x{h})")
-        if (row.get("vision_verdict") or "") == "descartar":
-            issues.append("IA de visão marcou como inadequado")
+        issues = _asset_quality_issues(row, scene_dur, target_w)
         if issues:
             warnings.append({"scene_id": scene_code, "issues": issues})
     return JSONResponse({"warnings": warnings, "total": len(warnings)})

@@ -754,7 +754,7 @@ const AVATAR_OVERRIDE_LABELS = {
 
 async function setAvatarOverride(sceneId, mode, btn) {
   const group = document.getElementById("avatar-override-" + sceneId);
-  if (btn && btn.classList.contains("is-active")) return; // ja esta nesse modo
+  if (btn?.classList.contains("is-active")) return; // ja esta nesse modo
   try {
     const res = await postForm(`/scenes/${sceneId}/avatar-override`, { mode });
     if (group) {
