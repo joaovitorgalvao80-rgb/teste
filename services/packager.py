@@ -19,14 +19,15 @@ import csv
 import io
 import json
 import logging
+import os
 import re
 import shutil
+import time
 import unicodedata
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
-from functools import partial
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 from urllib.parse import urlparse
 
 import requests
@@ -34,6 +35,9 @@ import requests
 logger = logging.getLogger("nwrch.packager")
 
 DOWNLOAD_WORKERS = 4
+DOWNLOAD_CONNECT_TIMEOUT = float(os.getenv("ASSET_DOWNLOAD_CONNECT_TIMEOUT", "8"))
+DOWNLOAD_READ_TIMEOUT = float(os.getenv("ASSET_DOWNLOAD_READ_TIMEOUT", "20"))
+DOWNLOAD_TOTAL_TIMEOUT = float(os.getenv("ASSET_DOWNLOAD_TOTAL_TIMEOUT", "45"))
 
 
 def _slug(text: str, max_len: int = 28) -> str:
@@ -82,8 +86,13 @@ def _copy_generated(asset: dict, work_dir: Path, dest: Path, max_bytes: int) -> 
 
 
 def _download(url: str, dest: Path, max_bytes: int) -> bool:
+    start = time.monotonic()
     try:
-        with requests.get(url, stream=True, timeout=90) as resp:
+        with requests.get(
+            url,
+            stream=True,
+            timeout=(DOWNLOAD_CONNECT_TIMEOUT, DOWNLOAD_READ_TIMEOUT),
+        ) as resp:
             resp.raise_for_status()
             total = int(resp.headers.get("content-length", 0) or 0)
             if total and total > max_bytes:
@@ -94,6 +103,11 @@ def _download(url: str, dest: Path, max_bytes: int) -> bool:
                 for chunk in resp.iter_content(chunk_size=1024 * 512):
                     if not chunk:
                         continue
+                    if time.monotonic() - start > DOWNLOAD_TOTAL_TIMEOUT:
+                        logger.warning("skip: download excedeu %.0fs: %s", DOWNLOAD_TOTAL_TIMEOUT, url)
+                        f.close()
+                        dest.unlink(missing_ok=True)
+                        return False
                     got += len(chunk)
                     if got > max_bytes:
                         logger.warning("skip: passou do limite no meio do download")
@@ -395,6 +409,37 @@ def _build_download_jobs(
     return jobs
 
 
+def _run_download_jobs(
+    jobs: list[tuple],
+    work_dir: Path,
+    max_bytes: int,
+    progress: Optional[Callable[[int, int, dict, bool], None]] = None,
+) -> list[bool]:
+    if not jobs:
+        return []
+    ok_flags = [False] * len(jobs)
+    workers = min(DOWNLOAD_WORKERS, len(jobs))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_fetch_asset, job, work_dir, max_bytes): idx
+            for idx, job in enumerate(jobs)
+        }
+        done = 0
+        for future in as_completed(futures):
+            idx = futures[future]
+            ok = False
+            try:
+                ok = bool(future.result())
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("download worker falhou: %s", exc)
+            ok_flags[idx] = ok
+            done += 1
+            if progress:
+                scene = jobs[idx][0]
+                progress(done, len(jobs), scene, ok)
+    return ok_flags
+
+
 def build_zip(
     project: dict,
     config: dict,
@@ -407,6 +452,7 @@ def build_zip(
     editorial_report: Optional[dict] = None,
     extra_files: Optional[list[Path]] = None,
     zip_basename: str = "",
+    progress: Optional[Callable[[int, int, dict, bool], None]] = None,
 ) -> Path:
     """Baixa assets selecionados, renomeia e monta o ZIP final. Retorna o caminho."""
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -422,18 +468,14 @@ def build_zip(
 
     jobs = _build_download_jobs(scenes, guide, selected_by_scene, tmp)
 
-    if jobs:
-        with ThreadPoolExecutor(max_workers=min(DOWNLOAD_WORKERS, len(jobs))) as pool:
-            ok_flags = list(pool.map(partial(_fetch_asset, work_dir=work_dir, max_bytes=max_bytes), jobs))
-    else:
-        ok_flags = []
+    ok_flags = _run_download_jobs(jobs, work_dir, max_bytes, progress=progress)
 
     sources = _apply_download_results(jobs, ok_flags, file_by_scene)
 
     if not file_by_scene:
         raise RuntimeError(
             "nenhum asset selecionado conseguiu ser baixado; "
-            "verifique URLs expiradas, limite de MB ou conexao com Pexels/Pixabay"
+            "verifique URLs expiradas, limite de MB ou conexao com os provedores"
         )
     # cenas avatar-only (broll=False) nao tem asset de proposito: nao sao "faltando".
     # Ja um take escolhido que falha no download continua sendo erro, porque o pacote

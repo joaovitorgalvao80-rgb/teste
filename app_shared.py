@@ -1666,6 +1666,18 @@ def _fallback_unselected_brolls_to_avatar(scenes: list[dict], selected_by_scene:
             scene["broll"] = False
 
 
+def _package_download_progress(job_id: int, prefix: str):
+    def _progress(done: int, total: int, scene: dict, ok: bool) -> None:
+        status = "ok" if ok else "falhou"
+        db.update_job(
+            job_id,
+            status="running",
+            message=f"{prefix} {done}/{total}: {scene.get('scene_id', 'cena')} ({status})",
+        )
+
+    return _progress
+
+
 def _build_part_zip(ctx: "_PackageCtx", part: dict, parts_count: int, avatar_input) -> Optional[str]:
     """Monta o ZIP de uma parte (modo longo)."""
     idx = part["part_idx"]
@@ -1716,6 +1728,7 @@ def _build_part_zip(ctx: "_PackageCtx", part: dict, parts_count: int, avatar_inp
         editorial_report=editorial_report,
         extra_files=extras,
         zip_basename=f"{ctx.project['name']}_pt{idx:02d}",
+        progress=_package_download_progress(ctx.job_id, f"Parte {idx}: baixando asset"),
     )
     check_job_canceled(ctx.job_id)
     db.update_part(
@@ -1792,6 +1805,7 @@ def _package_single_mode(ctx: "_PackageCtx") -> None:
         extra_files=[
             f for f in (narration_file, avatar_file, curation_report_path(ctx.project_id)) if f and f.exists()
         ],
+        progress=_package_download_progress(ctx.job_id, "Baixando asset"),
     )
     check_job_canceled(ctx.job_id)
     db.set_project_status(ctx.project_id, "packaged")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -183,6 +184,74 @@ class SourceEditorialTest(unittest.TestCase):
         self.assertIn("editorial_report.json", names)
         self.assertEqual(manifest[0]["source"], "firecrawl")
         self.assertEqual(other[0]["discovery_provider"], "firecrawl")
+
+    def test_packager_reports_download_progress(self) -> None:
+        project = {"name": "Progress"}
+        config = {"avatar_safe_area": "right", "resolution": "1920x1080", "format": "16:9"}
+        scenes = [
+            {
+                "id": 1,
+                "scene_id": "scene_001",
+                "idx": 1,
+                "zone": "GANCHO",
+                "start_time": 0.0,
+                "end_time": 4.0,
+                "duration": 4.0,
+                "narration": "teste",
+                "visual_goal": "teste",
+                "keywords": [],
+                "must_show": [],
+                "must_not_show": [],
+                "asset_type": "image",
+                "overlay_text": "",
+                "avatar_safe_area": "right",
+            }
+        ]
+        selected = {1: {"source": "pexels", "download_url": "https://example.com/a.jpg", "asset_type": "image"}}
+        seen = []
+
+        def fake_download(_url, dest, _max_bytes):
+            dest.write_bytes(b"fake-image")
+            return True
+
+        with patch.object(packager, "_download", side_effect=fake_download):
+            packager.build_zip(
+                project,
+                config,
+                scenes,
+                selected,
+                [],
+                self.root / "work",
+                progress=lambda done, total, scene, ok: seen.append((done, total, scene["scene_id"], ok)),
+            )
+
+        self.assertEqual(seen, [(1, 1, "scene_001", True)])
+
+    def test_download_stops_on_total_timeout(self) -> None:
+        class FakeResponse:
+            status_code = 200
+            headers = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def raise_for_status(self):
+                return None
+
+            def iter_content(self, chunk_size):
+                yield b"x" * min(chunk_size, 4)
+
+        ticks = iter([0.0, packager.DOWNLOAD_TOTAL_TIMEOUT + 1.0])
+        dest = self.root / "slow.bin"
+        with patch.object(packager.requests, "get", return_value=FakeResponse()):
+            with patch.object(time, "monotonic", side_effect=lambda: next(ticks)):
+                ok = packager._download("https://example.com/slow.bin", dest, 1024)
+
+        self.assertFalse(ok)
+        self.assertFalse(dest.exists())
 
 
 if __name__ == "__main__":
