@@ -14,11 +14,12 @@ import tempfile
 import time
 import uuid
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Optional
 from urllib.parse import urlparse
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, Request, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Request, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, FileResponse, PlainTextResponse
 from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
@@ -1097,6 +1098,19 @@ def projects_page(request: Request):
     return render_template(request, "projects.html", {"user": user, "projects": projects})
 
 
+@dataclass
+class NewProjectConfig:
+    avatar_safe_area: Annotated[str, Form()] = "right"
+    visual_style: Annotated[str, Form()] = DEFAULT_CONFIG["visual_style"]
+    resolution: Annotated[str, Form()] = "1920x1080"
+    scene_duration: Annotated[float, Form()] = 4.0
+    image_fallback: Annotated[str, Form()] = ""
+    long_mode: Annotated[str, Form()] = ""
+    script_language: Annotated[str, Form()] = DEFAULT_CONFIG["script_language"]
+    broll_density: Annotated[str, Form()] = DEFAULT_CONFIG["broll_density"]
+    video_style: Annotated[str, Form()] = DEFAULT_CONFIG["video_style"]
+
+
 @app.get("/projects/new", response_class=HTMLResponse, responses=ERROR_RESPONSES)
 def new_project_page(request: Request):
     user = require_user(request)
@@ -1108,15 +1122,7 @@ async def new_project(
     request: Request,
     name: Annotated[str, Form()],
     script: Annotated[str, Form()],
-    avatar_safe_area: Annotated[str, Form()] = "right",
-    visual_style: Annotated[str, Form()] = DEFAULT_CONFIG["visual_style"],
-    resolution: Annotated[str, Form()] = "1920x1080",
-    scene_duration: Annotated[float, Form()] = 4.0,
-    image_fallback: Annotated[str, Form()] = "",
-    long_mode: Annotated[str, Form()] = "",
-    script_language: Annotated[str, Form()] = DEFAULT_CONFIG["script_language"],
-    broll_density: Annotated[str, Form()] = DEFAULT_CONFIG["broll_density"],
-    video_style: Annotated[str, Form()] = DEFAULT_CONFIG["video_style"],
+    cfg: Annotated[NewProjectConfig, Depends()],
     narration_media: Annotated[Optional[UploadFile], File()] = None,
     csrf_token: Annotated[str, Form()] = "",
 ):
@@ -1127,20 +1133,20 @@ async def new_project(
         raw = await read_upload_limited(narration_media, MAX_TRANSCRIBE_UPLOAD_MB * 1024 * 1024, "Narração")
         if raw:
             prepared_narration = prepare_narration_media(raw, narration_media.filename)
-    is_long = _coerce_bool(long_mode)
+    is_long = _coerce_bool(cfg.long_mode)
+    scene_duration = cfg.scene_duration
     if is_long and scene_duration == DEFAULT_CONFIG["scene_duration"]:
-        # video longo: cenas maiores reduzem o numero de buscas/renderizacoes
         scene_duration = 7.0
     config = normalize_project_config({
-        "avatar_safe_area": avatar_safe_area,
-        "visual_style": visual_style.strip() or DEFAULT_CONFIG["visual_style"],
-        "resolution": resolution,
+        "avatar_safe_area": cfg.avatar_safe_area,
+        "visual_style": cfg.visual_style.strip() or DEFAULT_CONFIG["visual_style"],
+        "resolution": cfg.resolution,
         "scene_duration": scene_duration,
-        "image_fallback": image_fallback,
+        "image_fallback": cfg.image_fallback,
         "long_mode": is_long,
-        "script_language": script_language,
-        "broll_density": broll_density,
-        "video_style": video_style,
+        "script_language": cfg.script_language,
+        "broll_density": cfg.broll_density,
+        "video_style": cfg.video_style,
     })
     pid = db.create_project(user["id"], name.strip() or "projeto", script, config)
     if prepared_narration:
