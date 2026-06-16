@@ -38,6 +38,8 @@ def settings_page(request: Request, saved: str = ""):
         "groq": mask_secret(user.get("groq_key", "")),
         "coverr": mask_secret(user.get("coverr_key", "")),
         "nvidia": mask_secret(user.get("nvidia_key", "")),
+        "exa": mask_secret(user.get("exa_key", "")),
+        "firecrawl": mask_secret(user.get("firecrawl_key", "")),
         "kaggle_token": mask_secret(user.get("kaggle_token", "")),
     }
     return render_template(
@@ -91,6 +93,8 @@ class SettingsForm(BaseModel):
     groq_model: str = ""
     coverr: str = ""
     nvidia: str = ""
+    exa: str = ""
+    firecrawl: str = ""
     kaggle_username: str = ""
     kaggle_token: str = ""
     clear_pexels: str = ""
@@ -98,6 +102,8 @@ class SettingsForm(BaseModel):
     clear_groq: str = ""
     clear_coverr: str = ""
     clear_nvidia: str = ""
+    clear_exa: str = ""
+    clear_firecrawl: str = ""
     clear_kaggle_token: str = ""
     csrf_token: str = ""
 
@@ -114,6 +120,8 @@ def settings_save(request: Request, form: Annotated[SettingsForm, Form()]):
         form.groq_model.strip(),
         coverr=secret_from_form(user.get("coverr_key", ""), form.coverr, form.clear_coverr),
         nvidia=secret_from_form(user.get("nvidia_key", ""), form.nvidia, form.clear_nvidia),
+        exa=secret_from_form(user.get("exa_key", ""), form.exa, form.clear_exa),
+        firecrawl=secret_from_form(user.get("firecrawl_key", ""), form.firecrawl, form.clear_firecrawl),
     )
     db.update_kaggle_keys(
         user["id"],
@@ -149,6 +157,8 @@ async def import_keys(
         user.get("groq_model", ""),
         coverr=detected.get("coverr", user.get("coverr_key", "")),
         nvidia=detected.get("nvidia", user.get("nvidia_key", "")),
+        exa=detected.get("exa", user.get("exa_key", "")),
+        firecrawl=detected.get("firecrawl", user.get("firecrawl_key", "")),
     )
     if detected.get("kaggle_username") or detected.get("kaggle_token"):
         db.update_kaggle_keys(

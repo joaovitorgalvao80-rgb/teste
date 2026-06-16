@@ -21,7 +21,16 @@ from services import scoring
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "plataforma.db"
-SECRET_FIELDS = {"pexels_key", "pixabay_key", "groq_key", "kaggle_token", "coverr_key", "nvidia_key"}
+SECRET_FIELDS = {
+    "pexels_key",
+    "pixabay_key",
+    "groq_key",
+    "kaggle_token",
+    "coverr_key",
+    "nvidia_key",
+    "exa_key",
+    "firecrawl_key",
+}
 SECRET_PREFIX = "enc:v1:"
 DEV_SECRET_KEY = "dev-insecure-key-change-in-production-please"
 
@@ -105,6 +114,8 @@ CREATE TABLE IF NOT EXISTS users (
     openrouter_key  TEXT DEFAULT '',
     coverr_key      TEXT DEFAULT '',
     nvidia_key      TEXT DEFAULT '',
+    exa_key         TEXT DEFAULT '',
+    firecrawl_key   TEXT DEFAULT '',
     kaggle_username TEXT DEFAULT '',
     kaggle_token    TEXT DEFAULT '',
     created_at      REAL NOT NULL
@@ -163,6 +174,14 @@ CREATE TABLE IF NOT EXISTS assets (
     keyword       TEXT DEFAULT '',
     author        TEXT DEFAULT '',
     author_url    TEXT DEFAULT '',
+    license       TEXT DEFAULT '',
+    license_url   TEXT DEFAULT '',
+    attribution   TEXT DEFAULT '',
+    discovery_provider TEXT DEFAULT '',
+    scrape_url    TEXT DEFAULT '',
+    scrape_status TEXT DEFAULT '',
+    provider_payload_json TEXT DEFAULT '{}',
+    confidence    REAL DEFAULT 0,
     state         TEXT DEFAULT 'pending',
     auto_score    REAL DEFAULT 0,
     auto_reason   TEXT DEFAULT '',
@@ -242,6 +261,8 @@ _MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN openrouter_key TEXT DEFAULT ''",
     "ALTER TABLE users ADD COLUMN coverr_key TEXT DEFAULT ''",
     "ALTER TABLE users ADD COLUMN nvidia_key TEXT DEFAULT ''",
+    "ALTER TABLE users ADD COLUMN exa_key TEXT DEFAULT ''",
+    "ALTER TABLE users ADD COLUMN firecrawl_key TEXT DEFAULT ''",
     "ALTER TABLE projects ADD COLUMN review_round INTEGER DEFAULT 0",
     "ALTER TABLE scenes ADD COLUMN part INTEGER DEFAULT 1",
     "ALTER TABLE scenes ADD COLUMN keyword_roles_json TEXT DEFAULT '[]'",
@@ -255,6 +276,14 @@ _MIGRATIONS = [
     "ALTER TABLE assets ADD COLUMN vision_flags_json TEXT DEFAULT '[]'",
     "ALTER TABLE assets ADD COLUMN vision_provider TEXT DEFAULT ''",
     "ALTER TABLE assets ADD COLUMN vision_analyzed INTEGER DEFAULT 0",
+    "ALTER TABLE assets ADD COLUMN license TEXT DEFAULT ''",
+    "ALTER TABLE assets ADD COLUMN license_url TEXT DEFAULT ''",
+    "ALTER TABLE assets ADD COLUMN attribution TEXT DEFAULT ''",
+    "ALTER TABLE assets ADD COLUMN discovery_provider TEXT DEFAULT ''",
+    "ALTER TABLE assets ADD COLUMN scrape_url TEXT DEFAULT ''",
+    "ALTER TABLE assets ADD COLUMN scrape_status TEXT DEFAULT ''",
+    "ALTER TABLE assets ADD COLUMN provider_payload_json TEXT DEFAULT '{}'",
+    "ALTER TABLE assets ADD COLUMN confidence REAL DEFAULT 0",
     "ALTER TABLE render_parts ADD COLUMN curation_status TEXT DEFAULT 'pending'",
 ]
 
@@ -343,12 +372,14 @@ def update_api_keys(
     groq_model: str = "",
     coverr: str = "",
     nvidia: str = "",
+    exa: str = "",
+    firecrawl: str = "",
 ) -> None:
     conn = _connect()
     try:
         conn.execute(
             "UPDATE users SET pexels_key = ?, pixabay_key = ?, groq_key = ?, groq_model = ?, "
-            "coverr_key = ?, nvidia_key = ? WHERE id = ?",
+            "coverr_key = ?, nvidia_key = ?, exa_key = ?, firecrawl_key = ? WHERE id = ?",
             (
                 protect_secret(pexels),
                 protect_secret(pixabay),
@@ -356,6 +387,8 @@ def update_api_keys(
                 groq_model or "llama-3.3-70b-versatile",
                 protect_secret(coverr),
                 protect_secret(nvidia),
+                protect_secret(exa),
+                protect_secret(firecrawl),
                 user_id,
             ),
         )
@@ -929,6 +962,18 @@ def update_scene_broll_override(scene_db_id: int, value: int) -> None:
 # ----------------------------------------------------------------------------
 # Assets
 # ----------------------------------------------------------------------------
+def _json_payload(value: Any) -> str:
+    if value is None or value == "":
+        return "{}"
+    if isinstance(value, str):
+        try:
+            json.loads(value)
+            return value
+        except json.JSONDecodeError:
+            return json.dumps({"raw": value}, ensure_ascii=False)
+    return json.dumps(value, ensure_ascii=False)
+
+
 def add_assets(scene_db_id: int, assets: list[dict]) -> int:
     """Insere assets evitando duplicar pela download_url na mesma cena."""
     conn = _connect()
@@ -947,8 +992,10 @@ def add_assets(scene_db_id: int, assets: list[dict]) -> int:
             conn.execute(
                 """INSERT INTO assets
                 (scene_id, source, source_id, asset_type, preview_url, download_url, page_url,
-                 width, height, duration, keyword, author, author_url, state)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending')""",
+                 width, height, duration, keyword, author, author_url, license, license_url,
+                 attribution, discovery_provider, scrape_url, scrape_status,
+                 provider_payload_json, confidence, state)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending')""",
                 (
                     scene_db_id,
                     a.get("source", ""),
@@ -963,6 +1010,14 @@ def add_assets(scene_db_id: int, assets: list[dict]) -> int:
                     a.get("keyword", ""),
                     a.get("author", ""),
                     a.get("author_url", ""),
+                    a.get("license", ""),
+                    a.get("license_url", ""),
+                    a.get("attribution", ""),
+                    a.get("discovery_provider", ""),
+                    a.get("scrape_url", ""),
+                    a.get("scrape_status", ""),
+                    _json_payload(a.get("provider_payload_json", a.get("provider_payload"))),
+                    float(a.get("confidence") or 0),
                 ),
             )
             inserted += 1

@@ -125,6 +125,13 @@ def build_guide(project: dict, config: dict, scenes: list[dict], selected_by_sce
                 "page_url": asset.get("page_url", ""),
                 "author": asset.get("author", ""),
                 "author_url": asset.get("author_url", ""),
+                "license": asset.get("license", ""),
+                "license_url": asset.get("license_url", ""),
+                "attribution": asset.get("attribution", ""),
+                "discovery_provider": asset.get("discovery_provider", ""),
+                "scrape_url": asset.get("scrape_url", ""),
+                "scrape_status": asset.get("scrape_status", ""),
+                "confidence": asset.get("confidence", 0),
                 "width": asset.get("width", 0),
                 "height": asset.get("height", 0),
                 "original_duration": asset.get("duration", 0),
@@ -286,12 +293,14 @@ def _licenses_md() -> str:
         [
             "# Licencas e fontes",
             "",
-            "Este pacote pode conter assets de Pexels, Pixabay e imagens geradas pelo usuario.",
+            "Este pacote pode conter assets de Pexels, Pixabay, Coverr, Openverse, Wikimedia, pesquisa profunda e imagens geradas pelo usuario.",
             "A licenca final depende da origem de cada arquivo.",
             "",
+            "- Consulte `metadata/source_manifest.json` para todas as fontes usadas no pacote.",
             "- Consulte `metadata/pexels_sources.json` para URLs, autores e paginas Pexels.",
             "- Consulte `metadata/pixabay_sources.json` para URLs, autores e paginas Pixabay.",
             "- Consulte `metadata/generated_sources.json` para imagens adicionadas pelo usuario.",
+            "- Consulte `editorial_report.json` para riscos editoriais e revisoes recomendadas.",
             "- Consulte `metadata/rejected_assets.json` para auditoria de curadoria.",
             "",
             "Nao redistribua este pacote como CC0 sem revisar as licencas dos provedores.",
@@ -299,9 +308,13 @@ def _licenses_md() -> str:
     )
 
 
-def _apply_download_results(jobs: list, ok_flags: list, file_by_scene: dict) -> tuple[list, list, list]:
+def _empty_sources() -> dict[str, list]:
+    return {"pexels": [], "pixabay": [], "generated": [], "other": [], "all": []}
+
+
+def _apply_download_results(jobs: list, ok_flags: list, file_by_scene: dict) -> dict[str, list]:
     """Processa o resultado dos downloads: registra fontes e zera seleções que falharam."""
-    pexels_sources, pixabay_sources, generated_sources = [], [], []
+    sources = _empty_sources()
     for (scene, gscene, asset, filename, _dest), ok in zip(jobs, ok_flags):
         if not ok:
             # falhou o download: remove a selecao do guia para nao apontar para arquivo inexistente
@@ -314,13 +327,16 @@ def _apply_download_results(jobs: list, ok_flags: list, file_by_scene: dict) -> 
             "file": f"assets/{filename}",
             **(gscene.get("source_metadata") or {}),
         }
+        sources["all"].append(record)
         if asset["source"] == "pexels":
-            pexels_sources.append(record)
+            sources["pexels"].append(record)
+        elif asset["source"] == "pixabay":
+            sources["pixabay"].append(record)
         elif asset["source"] == "generated":
-            generated_sources.append(record)
+            sources["generated"].append(record)
         else:
-            pixabay_sources.append(record)
-    return pexels_sources, pixabay_sources, generated_sources
+            sources["other"].append(record)
+    return sources
 
 
 def _write_package_zip(
@@ -328,12 +344,13 @@ def _write_package_zip(
     project: dict,
     file_by_scene: dict,
     guide: dict,
-    sources: tuple[list, list, list],
+    sources: dict[str, list],
     rejected_assets: list[dict],
     edit_plan: Optional[dict],
+    editorial_report: Optional[dict],
     extra_files: Optional[list[Path]],
 ) -> None:
-    pexels_sources, pixabay_sources, generated_sources = sources
+    sources = sources or _empty_sources()
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for _scene_code, src in file_by_scene.items():
             zf.write(src, f"assets/{src.name}")
@@ -341,12 +358,16 @@ def _write_package_zip(
         zf.writestr("guia_visual.csv", _guide_to_csv(guide))
         zf.writestr("roteiro_com_brolls.md", _guide_to_md(project, guide))
         zf.writestr("LICENSES.md", _licenses_md())
-        zf.writestr("metadata/pexels_sources.json", json.dumps(pexels_sources, ensure_ascii=False, indent=2))
-        zf.writestr("metadata/pixabay_sources.json", json.dumps(pixabay_sources, ensure_ascii=False, indent=2))
-        zf.writestr("metadata/generated_sources.json", json.dumps(generated_sources, ensure_ascii=False, indent=2))
+        zf.writestr("metadata/source_manifest.json", json.dumps(sources["all"], ensure_ascii=False, indent=2))
+        zf.writestr("metadata/pexels_sources.json", json.dumps(sources["pexels"], ensure_ascii=False, indent=2))
+        zf.writestr("metadata/pixabay_sources.json", json.dumps(sources["pixabay"], ensure_ascii=False, indent=2))
+        zf.writestr("metadata/generated_sources.json", json.dumps(sources["generated"], ensure_ascii=False, indent=2))
+        zf.writestr("metadata/other_sources.json", json.dumps(sources["other"], ensure_ascii=False, indent=2))
         zf.writestr("metadata/rejected_assets.json", json.dumps(rejected_assets, ensure_ascii=False, indent=2))
         if edit_plan:
             zf.writestr("edit_plan.json", json.dumps(edit_plan, ensure_ascii=False, indent=2))
+        if editorial_report:
+            zf.writestr("editorial_report.json", json.dumps(editorial_report, ensure_ascii=False, indent=2))
         for extra in extra_files or []:
             if extra and extra.exists():
                 zf.write(extra, extra.name)
@@ -383,6 +404,7 @@ def build_zip(
     work_dir: Path,
     max_download_mb: int = 90,
     edit_plan: Optional[dict] = None,
+    editorial_report: Optional[dict] = None,
     extra_files: Optional[list[Path]] = None,
     zip_basename: str = "",
 ) -> Path:
@@ -431,6 +453,6 @@ def build_zip(
     safe_name = _slug(zip_basename or project["name"]) or "asset_pack"
     zip_path = work_dir / f"asset_pack_{safe_name}.zip"
     _write_package_zip(
-        zip_path, project, file_by_scene, guide, sources, rejected_assets, edit_plan, extra_files
+        zip_path, project, file_by_scene, guide, sources, rejected_assets, edit_plan, editorial_report, extra_files
     )
     return zip_path

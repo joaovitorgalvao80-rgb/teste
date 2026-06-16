@@ -384,6 +384,38 @@ def _plan_scene_entry(
     }
 
 
+def _apply_editorial_hints(plan_scenes: list[dict], editorial_report: dict | None) -> dict | None:
+    if not editorial_report:
+        return None
+    hints = {
+        str(scene.get("scene_id")): scene
+        for scene in editorial_report.get("scenes", [])
+        if scene.get("scene_id")
+    }
+    applied = 0
+    for idx, plan_scene in enumerate(plan_scenes):
+        hint = hints.get(str(plan_scene.get("scene_id")))
+        if not hint:
+            continue
+        motion = hint.get("motion_hint")
+        if motion in {"hold", "drift_left", "drift_right", "slow_push_in", "slow_pull_out"}:
+            plan_scene["motion"] = motion
+            applied += 1
+        transition = hint.get("transition_hint")
+        if transition in {"none", "fade"} and idx < len(plan_scenes) - 1:
+            plan_scene["transition_out"] = transition
+        plan_scene["editorial_score"] = int(hint.get("score") or 0)
+        plan_scene["caption_priority"] = hint.get("caption_priority") or "low"
+        plan_scene["asset_risks"] = hint.get("risks") or []
+    summary = editorial_report.get("summary") or {}
+    return {
+        "version": editorial_report.get("version", 1),
+        "applied_scene_hints": applied,
+        "risk_count": int(summary.get("risk_count") or 0),
+        "recommendations": editorial_report.get("recommendations") or [],
+    }
+
+
 def _pipeline_rules(video_style: str, density: str) -> list[str]:
     """Retorna as regras concretas do pipeline de edição para o par (video_style, density).
 
@@ -445,6 +477,7 @@ def build_edit_plan(
     scenes: list[dict],
     narration_file: str = "",
     avatar_file: str = "",
+    editorial_report: dict | None = None,
 ) -> dict:
     """Monta o plano de edicao a partir das cenas ja mapeadas do projeto.
 
@@ -473,6 +506,7 @@ def build_edit_plan(
         }
     else:
         broll_policy = enforce_broll_policy(plan_scenes, scenes)
+    editorial_assist = _apply_editorial_hints(plan_scenes, editorial_report)
 
     # Descrição legível do pipeline de edição aplicado
     _DENSITY_LABEL = {
@@ -496,7 +530,8 @@ def build_edit_plan(
             "selected": sum(1 for scene in plan_scenes if scene["caption"]),
             "total_scenes": len(plan_scenes),
         },
-        "editorial_mode": "deterministic_v2",
+        "editorial_mode": "assisted_v3" if editorial_assist else "deterministic_v2",
+        "editorial_assist": editorial_assist,
         "broll_density": density,
         "video_style": video_style,
         "editorial_pipeline": {

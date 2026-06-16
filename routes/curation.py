@@ -31,7 +31,7 @@ from app_shared import (
     ensure_no_active_job,
     ensure_project_not_busy,
     find_input_media,
-    has_visual_provider,
+    has_research_provider,
     mark_project_dirty,
     project_generated_dir,
     read_upload_limited,
@@ -174,7 +174,7 @@ def research_rejected(
     if not project:
         raise HTTPException(404)
     ensure_project_not_busy(project)
-    if not has_visual_provider(user):
+    if not has_research_provider(user):
         raise HTTPException(400, MSG_NO_API_KEYS)
     part_idx: Optional[int] = None
     if part.strip():
@@ -196,6 +196,8 @@ def research_rejected(
         user.get("groq_model") or groq_service.DEFAULT_MODEL,
         user.get("coverr_key", ""),
         user.get("nvidia_key", ""),
+        user.get("exa_key", ""),
+        user.get("firecrawl_key", ""),
         part_idx,
     )
     suffix = f"?part={part_idx}" if part_idx is not None else ""

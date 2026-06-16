@@ -1,0 +1,352 @@
+"""Lightweight source discovery for rejected-scene rescue.
+
+This module only orchestrates APIs that return candidate pages/images. It does
+not scrape video, run ML, or perform heavy media analysis inside Railway.
+"""
+from __future__ import annotations
+
+import logging
+import os
+import re
+import time
+from typing import Iterable, Optional
+from urllib.parse import urlparse
+
+import requests
+
+from . import api_usage
+
+logger = logging.getLogger("nwrch.source_discovery")
+
+EXA_SEARCH_URL = "https://api.exa.ai/search"
+FIRECRAWL_SEARCH_URL = "https://api.firecrawl.dev/v2/search"
+FIRECRAWL_SCRAPE_URL = "https://api.firecrawl.dev/v2/scrape"
+DEFAULT_TIMEOUT = 25
+IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
+
+
+def _env_enabled(name: str, default: str = "1") -> bool:
+    raw = os.getenv(name, default).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def discovery_enabled() -> bool:
+    return _env_enabled("DEEP_RESEARCH_ENABLED", "1")
+
+
+def _timeout() -> int:
+    return _env_int("SOURCE_DISCOVERY_TIMEOUT_SECONDS", DEFAULT_TIMEOUT, 5, 60)
+
+
+def _domain(url: str) -> str:
+    try:
+        host = urlparse(url).netloc.lower()
+    except Exception:
+        return ""
+    return host.replace("www.", "")
+
+
+def _is_http_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _looks_like_image(url: str) -> bool:
+    return urlparse(url).path.lower().endswith(IMAGE_EXTENSIONS)
+
+
+def _post_json(provider: str, operation: str, url: str, *, headers: dict, payload: dict) -> dict:
+    start = time.monotonic()
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=_timeout())
+        api_usage.record(
+            provider,
+            operation,
+            status_code=resp.status_code,
+            ok=resp.status_code < 400,
+            latency_ms=api_usage.elapsed_ms(start),
+        )
+        if resp.status_code >= 400:
+            logger.warning("%s %s HTTP %s: %s", provider, operation, resp.status_code, resp.text[:180])
+            return {}
+        try:
+            return resp.json() or {}
+        except ValueError:
+            api_usage.record(provider, operation, ok=False, detail="invalid_json")
+            return {}
+    except Exception as exc:  # noqa: BLE001
+        api_usage.record(
+            provider,
+            operation,
+            ok=False,
+            latency_ms=api_usage.elapsed_ms(start),
+            detail=type(exc).__name__,
+        )
+        logger.warning("%s %s failed: %s", provider, operation, exc)
+        return {}
+
+
+def _scene_terms(scene: dict) -> list[str]:
+    terms: list[str] = []
+    visual_goal = str(scene.get("visual_goal") or "").strip()
+    if visual_goal:
+        terms.append(visual_goal)
+    for kw in scene.get("keywords") or []:
+        kw = str(kw or "").strip()
+        if kw and kw not in terms:
+            terms.append(kw)
+    if not terms:
+        narration = re.sub(r"\s+", " ", str(scene.get("narration") or "")).strip()
+        if narration:
+            terms.append(narration[:140])
+    return terms[:4]
+
+
+def _query_for_scene(scene: dict) -> str:
+    terms = _scene_terms(scene)
+    if not terms:
+        return ""
+    query = " | ".join(terms)
+    return f"{query} photo OR documentary still OR stock footage"
+
+
+def _safe_payload(payload: dict) -> dict:
+    keep = {
+        "title",
+        "url",
+        "imageUrl",
+        "image_url",
+        "source",
+        "description",
+        "score",
+        "width",
+        "height",
+    }
+    return {k: v for k, v in payload.items() if k in keep and v not in (None, "")}
+
+
+def _asset_from_image(
+    *,
+    image_url: str,
+    page_url: str,
+    keyword: str,
+    provider: str,
+    discovery_provider: str,
+    payload: dict,
+    scrape_url: str = "",
+    scrape_status: str = "",
+    confidence: float = 0.55,
+) -> Optional[dict]:
+    if not _is_http_url(image_url):
+        return None
+    author = payload.get("author") or payload.get("source") or _domain(page_url or image_url)
+    title = payload.get("title") or payload.get("description") or ""
+    return {
+        "source": provider,
+        "source_id": payload.get("id") or image_url,
+        "asset_type": "image",
+        "preview_url": image_url,
+        "download_url": image_url,
+        "page_url": page_url or payload.get("url") or image_url,
+        "width": int(payload.get("width") or 0),
+        "height": int(payload.get("height") or 0),
+        "duration": 0,
+        "keyword": keyword,
+        "author": str(author or ""),
+        "author_url": page_url or payload.get("url") or "",
+        "license": payload.get("license") or "review_required",
+        "license_url": payload.get("license_url") or "",
+        "attribution": str(title or author or ""),
+        "discovery_provider": discovery_provider,
+        "scrape_url": scrape_url,
+        "scrape_status": scrape_status,
+        "provider_payload": _safe_payload(payload),
+        "confidence": confidence,
+    }
+
+
+def _dedupe_assets(assets: Iterable[dict], seen_urls: set[str], limit: int) -> list[dict]:
+    out: list[dict] = []
+    for asset in assets:
+        url = asset.get("download_url", "")
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        out.append(asset)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _firecrawl_search(query: str, key: str, limit: int) -> tuple[list[dict], list[dict]]:
+    if not key:
+        return [], []
+    payload = {
+        "query": query,
+        "limit": min(max(limit, 1), 10),
+        "sources": ["web", "images"],
+    }
+    data = _post_json(
+        "firecrawl",
+        "search",
+        FIRECRAWL_SEARCH_URL,
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        payload=payload,
+    )
+    root = data.get("data") or data.get("results") or data
+    image_items: list[dict] = []
+    page_items: list[dict] = []
+    if isinstance(root, dict):
+        image_items.extend(root.get("images") or root.get("imageResults") or [])
+        page_items.extend(root.get("web") or root.get("results") or [])
+    elif isinstance(root, list):
+        page_items.extend(root)
+    for item in list(page_items):
+        if not isinstance(item, dict):
+            continue
+        image = item.get("imageUrl") or item.get("image_url") or item.get("image")
+        if image:
+            image_items.append({**item, "imageUrl": image})
+    return [i for i in image_items if isinstance(i, dict)], [p for p in page_items if isinstance(p, dict)]
+
+
+def _firecrawl_scrape_images(url: str, key: str) -> list[dict]:
+    if not key or not _is_http_url(url):
+        return []
+    payload = {"url": url, "formats": ["links", "images"]}
+    data = _post_json(
+        "firecrawl",
+        "scrape",
+        FIRECRAWL_SCRAPE_URL,
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        payload=payload,
+    )
+    root = data.get("data") if isinstance(data, dict) else {}
+    if not isinstance(root, dict):
+        root = data if isinstance(data, dict) else {}
+    images = root.get("images") or root.get("imageUrls") or []
+    out: list[dict] = []
+    for image in images:
+        if isinstance(image, str):
+            out.append({"imageUrl": image, "url": url})
+        elif isinstance(image, dict):
+            out.append({**image, "url": image.get("url") or url})
+    links = root.get("links") or []
+    for link in links:
+        raw = link if isinstance(link, str) else (link.get("url") if isinstance(link, dict) else "")
+        if raw and _looks_like_image(raw):
+            out.append({"imageUrl": raw, "url": url})
+    return out
+
+
+def _exa_search(query: str, key: str, limit: int) -> list[dict]:
+    if not key:
+        return []
+    payload = {
+        "query": query,
+        "type": os.getenv("EXA_SEARCH_TYPE", "auto"),
+        "numResults": min(max(limit, 1), 10),
+        "contents": {"highlights": True},
+    }
+    data = _post_json(
+        "exa",
+        "search",
+        EXA_SEARCH_URL,
+        headers={"x-api-key": key, "Content-Type": "application/json"},
+        payload=payload,
+    )
+    results = data.get("results") if isinstance(data, dict) else []
+    return [r for r in (results or []) if isinstance(r, dict)]
+
+
+def discover_scene_assets(
+    scene: dict,
+    keys: dict,
+    max_w: int,
+    limit: int = 8,
+    existing_urls: Optional[set[str]] = None,
+) -> list[dict]:
+    """Return normalized image assets for a rejected scene rescue pass."""
+    del max_w  # kept for interface symmetry with asset_search.search_scene
+    if not discovery_enabled():
+        return []
+    exa_key = keys.get("exa") or ""
+    firecrawl_key = keys.get("firecrawl") or ""
+    if not (exa_key or firecrawl_key):
+        return []
+    query = _query_for_scene(scene)
+    if not query:
+        return []
+    seen = set(existing_urls or set())
+    limit = min(max(int(limit or 1), 1), _env_int("DEEP_RESEARCH_MAX_RESULTS_PER_SCENE", 8, 1, 20))
+    keyword = (scene.get("keywords") or [query])[0]
+
+    candidates: list[dict] = []
+    fire_images, fire_pages = _firecrawl_search(query, firecrawl_key, limit)
+    for item in fire_images:
+        image = item.get("imageUrl") or item.get("image_url") or item.get("image")
+        asset = _asset_from_image(
+            image_url=image,
+            page_url=item.get("url") or item.get("pageUrl") or "",
+            keyword=keyword,
+            provider="firecrawl",
+            discovery_provider="firecrawl",
+            payload=item,
+            confidence=0.62,
+        )
+        if asset:
+            candidates.append(asset)
+
+    exa_pages = _exa_search(query, exa_key, limit) if len(candidates) < limit else []
+    for item in exa_pages:
+        url = item.get("url") or ""
+        if _looks_like_image(url):
+            asset = _asset_from_image(
+                image_url=url,
+                page_url=url,
+                keyword=keyword,
+                provider="exa",
+                discovery_provider="exa",
+                payload=item,
+                confidence=0.48,
+            )
+            if asset:
+                candidates.append(asset)
+
+    scrape_max = _env_int("FIRECRAWL_SCRAPE_MAX_PAGES", 3, 0, 8)
+    pages = []
+    for item in [*exa_pages, *fire_pages]:
+        url = item.get("url") if isinstance(item, dict) else ""
+        if url and _is_http_url(url) and url not in pages:
+            pages.append(url)
+    for page_url in pages[:scrape_max]:
+        if len(candidates) >= limit:
+            break
+        for item in _firecrawl_scrape_images(page_url, firecrawl_key):
+            image = item.get("imageUrl") or item.get("image_url")
+            asset = _asset_from_image(
+                image_url=image,
+                page_url=page_url,
+                keyword=keyword,
+                provider="firecrawl",
+                discovery_provider="exa+firecrawl" if page_url in [p.get("url") for p in exa_pages] else "firecrawl",
+                payload=item,
+                scrape_url=page_url,
+                scrape_status="scraped",
+                confidence=0.58,
+            )
+            if asset:
+                candidates.append(asset)
+
+    return _dedupe_assets(candidates, seen, limit)

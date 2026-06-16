@@ -112,6 +112,20 @@
     </section>
 
     <section class="settings-section">
+      <p class="tag">Pesquisa profunda</p>
+      <h2 class="settings-heading">Resgate de fontes</h2>
+      <p class="t-muted t-small" style="margin-bottom:var(--sp-4)">Opcional para achar fontes melhores quando uma cena volta rejeitada da curadoria.</p>
+      <label>Exa API Key
+        <input type="password" autocomplete="off" name="exa" value="" placeholder="{% if secret_masks.exa %}atual: {{ secret_masks.exa }}{% else %}cole sua chave Exa{% endif %}">
+      </label>
+      {% if secret_masks.exa %}<label class="check"><input type="checkbox" name="clear_exa" value="1"> Limpar Exa</label>{% endif %}
+      <label>Firecrawl API Key
+        <input type="password" autocomplete="off" name="firecrawl" value="" placeholder="{% if secret_masks.firecrawl %}atual: {{ secret_masks.firecrawl }}{% else %}cole sua chave Firecrawl{% endif %}">
+      </label>
+      {% if secret_masks.firecrawl %}<label class="check"><input type="checkbox" name="clear_firecrawl" value="1"> Limpar Firecrawl</label>{% endif %}
+    </section>
+
+    <section class="settings-section">
       <p class="tag">Groq</p>
       <h2 class="settings-heading">IA + transcrição de áudio</h2>
       <p class="t-muted t-small" style="margin-bottom:var(--sp-4)">Usado para gerar o mapa visual e transcrever narração.</p>
@@ -165,6 +179,8 @@
       <ul class="help-list">
         <li><strong>Pexels</strong><code>pexels.com/api</code></li>
         <li><strong>Pixabay</strong><code>pixabay.com/api/docs</code></li>
+        <li><strong>Exa</strong><code>exa.ai</code></li>
+        <li><strong>Firecrawl</strong><code>firecrawl.dev</code></li>
         <li><strong>Groq</strong><code>console.groq.com</code></li>
         <li><strong>Kaggle</strong><code>kaggle.com/settings</code> → API → Create New Token</li>
       </ul>

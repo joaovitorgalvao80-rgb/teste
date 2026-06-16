@@ -237,7 +237,7 @@
 <div class="panel" style="margin-bottom:var(--sp-5)" id="edit-plan-panel">
   <div class="panel-head">
     <span class="tag">Plano de edição · revise antes do render</span>
-    <span class="plan-mode">determinístico</span>
+    <span class="plan-mode">{% if edit_plan.editorial_mode == 'assisted_v3' %}assisted_v3{% else %}determinístico{% endif %}</span>
   </div>
   <div style="padding:var(--sp-4) var(--sp-5)">
     <p class="t-muted t-small" style="margin-bottom:var(--sp-3)">
@@ -251,7 +251,12 @@
     <div class="row" style="gap:var(--sp-5);margin-bottom:var(--sp-3)">
       <span class="t-small">cobertura de b-roll: <strong>{{ (edit_plan.broll_policy.coverage * 100)|round|int }}%</strong></span>
       <span class="t-small">cenas com b-roll: <strong>{{ edit_plan.broll_policy.broll_scenes }}/{{ edit_plan.broll_policy.total_scenes }}</strong></span>
-      <span class="t-small t-faint">legendas: <strong>desligadas</strong></span>
+      <span class="t-small t-faint">assistência: <strong>{{ edit_plan.editorial_assist.applied_scene_hints if edit_plan.editorial_assist else 0 }}</strong> cenas</span>
+    </div>
+    {% endif %}
+    {% if editorial_report and editorial_report.recommendations %}
+    <div class="t-small t-muted" style="margin-bottom:var(--sp-3)">
+      {{ editorial_report.recommendations[0] }}
     </div>
     {% endif %}
     <table class="plan-table">

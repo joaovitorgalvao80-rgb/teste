@@ -33,7 +33,21 @@ from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import database as db
-from services import api_usage, asset_search, auto_select, diagnostics, edit_plan, groq_service, kaggle_service, ops_status, packager, scoring, vision
+from services import (
+    api_usage,
+    asset_search,
+    auto_select,
+    diagnostics,
+    edit_plan,
+    editorial_analysis,
+    groq_service,
+    kaggle_service,
+    ops_status,
+    packager,
+    scoring,
+    source_discovery,
+    vision,
+)
 from services.project_config import (
     ALLOWED_BROLL_DENSITIES,
     ALLOWED_VIDEO_STYLES,
@@ -109,6 +123,7 @@ BUSY_PROJECT_STATUSES = {"mapping", "searching", "packaging", "auto_selecting", 
 ACTIVE_JOB_STATUSES = db.ACTIVE_JOB_STATUSES
 CHOSEN_ASSET_STATES = ["selected", "accepted"]
 EDIT_PLAN_FILENAME = "edit_plan.json"
+EDITORIAL_REPORT_FILENAME = "editorial_report.json"
 PROJECTS_PATH = "/projects"
 MEDIA_TYPE_JSON = "application/json"
 MEDIA_TYPE_MP4 = "video/mp4"
@@ -303,6 +318,14 @@ def secret_from_form(current: str, submitted: str, clear: str = "") -> str:
 
 def has_visual_provider(user: dict) -> bool:
     return bool(user.get("pexels_key") or user.get("pixabay_key") or user.get("coverr_key"))
+
+
+def has_research_provider(user: dict) -> bool:
+    return bool(
+        has_visual_provider(user)
+        or user.get("exa_key")
+        or user.get("firecrawl_key")
+    )
 
 
 async def read_upload_limited(upload: UploadFile, max_bytes: int, what: str = "Arquivo") -> bytes:
@@ -515,6 +538,7 @@ def remove_project_artifacts(project_id: int, include_generated: bool = False) -
     for zip_file in project_work.glob("*.zip"):
         zip_file.unlink(missing_ok=True)
     (project_work / EDIT_PLAN_FILENAME).unlink(missing_ok=True)
+    (project_work / EDITORIAL_REPORT_FILENAME).unlink(missing_ok=True)
     for folder_name in ["assets_tmp", "kaggle_output"]:
         folder = _safe_child_dir(project_work, project_work / folder_name)
         if folder and folder.exists():
@@ -686,6 +710,16 @@ def local_edit_plan(project_id: int) -> Optional[dict]:
         return None
     try:
         return json.loads(plan_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def local_editorial_report(project_id: int) -> Optional[dict]:
+    report_path = project_work_dir(project_id) / EDITORIAL_REPORT_FILENAME
+    if not report_path.exists():
+        return None
+    try:
+        return json.loads(report_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
 
@@ -1397,6 +1431,15 @@ def _research_one_scene(
             coverr_key=keys["coverr"],
             extra_image_banks=True,
         )
+        deep_results = source_discovery.discover_scene_assets(
+            scene,
+            keys,
+            max_w=max_w,
+            limit=max(4, int(config.get("per_keyword") or 4)),
+            existing_urls=existing | {r.get("download_url", "") for r in results},
+        )
+        if deep_results:
+            results.extend(deep_results)
     check_job_canceled(job_id)
     return db.add_assets(scene["id"], results)
 
@@ -1411,6 +1454,8 @@ def run_research_job(
     groq_model: str,
     coverr_key: str = "",
     nvidia_key: str = "",
+    exa_key: str = "",
+    firecrawl_key: str = "",
     part_idx: Optional[int] = None,
 ) -> None:
     try:
@@ -1435,8 +1480,15 @@ def run_research_job(
         if not targets:
             raise RuntimeError("Nenhuma cena rejeitada aguardando nova busca.")
 
-        keys = {"pexels": pexels_key, "pixabay": pixabay_key, "groq": groq_key,
-                "groq_model": groq_model, "coverr": coverr_key}
+        keys = {
+            "pexels": pexels_key,
+            "pixabay": pixabay_key,
+            "groq": groq_key,
+            "groq_model": groq_model,
+            "coverr": coverr_key,
+            "exa": exa_key,
+            "firecrawl": firecrawl_key,
+        }
         added_total = 0
         for i, scene in enumerate(targets, 1):
             check_job_canceled(job_id)
@@ -1634,10 +1686,23 @@ def _build_part_zip(ctx: "_PackageCtx", part: dict, parts_count: int, avatar_inp
         avatar_name = slice_out.name
     check_job_canceled(ctx.job_id)
     rebased = _rebase_scenes(part_scenes)
+    part_work = part_dir(ctx.project_id, idx)
+    part_work.mkdir(parents=True, exist_ok=True)
+    editorial_report = editorial_analysis.build_report(
+        ctx.project,
+        ctx.config,
+        rebased,
+        ctx.selected_by_scene,
+        ctx.rejected_payload,
+    )
     part_plan = edit_plan.build_edit_plan(
         ctx.project, ctx.config, rebased,
         narration_file="",
         avatar_file=avatar_name,
+        editorial_report=editorial_report,
+    )
+    (part_work / EDITORIAL_REPORT_FILENAME).write_text(
+        json.dumps(editorial_report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     zip_path = packager.build_zip(
         project=ctx.project,
@@ -1645,9 +1710,10 @@ def _build_part_zip(ctx: "_PackageCtx", part: dict, parts_count: int, avatar_inp
         scenes=rebased,
         selected_by_scene=ctx.selected_by_scene,
         rejected_assets=ctx.rejected_payload,
-        work_dir=part_dir(ctx.project_id, idx),
+        work_dir=part_work,
         max_download_mb=ctx.config["max_download_mb"],
         edit_plan=part_plan,
+        editorial_report=editorial_report,
         extra_files=extras,
         zip_basename=f"{ctx.project['name']}_pt{idx:02d}",
     )
@@ -1690,16 +1756,27 @@ def _package_single_mode(ctx: "_PackageCtx") -> None:
     narration_file = find_input_media(ctx.project_id, "narration")
     avatar_file = find_input_media(ctx.project_id, "avatar")
     check_job_canceled(ctx.job_id)
+    project_work.mkdir(parents=True, exist_ok=True)
+    editorial_report = editorial_analysis.build_report(
+        ctx.project,
+        ctx.config,
+        ctx.scenes,
+        ctx.selected_by_scene,
+        ctx.rejected_payload,
+    )
     plan = edit_plan.build_edit_plan(
         ctx.project,
         ctx.config,
         ctx.scenes,
         narration_file=narration_file.name if narration_file else "",
         avatar_file=avatar_file.name if avatar_file else "",
+        editorial_report=editorial_report,
     )
-    project_work.mkdir(parents=True, exist_ok=True)
     (project_work / EDIT_PLAN_FILENAME).write_text(
         json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (project_work / EDITORIAL_REPORT_FILENAME).write_text(
+        json.dumps(editorial_report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     check_job_canceled(ctx.job_id)
     zip_path = packager.build_zip(
@@ -1711,6 +1788,7 @@ def _package_single_mode(ctx: "_PackageCtx") -> None:
         work_dir=project_work,
         max_download_mb=ctx.config["max_download_mb"],
         edit_plan=plan,
+        editorial_report=editorial_report,
         extra_files=[
             f for f in (narration_file, avatar_file, curation_report_path(ctx.project_id)) if f and f.exists()
         ],

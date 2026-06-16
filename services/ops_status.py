@@ -84,6 +84,7 @@ def _item(key: str, label: str, configured: bool, required: bool, detail: str, k
 
 def _build_groups(flags: dict, app_env: str, secret_strong: bool) -> list[dict]:
     has_asset_provider = flags["asset_provider"]
+    has_deep_research = flags["deep_research"]
     has_groq = flags["groq"]
     has_kaggle = flags["kaggle"]
     return [
@@ -98,6 +99,16 @@ def _build_groups(flags: dict, app_env: str, secret_strong: bool) -> list[dict]:
                 _item("coverr", "Coverr", flags["coverr"], False, "video curado, limite menor"),
                 _item("openverse", "Openverse", True, False, "fallback publico sem chave", "public"),
                 _item("wikimedia", "Wikimedia", True, False, "acervo publico sem chave", "public"),
+            ],
+        },
+        {
+            "key": "deep_research",
+            "label": "Pesquisa profunda",
+            "status": "ok" if has_deep_research else "optional",
+            "summary": "resgate com Exa/Firecrawl pronto" if has_deep_research else "opcional para re-busca de cenas rejeitadas",
+            "items": [
+                _item("exa", "Exa", flags["exa"], False, "descobre paginas/fontes para novas buscas"),
+                _item("firecrawl", "Firecrawl", flags["firecrawl"], False, "busca e extrai imagens de paginas candidatas"),
             ],
         },
         {
@@ -138,6 +149,8 @@ def _collect_warnings(flags: dict) -> list[str]:
         warnings.append("Use pelo menos dois provedores visuais para reduzir busca vazia.")
     if flags["groq"] and not flags["nvidia"]:
         warnings.append("NVIDIA e opcional, mas melhora a segunda opiniao de visao.")
+    if flags["exa"] and not flags["firecrawl"]:
+        warnings.append("Exa encontra fontes, mas Firecrawl ajuda a extrair imagens usaveis dessas paginas.")
     return warnings
 
 
@@ -147,12 +160,15 @@ def integration_snapshot(user: dict, app_env: str = "dev") -> dict:
         "pexels": _has(user.get("pexels_key")),
         "pixabay": _has(user.get("pixabay_key")),
         "coverr": _has(user.get("coverr_key")),
+        "exa": _has(user.get("exa_key")),
+        "firecrawl": _has(user.get("firecrawl_key")),
         "groq": _has(user.get("groq_key")),
         "nvidia": _has(user.get("nvidia_key")),
         "kaggle_user": _has(user.get("kaggle_username")),
         "kaggle_token": _has(user.get("kaggle_token")),
     }
     flags["asset_provider"] = flags["pexels"] or flags["pixabay"] or flags["coverr"]
+    flags["deep_research"] = flags["exa"] or flags["firecrawl"]
     flags["kaggle"] = flags["kaggle_user"] and flags["kaggle_token"]
 
     app_secret = os.getenv("APP_SECRET_KEY", "")
