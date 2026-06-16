@@ -55,7 +55,27 @@
     <p class="t-muted t-small" style="margin-top:calc(-1 * var(--sp-3));margin-bottom:var(--sp-4)">Define o idioma do roteiro/transcrição e dos textos sobrepostos no vídeo. A busca de B-rolls é sempre feita em inglês (mais resultados).</p>
 
     <div class="grid-2">
-      <label>Área segura do avatar
+      <label>Estilo de vídeo
+        <select name="video_style" id="video-style-select" onchange="toggleAvatarArea(this.value)">
+          <option value="avatar_broll" selected>Avatar + B-roll</option>
+          <option value="broll_only">Só B-roll (sem avatar)</option>
+        </select>
+      </label>
+      <label>Distribuição de B-rolls
+        <select name="broll_density">
+          <option value="key_moments">Só em pontos-chave (~30-40%)</option>
+          <option value="moderate" selected>Equilibrado — padrão (~50-65%)</option>
+          <option value="full_coverage">Vídeo inteiro, poucas pausas (~80-90%)</option>
+        </select>
+      </label>
+    </div>
+    <p class="t-muted t-small" style="margin-top:calc(-1 * var(--sp-3));margin-bottom:var(--sp-4)">
+      <strong>Estilo:</strong> "Só B-roll" é ideal para vídeos faceless; "Avatar + B-roll" mantém o apresentador como base com b-rolls por cima.
+      <strong>Distribuição:</strong> controla quantas cenas receberão b-roll no render.
+    </p>
+
+    <div class="grid-2">
+      <label id="avatar-area-row">Área segura do avatar
         <select name="avatar_safe_area">
           <option value="right" selected>Direita</option>
           <option value="left">Esquerda</option>
@@ -92,6 +112,10 @@
 {% endblock %}
 {% block scripts %}
 <script>
+function toggleAvatarArea(value) {
+  const row = document.getElementById("avatar-area-row");
+  if (row) row.style.opacity = value === "broll_only" ? "0.35" : "";
+}
 document.getElementById("audio-upload").addEventListener("change", async function () {
   const file = this.files[0];
   if (!file) return;

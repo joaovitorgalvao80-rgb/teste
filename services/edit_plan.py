@@ -179,40 +179,74 @@ def _scene_duration(scene: dict) -> float:
     return duration
 
 
-def _broll_flags(scenes: list[dict]) -> list[bool]:
+# Threshold de score para o modo key_moments (pontos-chave):
+# cenas com score >= este valor recebem b-roll.
+_KEY_MOMENTS_SCORE_THRESHOLD = 2
+
+
+def _broll_flags(scenes: list[dict], density: str = "moderate", video_style: str = "avatar_broll") -> list[bool]:
     """Decide, cena a cena, se o b-roll cobre o avatar (deterministico).
 
-    O avatar e a camada base; o gancho inicial e o fechamento ficam com o
-    apresentador na tela, e corridas longas de b-roll ganham um respiro.
+    density:
+      moderate      → padrão: alterna com respiro a cada MAX_BROLL_RUN_SECONDS
+      key_moments   → só cenas com score alto (pontos importantes/chave)
+      full_coverage → quase tudo com b-roll, sem limite de corrida
+    video_style:
+      avatar_broll  → avatar é a base; primeira/última cena sem b-roll
+      broll_only    → b-roll em todas as cenas (sem avatar para preservar)
     """
     n = len(scenes)
     flags = [False] * n
     run = 0.0
+    total = n
+
     for i, scene in enumerate(scenes):
-        if i == 0 or i == n - 1:
-            run = 0.0
-            continue
-        # apresentacao/saudacao fica com o apresentador na tela (sem b-roll)
+        # apresentacao/saudacao nunca leva b-roll (indep. do density)
         if _is_presentation(scene.get("narration")):
             run = 0.0
             continue
-        duration = _scene_duration(scene)
-        if run >= MAX_BROLL_RUN_SECONDS:
-            run = 0.0
-            continue
-        flags[i] = True
-        run += duration
+
+        if video_style != "broll_only":
+            # Com avatar: primeira e última cena ficam com o apresentador
+            if i == 0 or i == n - 1:
+                run = 0.0
+                continue
+
+        if density == "key_moments":
+            score = _scene_score(scene, i, total)
+            if score < _KEY_MOMENTS_SCORE_THRESHOLD:
+                run = 0.0
+                continue
+            flags[i] = True
+            run += _scene_duration(scene)
+
+        elif density == "full_coverage":
+            # Sem limite de corrida de b-roll — quase tudo coberto
+            flags[i] = True
+            run += _scene_duration(scene)
+
+        else:  # moderate (padrão)
+            duration = _scene_duration(scene)
+            if run >= MAX_BROLL_RUN_SECONDS:
+                run = 0.0
+                continue
+            flags[i] = True
+            run += duration
+
     _apply_overrides(flags, scenes)
     return flags
 
 
-def decide_broll(scenes: list[dict]) -> list[bool]:
+def decide_broll(scenes: list[dict], config: "dict | None" = None) -> list[bool]:
     """Decisao FINAL de b-roll por cena (a mesma que o render usa): flags base +
     regra de apresentacao + guarda de avatar-solo. Determinístico, para a busca
     saber de antemao quais cenas NAO levam imagem (e nem buscar pra elas)."""
-    flags = _broll_flags(scenes)
+    density = (config or {}).get("broll_density", "moderate")
+    video_style = (config or {}).get("video_style", "avatar_broll")
+    flags = _broll_flags(scenes, density=density, video_style=video_style)
     plan = [{"duration": _scene_duration(s), "broll": flags[i]} for i, s in enumerate(scenes)]
-    enforce_broll_policy(plan, scenes)
+    if video_style != "broll_only":
+        enforce_broll_policy(plan, scenes)
     return [bool(p["broll"]) for p in plan]
 
 
@@ -362,6 +396,61 @@ def _plan_scene_entry(
     }
 
 
+def _pipeline_rules(video_style: str, density: str) -> list[str]:
+    """Retorna as regras concretas do pipeline de edição para o par (video_style, density).
+
+    Essas regras são armazenadas no edit_plan.json para auditoria e guiam o render.
+    """
+    rules: list[str] = []
+
+    # Regras de estrutura do vídeo
+    if video_style == "broll_only":
+        rules += [
+            "Sem avatar: o b-roll ocupa 100% da tela em todas as cenas.",
+            "Toda cena sem take aceito fica com fundo preto (nenhum retângulo de avatar).",
+            "Narração entra como áudio off-screen por cima do b-roll.",
+            "Não há limite de corrida de b-roll (não existe avatar para respirar).",
+        ]
+    else:  # avatar_broll
+        rules += [
+            "Avatar é a camada base (tela cheia ou lateral): sempre visível quando não há b-roll.",
+            "B-roll entra por cima do avatar nas cenas marcadas.",
+            "Primeira e última cenas sempre mostram o apresentador (sem b-roll).",
+            f"Avatar nunca fica sozinho por mais de {MAX_AVATAR_SOLO_SECONDS:.0f}s — a engine insere b-roll para quebrar corridas longas.",
+        ]
+
+    # Regras de densidade de b-roll
+    if density == "key_moments":
+        rules += [
+            f"B-roll só em cenas com score de relevância ≥ {_KEY_MOMENTS_SCORE_THRESHOLD} (overlay_text, termos-chave, perguntas, números).",
+            "Cenas narrativas/de transição ficam com o apresentador na tela.",
+            "Cobertura estimada: 30–40% das cenas totais.",
+        ]
+    elif density == "full_coverage":
+        rules += [
+            "B-roll em quase todas as cenas — sem limite de corrida contínua.",
+            "Exceções: cenas de apresentação/saudação e cenas com override manual 'sem b-roll'.",
+            "Cobertura estimada: 80–90% das cenas totais.",
+            "Ideal para vídeos faceless ou com muito conteúdo visual.",
+        ]
+    else:  # moderate
+        rules += [
+            f"B-roll alterna com o apresentador: respiro obrigatório a cada {MAX_BROLL_RUN_SECONDS:.0f}s de b-roll contínuo.",
+            "Cenas de apresentação/saudação ficam com o apresentador.",
+            "Cobertura estimada: 50–65% das cenas totais.",
+        ]
+
+    # Regras universais
+    rules += [
+        "Cenas com override manual 'sem b-roll' nunca recebem b-roll (trava de usuário).",
+        "Cenas com override manual 'forçar b-roll' sempre recebem b-roll (trava de usuário).",
+        "Cenas de apresentação/saudação ('eu sou', 'olá', 'fala galera'…) nunca levam b-roll.",
+        f"Legendas (drawtext/FFmpeg) em até {int(MAX_CAPTION_DENSITY * 100)}% das cenas, priorizando as de maior score.",
+        "Transição padrão: corte seco; fade a cada 4 cenas ou mudança de zona narrativa.",
+    ]
+    return rules
+
+
 def build_edit_plan(
     project: dict,
     config: dict,
@@ -375,13 +464,38 @@ def build_edit_plan(
     (ex: "narration.mp3"); vazios quando o usuario nao enviou os arquivos.
     """
     safe_area = (config.get("avatar_safe_area") or "right").lower()
+    density = config.get("broll_density", "moderate")
+    video_style = config.get("video_style", "avatar_broll")
     captioned_indexes = _caption_indexes(scenes)
-    broll_flags = _broll_flags(scenes)
+    broll_flags = _broll_flags(scenes, density=density, video_style=video_style)
     plan_scenes = [
         _plan_scene_entry(i, scene, scenes, captioned_indexes, broll_flags)
         for i, scene in enumerate(scenes)
     ]
-    broll_policy = enforce_broll_policy(plan_scenes, scenes)
+    if video_style == "broll_only":
+        # Modo só b-roll: todas as cenas têm b-roll, não há avatar para preservar
+        for idx_ps, ps in enumerate(plan_scenes):
+            if _broll_override(scenes[idx_ps]) != -1:
+                ps["broll"] = True
+        broll_policy = {
+            "coverage": 1.0,
+            "max_avatar_solo_seconds": 0,
+            "broll_scenes": len(plan_scenes),
+            "total_scenes": len(plan_scenes),
+        }
+    else:
+        broll_policy = enforce_broll_policy(plan_scenes, scenes)
+
+    # Descrição legível do pipeline de edição aplicado
+    _DENSITY_LABEL = {
+        "key_moments": "b-roll só em pontos-chave (~30-40% das cenas)",
+        "moderate": "b-roll moderado com respiro (padrão)",
+        "full_coverage": "b-roll em quase todo o vídeo (~80-90%)",
+    }
+    _STYLE_LABEL = {
+        "avatar_broll": "avatar como base + b-roll sobreposto",
+        "broll_only": "só b-roll (sem avatar na tela)",
+    }
 
     plan: dict = {
         "version": EDIT_PLAN_VERSION,
@@ -395,6 +509,13 @@ def build_edit_plan(
             "total_scenes": len(plan_scenes),
         },
         "editorial_mode": "deterministic_v2",
+        "broll_density": density,
+        "video_style": video_style,
+        "editorial_pipeline": {
+            "video_style": _STYLE_LABEL.get(video_style, video_style),
+            "broll_density": _DENSITY_LABEL.get(density, density),
+            "rules": _pipeline_rules(video_style, density),
+        },
         "broll_policy": broll_policy,
         "scenes": plan_scenes,
         "audio": None,
@@ -402,7 +523,7 @@ def build_edit_plan(
     }
     if narration_file:
         plan["audio"] = {"src": narration_file, "volume": 1.0}
-    if avatar_file:
+    if avatar_file and video_style != "broll_only":
         # O avatar e a base do video: tela cheia, com os b-rolls por cima.
         plan["avatar"] = {
             "src": avatar_file,

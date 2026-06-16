@@ -23,7 +23,19 @@ DEFAULT_CONFIG = {
     "max_download_mb": 90,
     "long_mode": False,
     "part_target_seconds": 150,
+    # broll_density: quanto do vídeo é coberto por b-roll
+    #   key_moments   → só cenas com score alto (momentos-chave, ~30-40%)
+    #   moderate      → padrão: alterna com respiro a cada 22s de b-roll
+    #   full_coverage → quase tudo com b-roll, pouquíssimas pausas (~80-90%)
+    "broll_density": "moderate",
+    # video_style: estrutura geral do vídeo
+    #   avatar_broll → avatar como base; b-rolls sobrepõem nas cenas marcadas
+    #   broll_only   → sem avatar; b-roll ocupa 100% da tela em todas as cenas
+    "video_style": "avatar_broll",
 }
+
+ALLOWED_BROLL_DENSITIES = {"key_moments", "moderate", "full_coverage"}
+ALLOWED_VIDEO_STYLES = {"avatar_broll", "broll_only"}
 
 # Idiomas suportados para roteiro/transcrição/overlay. Fonte única de verdade.
 #   whisper: código ISO 639-1 enviado ao Whisper na transcrição.
@@ -130,6 +142,10 @@ def normalize_project_config(raw_config: Optional[dict] = None) -> dict:
     visual_style = str(cfg.get("visual_style") or "").strip()
     cfg["visual_style"] = visual_style or DEFAULT_CONFIG["visual_style"]
     cfg["script_language"] = normalize_language(cfg.get("script_language"))
+    if cfg.get("broll_density") not in ALLOWED_BROLL_DENSITIES:
+        cfg["broll_density"] = DEFAULT_CONFIG["broll_density"]
+    if cfg.get("video_style") not in ALLOWED_VIDEO_STYLES:
+        cfg["video_style"] = DEFAULT_CONFIG["video_style"]
     return cfg
 
 
