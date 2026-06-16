@@ -702,6 +702,7 @@ document.addEventListener("DOMContentLoaded", () => {
   pkgForm.addEventListener("submit", async function qualityGuard(e) {
     if (pkgForm.dataset.qualityOk) return; // já verificado, deixa passar
     e.preventDefault();
+    e.stopImmediatePropagation();
     let proceed = true;
     try {
       const pid = window.NWRCH_PROJECT_ID;
