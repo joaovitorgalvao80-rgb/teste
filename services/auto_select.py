@@ -28,9 +28,11 @@ CANDIDATES_PER_SCENE = 10  # top-N da heurística enviados à IA
 # Pesos da relevância textual e penalidades de curadoria.
 RELEVANCE_WEIGHT = 35.0     # quanto a relevância textual (0-1) vale no score
 GENERIC_PENALTY = 12.0      # keyword puramente genérica de banco de imagem
-DIVERSITY_PENALTY = 18.0    # asset/autor já escolhido para outra cena
+DIVERSITY_PENALTY = 60.0    # asset/autor já escolhido para outra cena
 VISION_WEIGHT = 0.5         # peso por ponto (0-100) da análise de visão por IA
 VISION_DISCARD_PENALTY = 40.0  # IA de visão marcou o asset como "descartar"
+MIN_AUTO_CONTEXT = 0.33
+MIN_AUTO_CONTEXT_WITH_RISK = 0.55
 
 
 def _type_score(config: dict, is_video: bool) -> float:
@@ -233,6 +235,15 @@ def _filter_candidates(candidates: list[dict]) -> list[dict]:
     return vetted or candidates
 
 
+def _acceptable_for_auto_select(scene: dict, asset: dict) -> bool:
+    context = scoring.context_analysis(scene, asset)
+    score = float(context["context_score"])
+    risks = context.get("risks") or []
+    if risks:
+        return score >= MIN_AUTO_CONTEXT_WITH_RISK
+    return score >= MIN_AUTO_CONTEXT
+
+
 def _prepare_pending(
     scenes: list[dict], candidates_by_scene: dict[int, list[dict]], config: dict
 ) -> list[tuple[dict, list[dict]]]:
@@ -242,6 +253,10 @@ def _prepare_pending(
         if not candidates:
             continue
         candidates = _filter_candidates(candidates)
+        candidates = [c for c in candidates if _acceptable_for_auto_select(scene, c)]
+        if not candidates:
+            logger.warning("auto_select: sem candidato confiavel para %s", scene.get("scene_id"))
+            continue
         top = rank_candidates(scene, candidates, config)[:CANDIDATES_PER_SCENE]
         pending.append((scene, top))
     return pending

@@ -11,6 +11,7 @@ termos genéricos de banco de imagem e colisões com must_not_show.
 """
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 
@@ -91,10 +92,31 @@ def scene_concept_tokens(scene: dict) -> set[str]:
 #   alternative -> ângulo semântico diferente, igualmente no tema
 #   fallback    -> consulta mais ampla, ainda no tema (rede de segurança)
 def asset_context_tokens(asset: dict) -> set[str]:
-    """Tokens offline usados para julgar contexto do asset."""
+    """Tokens offline usados como pista fraca do asset."""
     tokens: set[str] = set()
     for field in ("keyword", "source_id", "page_url", "author", "attribution"):
         tokens |= normalize_tokens(str(asset.get(field) or ""))
+    tokens |= asset_visual_tokens(asset)
+    return tokens
+
+
+def asset_visual_tokens(asset: dict) -> set[str]:
+    """Tokens vindos de metadados do resultado, nao da query que buscou o asset."""
+    tokens: set[str] = set()
+    for field in ("page_url", "author", "attribution"):
+        tokens |= normalize_tokens(str(asset.get(field) or ""))
+    payload = asset.get("provider_payload_json") or asset.get("provider_payload") or {}
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (TypeError, ValueError):
+            payload = {"raw": payload}
+    if isinstance(payload, dict):
+        for key in ("tags", "title", "alt", "description", "slug", "url", "page_url", "raw"):
+            value = payload.get(key)
+            if isinstance(value, (list, tuple)):
+                value = " ".join(str(v) for v in value)
+            tokens |= normalize_tokens(str(value or ""))
     return tokens
 
 
@@ -103,30 +125,57 @@ def _phrase_match(tokens: set[str], phrase: str) -> bool:
     return bool(phrase_tokens) and phrase_tokens <= tokens
 
 
+_MOSQUITO_ALIASES = {"mosquito", "mosquitoes", "larvae", "larva", "insect", "aedes", "dengue"}
+_MOSQUITO_FALSE_POSITIVES = {
+    "bird", "birds", "duck", "ducks", "swan", "swans", "goose", "geese",
+    "chicken", "chickens", "rooster", "egg", "eggs", "yolk", "fried",
+    "flower", "flowers", "dog", "dogs", "cat", "cats", "child", "children",
+    "girl", "boy", "woman", "man",
+}
+
+
+def context_risks(scene: dict, asset: dict) -> list[str]:
+    visual = asset_visual_tokens(asset)
+    risks: list[str] = []
+    for item in scene.get("must_not_show") or []:
+        if normalize_tokens(str(item)) & visual:
+            risks.append(str(item))
+    concept = scene_concept_tokens(scene)
+    if concept & {"mosquito", "dengue", "aedes"}:
+        false_hits = sorted(_MOSQUITO_FALSE_POSITIVES & visual)
+        has_mosquito_signal = bool(_MOSQUITO_ALIASES & visual)
+        if false_hits and not has_mosquito_signal:
+            risks.append("falso positivo: " + ", ".join(false_hits[:3]))
+    return risks
+
+
 def context_analysis(scene: dict, asset: dict) -> dict:
     """Score de contexto em [0,1] com matched/missing/risks auditaveis."""
-    tokens = asset_context_tokens(asset)
+    visual_tokens = asset_visual_tokens(asset)
     must = [str(item).strip() for item in (scene.get("must_show") or []) if str(item).strip()]
-    avoid = [str(item).strip() for item in (scene.get("must_not_show") or []) if str(item).strip()]
 
-    matched = [item for item in must if _phrase_match(tokens, item)]
+    matched = [item for item in must if _phrase_match(visual_tokens, item)]
     missing = [item for item in must if item not in matched]
-    risks = [item for item in avoid if normalize_tokens(item) & tokens]
+    risks = context_risks(scene, asset)
 
     keyword_score = keyword_relevance(scene, asset)
     if must:
         must_score = len(matched) / len(must)
-        score = 0.65 * must_score + 0.35 * keyword_score
+        # A query que trouxe o asset e so uma pista; nao prova que o asset mostra
+        # aquilo. Sem metadado visual confirmando must_show, capamos forte.
+        score = 0.80 * must_score + 0.20 * keyword_score
         if not matched:
-            score = min(score, 0.32)
+            score = min(score, 0.22)
         elif missing:
-            score = min(score, 0.62)
+            score = min(score, 0.55)
     else:
-        score = keyword_score
+        score = 0.55 * keyword_score
+        if visual_tokens and scene_concept_tokens(scene) & visual_tokens:
+            score += 0.25
 
     generic = is_generic_keyword(asset.get("keyword", ""))
     if risks:
-        score -= 0.45
+        score -= 0.65
     if generic:
         score = min(score, 0.25)
 

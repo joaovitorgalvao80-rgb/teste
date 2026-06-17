@@ -1147,6 +1147,16 @@ def auto_select_for_project(
     )
     if job_id:
         check_job_canceled(job_id)
+    missing_choice_scene_ids = {s["id"] for s in target_scenes} - set(choices)
+    for scene_db_id in missing_choice_scene_ids:
+        for asset in assets_by_scene.get(scene_db_id, []):
+            if asset.get("state") == "selected" and asset.get("auto_reason"):
+                db.set_asset_state(
+                    asset["id"],
+                    "pending",
+                    auto_reason="removido: nenhum candidato confiavel para selecao automatica",
+                    review_round=review_round,
+                )
     for scene_db_id, (asset_id, score, reason) in choices.items():
         db.set_asset_state(
             asset_id,

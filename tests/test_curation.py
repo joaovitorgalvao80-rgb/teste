@@ -13,6 +13,7 @@ from pathlib import Path
 os.environ["APP_ENV"] = "dev"
 
 import app as webapp  # noqa: E402
+import app_shared  # noqa: E402
 import database as db  # noqa: E402
 from services import auto_select, groq_service, scoring, vision  # noqa: E402
 
@@ -44,6 +45,7 @@ def _asset(aid: int, keyword: str, **over) -> dict:
         "source": "pexels",
         "source_id": str(aid),
         "author": f"author{aid}",
+        "provider_payload": {"tags": keyword},
     }
     base.update(over)
     return base
@@ -85,6 +87,17 @@ class ScoringTest(unittest.TestCase):
         self.assertIn("bird", wrong_ctx["risks"])
         self.assertGreater(good_ctx["context_score"], 0.66)
 
+    def test_mosquito_false_positive_tags_are_risks(self) -> None:
+        scene = _scene(
+            visual_goal="mosquito larvae in standing water bucket",
+            keywords=["mosquito larvae water"],
+            must_show=["mosquito", "water"],
+        )
+        duck = _asset(6, "mosquito larvae water", provider_payload={"tags": "duck bird lake water"})
+        ctx = scoring.context_analysis(scene, duck)
+        self.assertLess(ctx["context_score"], 0.33)
+        self.assertTrue(any("falso positivo" in risk for risk in ctx["risks"]))
+
     def test_generic_keyword_detection(self) -> None:
         self.assertTrue(scoring.is_generic_keyword("business background"))
         self.assertTrue(scoring.is_generic_keyword("abstract concept"))
@@ -121,6 +134,19 @@ class HeuristicScoreTest(unittest.TestCase):
         self.assertEqual(chosen_asset_id, 11)
         self.assertIn("relevância", reason)
 
+    def test_auto_select_refuses_only_false_positive_candidates(self) -> None:
+        scene = _scene(
+            visual_goal="mosquito eggs and larvae in standing water bucket",
+            keywords=["mosquito larvae water"],
+            must_show=["mosquito", "water"],
+        )
+        duck = _asset(13, "mosquito larvae water", provider_payload={"tags": "duck bird lake water"})
+        egg = _asset(14, "dead mosquito eggs", provider_payload={"tags": "fried egg yolk food"})
+        choices = auto_select.choose_best_takes(
+            [scene], {scene["id"]: [duck, egg]}, CONFIG, groq_key=""
+        )
+        self.assertNotIn(scene["id"], choices)
+
     def test_diversity_penalizes_reused_asset_across_scenes(self) -> None:
         # Duas cenas idênticas; o mesmo asset (source_id) aparece nas duas.
         # A diversidade deve empurrar a 2ª cena para um asset diferente.
@@ -130,7 +156,13 @@ class HeuristicScoreTest(unittest.TestCase):
         cand1 = [shared(100)]
         cand2 = [
             _asset(200, "mosquito close up", source_id="SHARED", author="same"),
-            _asset(201, "stagnant water backyard", source_id="OTHER", author="other"),
+            _asset(
+                201,
+                "stagnant water backyard",
+                source_id="OTHER",
+                author="other",
+                provider_payload={"tags": "mosquito stagnant water backyard"},
+            ),
         ]
         choices = auto_select.choose_best_takes(
             [s1, s2], {1: cand1, 2: cand2}, CONFIG, groq_key=""
@@ -316,6 +348,19 @@ class KeywordFallbackTest(unittest.TestCase):
         self.assertIn("mosquito", joined)
         self.assertIn("water", joined)
         self.assertNotIn("background", joined)
+
+    def test_mosquito_egg_queries_become_larvae_water_not_food_eggs(self) -> None:
+        scene = {
+            "scene_id": "scene_001",
+            "zone": "DESENVOLVIMENTO",
+            "narration": "todo ovo do mosquito morre no balde",
+            "query_ladder": ["dead mosquito eggs", "female mosquito approaching water"],
+        }
+        queries = groq_service.normalized_scene_queries(scene)
+        joined = " ".join(queries)
+        self.assertIn("mosquito larvae water", joined)
+        self.assertNotIn("eggs", joined)
+        self.assertNotIn("female", joined)
 
     def test_prompt_requests_multi_query_strategy(self) -> None:
         prompt = groq_service._build_prompt(
@@ -623,6 +668,35 @@ class VisionJobTest(unittest.TestCase):
         scene2 = db.get_scene(scene["id"])
         self.assertEqual(scene2["keyword_roles"], ["primary", "alternative"])
         self.assertEqual(scene2["query_ladder"], ["novo principal", "reserva ampla"])
+
+    def test_auto_select_clears_stale_automatic_choice_when_pool_is_bad(self) -> None:
+        user_id = db.create_user("stale-auto", "p")
+        project_id = db.create_project(user_id, "stale", "x", {"resolution": "1920x1080"})
+        db.replace_scenes(project_id, [{
+            "scene_id": "scene_001", "idx": 1, "start_time": 0, "end_time": 4, "duration": 4,
+            "narration": "mosquito na agua parada",
+            "visual_goal": "mosquito larvae in standing water bucket",
+            "keywords": ["mosquito larvae water"],
+            "must_show": ["mosquito", "water"],
+            "screen_mode": "broll",
+        }])
+        scene = db.list_scenes(project_id)[0]
+        db.add_assets(scene["id"], [{
+            "source": "pixabay",
+            "source_id": "duck",
+            "asset_type": "video",
+            "download_url": "https://example.com/duck.mp4",
+            "keyword": "mosquito larvae water",
+            "provider_payload": {"tags": "duck bird lake water"},
+        }])
+        asset = db.list_assets(scene["id"])[0]
+        db.set_asset_state(asset["id"], "selected", auto_reason="selecionado antes")
+
+        config = webapp.normalize_project_config({"video_style": "broll_only"})
+        chosen = app_shared.auto_select_for_project(project_id, config, "", "")
+
+        self.assertEqual(chosen, 0)
+        self.assertEqual(db.get_asset(asset["id"])["state"], "pending")
 
     def test_preview_page_shows_chosen_take_and_warnings(self) -> None:
         from unittest.mock import patch

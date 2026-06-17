@@ -122,7 +122,8 @@ _SEARCH_TRANSLATIONS = {
 _BAD_SEARCH_WORDS = {
     "abstract", "background", "concept", "conceptual", "cinematic", "documentary",
     "footage", "generic", "image", "moment", "scene", "shot", "stock", "video",
-    "visual", "view",
+    "visual", "view", "female", "male", "dead", "approaching", "towards", "toward",
+    "method", "system", "control",
 }
 
 
@@ -142,6 +143,12 @@ def _translated_tokens(text: str) -> list[str]:
 def _clean_query_phrase(phrase: str) -> str:
     tokens = _translated_tokens(phrase)
     tokens = [t for t in tokens if t not in _BAD_SEARCH_WORDS]
+    if "mosquito" in tokens and "eggs" in tokens:
+        tokens = ["mosquito", "larvae", "water"]
+    elif "mosquito" in tokens and "bucket" in tokens:
+        tokens = ["standing", "water", "bucket"]
+    elif "mosquito" in tokens and "water" in tokens:
+        tokens = ["mosquito", "stagnant", "water"]
     return " ".join(tokens[:4]).strip()
 
 

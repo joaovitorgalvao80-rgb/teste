@@ -160,6 +160,10 @@ def search_pexels_videos(keyword: str, key: str, max_w: int, per_page: int = 8, 
                 "keyword": keyword,
                 "author": (v.get("user") or {}).get("name", ""),
                 "author_url": (v.get("user") or {}).get("url", ""),
+                "provider_payload": {
+                    "url": v.get("url", ""),
+                    "image": picture,
+                },
             }
         )
     return out
@@ -209,6 +213,10 @@ def search_pixabay_videos(keyword: str, key: str, max_w: int, per_page: int = 8,
                 "keyword": keyword,
                 "author": hit.get("user", ""),
                 "author_url": f"https://pixabay.com/users/{hit.get('user','')}-{hit.get('user_id','')}/",
+                "provider_payload": {
+                    "tags": hit.get("tags", ""),
+                    "page_url": hit.get("pageURL", ""),
+                },
             }
         )
     return out
@@ -247,6 +255,10 @@ def search_pexels_images(keyword: str, key: str, per_page: int = 6, page: int = 
                 "keyword": keyword,
                 "author": p.get("photographer", ""),
                 "author_url": p.get("photographer_url", ""),
+                "provider_payload": {
+                    "alt": p.get("alt", ""),
+                    "url": p.get("url", ""),
+                },
             }
         )
     return out
@@ -286,6 +298,10 @@ def search_pixabay_images(keyword: str, key: str, per_page: int = 6, page: int =
                 "keyword": keyword,
                 "author": hit.get("user", ""),
                 "author_url": f"https://pixabay.com/users/{hit.get('user','')}-{hit.get('user_id','')}/",
+                "provider_payload": {
+                    "tags": hit.get("tags", ""),
+                    "page_url": hit.get("pageURL", ""),
+                },
             }
         )
     return out
@@ -332,6 +348,11 @@ def search_coverr_videos(keyword: str, key: str, per_page: int = 8, page: int = 
                 "keyword": keyword,
                 "author": "Coverr",
                 "author_url": "https://coverr.co",
+                "provider_payload": {
+                    "title": hit.get("title", ""),
+                    "slug": hit.get("slug", ""),
+                    "tags": hit.get("tags", ""),
+                },
             }
         )
     return out
@@ -377,6 +398,10 @@ def search_openverse_images(keyword: str, per_page: int = 5) -> list[dict]:
                 "keyword": keyword,
                 "author": hit.get("creator", "") or "",
                 "author_url": hit.get("creator_url", "") or "",
+                "provider_payload": {
+                    "title": hit.get("title", ""),
+                    "tags": hit.get("tags", []),
+                },
             }
         )
     return out
@@ -406,6 +431,10 @@ def _wikimedia_item(page: dict, keyword: str) -> Optional[dict]:
         "keyword": keyword,
         "author": artist or "Wikimedia Commons",
         "author_url": info.get("descriptionurl", ""),
+        "provider_payload": {
+            "title": (meta.get("ObjectName") or {}).get("value", ""),
+            "description": (meta.get("ImageDescription") or {}).get("value", ""),
+        },
     }
 
 
