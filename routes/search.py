@@ -59,10 +59,7 @@ def search_all(
         user["id"],
         user.get("pexels_key", ""),
         user.get("pixabay_key", ""),
-        user.get("groq_key", ""),
-        user.get("groq_model") or groq_service.DEFAULT_MODEL,
         user.get("coverr_key", ""),
-        user.get("nvidia_key", ""),
     )
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
@@ -109,7 +106,6 @@ def search_part(
         user.get("groq_key", ""),
         user.get("groq_model") or groq_service.DEFAULT_MODEL,
         user.get("coverr_key", ""),
-        user.get("nvidia_key", ""),
     )
     return RedirectResponse(f"/projects/{project_id}/review?part={part_idx}", status_code=303)
 

@@ -548,6 +548,56 @@ def _verdict_for_frame_score(score: float, discarded: bool) -> str:
     return "fraco"
 
 
+def _analyze_sample_frames(
+    sample: dict,
+    scene: dict,
+    project_work: Path,
+    provider,
+    config: dict,
+    analyzed_frames: int,
+) -> tuple[list[dict], int]:
+    frame_results = []
+    for frame in sample.get("frames") or []:
+        if analyzed_frames >= VIDEO_FRAME_VISION_MAX_FRAMES:
+            break
+        rel = str(frame.get("file") or "")
+        data_url = _frame_data_url(project_work / "kaggle_output" / rel)
+        if not data_url:
+            continue
+        asset = {
+            "id": analyzed_frames + 1,
+            "asset_type": "image",
+            "keyword": sample.get("selected_asset") or scene.get("visual_target") or scene.get("visual_goal") or "",
+            "frame_data_url": data_url,
+            "width": 640,
+            "height": 360,
+        }
+        result = provider.analyze(asset, scene, config)
+        frame_results.append(
+            {
+                "file": rel,
+                "score": result.score,
+                "verdict": result.verdict,
+                "reasons": result.reasons[:3],
+                "flags": result.flags,
+                "provider": result.provider,
+            }
+        )
+        analyzed_frames += 1
+    return frame_results, analyzed_frames
+
+
+def _store_sample_frame_results(sample: dict, frame_results: list[dict]) -> None:
+    if not frame_results:
+        return
+    avg = sum(float(r["score"]) for r in frame_results) / len(frame_results)
+    discarded = any(r["verdict"] == "descartar" for r in frame_results)
+    sample["frame_vision"] = frame_results
+    sample["video_frame_score"] = round(avg, 1)
+    sample["video_frame_verdict"] = _verdict_for_frame_score(avg, discarded)
+    sample["reason"] = "frames analisados por visao" if not discarded else "ao menos um frame foi descartado pela visao"
+
+
 def _analyze_video_frame_samples(
     project_id: int,
     user: dict,
@@ -572,42 +622,10 @@ def _analyze_video_frame_samples(
 
     for sample in payload.get("samples") or []:
         scene = scenes_by_code.get(sample.get("scene_id")) or {}
-        frame_results = []
-        for frame in sample.get("frames") or []:
-            if analyzed_frames >= VIDEO_FRAME_VISION_MAX_FRAMES:
-                break
-            rel = str(frame.get("file") or "")
-            frame_path = project_work / "kaggle_output" / rel
-            data_url = _frame_data_url(frame_path)
-            if not data_url:
-                continue
-            asset = {
-                "id": analyzed_frames + 1,
-                "asset_type": "image",
-                "keyword": sample.get("selected_asset") or scene.get("visual_target") or scene.get("visual_goal") or "",
-                "frame_data_url": data_url,
-                "width": 640,
-                "height": 360,
-            }
-            result = provider.analyze(asset, scene, config)
-            frame_results.append(
-                {
-                    "file": rel,
-                    "score": result.score,
-                    "verdict": result.verdict,
-                    "reasons": result.reasons[:3],
-                    "flags": result.flags,
-                    "provider": result.provider,
-                }
-            )
-            analyzed_frames += 1
-        if frame_results:
-            avg = sum(float(r["score"]) for r in frame_results) / len(frame_results)
-            discarded = any(r["verdict"] == "descartar" for r in frame_results)
-            sample["frame_vision"] = frame_results
-            sample["video_frame_score"] = round(avg, 1)
-            sample["video_frame_verdict"] = _verdict_for_frame_score(avg, discarded)
-            sample["reason"] = "frames analisados por visao" if not discarded else "ao menos um frame foi descartado pela visao"
+        frame_results, analyzed_frames = _analyze_sample_frames(
+            sample, scene, project_work, provider, config, analyzed_frames
+        )
+        _store_sample_frame_results(sample, frame_results)
     payload["vision_status"] = "analyzed" if analyzed_frames else "unavailable"
     payload["vision_provider"] = provider.name if analyzed_frames else ""
     payload["analyzed_frames"] = analyzed_frames
@@ -1169,10 +1187,8 @@ def run_search_job(
     user_id: int,
     pexels_key: str,
     pixabay_key: str,
-    groq_key: str = "",
-    groq_model: str = "",
     coverr_key: str = "",
-    nvidia_key: str = "",
+    **_legacy_kwargs,
 ) -> None:
     try:
         check_job_canceled(job_id)
@@ -1214,15 +1230,14 @@ def run_search_job(
                 empty_scenes.append(scene["scene_id"])
             else:
                 db.update_job(job_id, status="running", message=f"[{scene_idx}/{broll_count}] {scene['scene_id']} → {added} assets")
-        if broll_count > 0 and total_added <= 0:
-            raise RuntimeError("Busca retornou zero assets. Verifique chaves, keywords ou disponibilidade das APIs.")
         analyzed = 0
         vision_provider = ""
         check_job_canceled(job_id)
         db.set_project_status(project_id, "searched")
+        message = "Busca concluida" if total_added > 0 else "Busca concluida sem assets confiaveis"
         db.finish_job(
             job_id,
-            "Busca concluida",
+            message,
             {
                 "added": total_added,
                 "empty_scenes": empty_scenes,
@@ -1249,7 +1264,6 @@ def run_part_search_job(
     groq_key: str = "",
     groq_model: str = "",
     coverr_key: str = "",
-    nvidia_key: str = "",
 ) -> None:
     try:
         check_job_canceled(job_id)
@@ -1293,8 +1307,6 @@ def run_part_search_job(
                 empty_scenes.append(scene["scene_id"])
             else:
                 db.update_job(job_id, status="running", message=f"[{scene_idx}/{broll_count}] {scene['scene_id']} → {added} assets (parte {part_idx})")
-        if broll_count > 0 and total_added <= 0:
-            raise RuntimeError("Busca retornou zero assets. Verifique chaves, keywords ou disponibilidade das APIs.")
         check_job_canceled(job_id)
         db.update_job(job_id, status="running", message=MSG_SELECTING_TAKES)
         with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="search_part_auto_select"):

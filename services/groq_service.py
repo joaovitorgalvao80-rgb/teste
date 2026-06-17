@@ -26,6 +26,8 @@ GROQ_TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 DEFAULT_MODEL = "llama-3.3-70b-versatile"
 CONTENT_TYPE_JSON = "application/json"
 BRIEF_BATCH_SIZE = 40  # cenas por chamada; roteiros longos estouram o contexto num prompt unico
+QUERY_CLOSE_UP_DETAIL = "close up detail"
+QUERY_REAL_ENVIRONMENT = "real environment"
 GROQ_MODELS = [
     ("llama-3.3-70b-versatile", "Llama 3.3 70B — melhor qualidade (padrão)"),
     ("llama-3.1-8b-instant",    "Llama 3.1 8B Instant — mais rápido"),
@@ -76,9 +78,9 @@ def _overlay_from(text: str) -> str:
 
 # Fillers de fallback por zona narrativa: menos genéricos que um único default.
 _ZONE_FALLBACK = {
-    "GANCHO": ["close up detail", "real situation"],
+    "GANCHO": [QUERY_CLOSE_UP_DETAIL, "real situation"],
     "CTA": ["person taking action", "hands working"],
-    "DESENVOLVIMENTO": ["close up detail", "real environment"],
+    "DESENVOLVIMENTO": [QUERY_CLOSE_UP_DETAIL, QUERY_REAL_ENVIRONMENT],
 }
 
 _SEARCH_TRANSLATIONS = {
@@ -124,7 +126,7 @@ _BAD_SEARCH_WORDS = {
     "footage", "generic", "image", "moment", "scene", "shot", "stock", "video",
     "visual", "view", "female", "male", "dead", "approaching", "towards", "toward",
     "method", "system", "control",
-    "agora", "botar", "direcao", "direcao", "todo", "toda", "todos", "todas",
+    "agora", "botar", "direcao", "todo", "toda", "todos", "todas",
     "raio", "metro", "metros", "sitio", "indo", "esse", "essa", "aqui", "pra",
     "para", "num", "uma", "balde", "femea",
 }
@@ -148,11 +150,7 @@ def _clean_query_phrase(phrase: str) -> str:
     tokens = [t for t in tokens if t not in _BAD_SEARCH_WORDS]
     if tokens == ["bucket"]:
         return ""
-    if "mosquito" in tokens and "eggs" in tokens:
-        tokens = ["mosquito", "larvae", "water"]
-    elif "mosquito" in tokens and "bucket" in tokens:
-        tokens = ["mosquito", "larvae", "water"]
-    elif "mosquito" in tokens and "water" in tokens:
+    if "mosquito" in tokens and {"eggs", "bucket", "water"}.intersection(tokens):
         tokens = ["mosquito", "larvae", "water"]
     return " ".join(tokens[:4]).strip()
 
@@ -179,7 +177,7 @@ def _fallback_queries(scene: dict) -> list[str]:
         add(["mosquito", "stagnant", "water"])
     add(tokens[:4])
     add(tokens[1:5])
-    for fb in _ZONE_FALLBACK.get(scene.get("zone", ""), ["close up detail", "real environment"]):
+    for fb in _ZONE_FALLBACK.get(scene.get("zone", ""), [QUERY_CLOSE_UP_DETAIL, QUERY_REAL_ENVIRONMENT]):
         add(_translated_tokens(fb))
     return queries[:5]
 

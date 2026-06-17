@@ -2407,7 +2407,7 @@ class HardeningAndOptimizationTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 303)
         self.assertFalse(project_work.exists())
 
-    def test_search_job_fails_project_when_no_assets_are_found(self) -> None:
+    def test_search_job_finishes_with_empty_scenes_when_no_assets_are_found(self) -> None:
         db.init_db()
         uid = db.create_user("no-assets", "password123")
         project_id = db.create_project(uid, "proj", "script", {})
@@ -2425,10 +2425,11 @@ class HardeningAndOptimizationTest(unittest.TestCase):
         with patch.object(webapp.asset_search, "search_scene", return_value=[]):
             webapp.run_search_job(job_id, project_id, uid, "pexels", "")
 
-        self.assertEqual(db.get_project(project_id, uid)["status"], "search_failed")
+        self.assertEqual(db.get_project(project_id, uid)["status"], "searched")
         job = db.get_job(job_id, uid)
-        self.assertEqual(job["status"], "error")
-        self.assertIn("zero assets", job["error"])
+        self.assertEqual(job["status"], "complete")
+        self.assertEqual(job["message"], "Busca concluida sem assets confiaveis")
+        self.assertIn("scene_002", job["result"]["empty_scenes"])
 
     def test_search_job_keeps_assets_pending_until_explicit_auto_select(self) -> None:
         db.init_db()

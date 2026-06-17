@@ -567,6 +567,79 @@ def _sort_and_trim_by_context(scene: Optional[dict], assets: list[dict], per_key
     return [row[4] for row in keep]
 
 
+def _search_task_batches(tasks: list[Callable[[], list[dict]]], max_workers: int) -> list[list[dict]]:
+    if not tasks:
+        return []
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(tasks))) as pool:
+        return list(pool.map(lambda task: task(), tasks))
+
+
+def _absorb_search_batches(
+    batches: list[list[dict]],
+    results: list[dict],
+    seen: set,
+    query_role_prefix: str,
+    role: str = "",
+    query: str = "",
+) -> None:
+    for batch in batches:
+        for item in batch:
+            url = item.get("download_url")
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            if query_role_prefix:
+                item["query_role"] = f"{query_role_prefix}_{role}" if role else query_role_prefix
+            else:
+                item.setdefault("query_role", role)
+            item.setdefault("query_text", query or item.get("keyword", ""))
+            results.append(item)
+
+
+def _search_mainstream_ladder(
+    clean_keywords: list[str],
+    pexels_key: str,
+    pixabay_key: str,
+    coverr_key: str,
+    max_w: int,
+    per_keyword: int,
+    want_video: bool,
+    want_image: bool,
+    media: str,
+    page: int,
+    scene: Optional[dict],
+    results: list[dict],
+    seen: set,
+    query_role_prefix: str,
+) -> None:
+    min_good = max(6, per_keyword)
+    for idx, kw in enumerate(clean_keywords[:5]):
+        role = _query_role(idx)
+        tasks = _collect_provider_tasks(
+            [kw], pexels_key, pixabay_key, coverr_key, max_w, per_keyword, want_video, want_image, media, page=page
+        )
+        batches = _search_task_batches(tasks, 8)
+        _absorb_search_batches(batches, results, seen, query_role_prefix, role=role, query=kw)
+        if _good_context_count(scene, results) >= min_good or len(results) >= 40:
+            break
+
+
+def _search_extra_image_banks(
+    keywords: list[str],
+    max_w: int,
+    per_keyword: int,
+    scene: Optional[dict],
+    results: list[dict],
+    seen: set,
+    query_role_prefix: str,
+) -> None:
+    if not keywords or _good_context_count(scene, results) >= max(4, per_keyword):
+        return
+    extra_tasks = _collect_extra_image_tasks(keywords, max_w)
+    batches = _search_task_batches(extra_tasks, 4)
+    _absorb_search_batches(batches, results, seen, query_role_prefix, role="fallback", query=keywords[0])
+
+
 def search_scene(
     keywords: list[str],
     pexels_key: str,
@@ -596,43 +669,18 @@ def search_scene(
     want_video = media in {"all", "video"}
     want_image = media == "image" or (media == "all" and allow_images)
 
-    def _absorb(batches: list[list[dict]], role: str = "", query: str = "") -> None:
-        for batch in batches:
-            for item in batch:
-                url = item["download_url"]
-                if url in seen:
-                    continue
-                seen.add(url)
-                if query_role_prefix:
-                    item["query_role"] = f"{query_role_prefix}_{role}" if role else query_role_prefix
-                else:
-                    item.setdefault("query_role", role)
-                item.setdefault("query_text", query or item.get("keyword", ""))
-                results.append(item)
-
     # Busca em escada: tenta a query principal primeiro e so avanca enquanto o
     # pool ainda estiver fraco. Cada provedor ja devolve [] em erro/chave ausente.
-    min_good = max(6, per_keyword)
     max_raw = 40
     clean_keywords = [str(k).strip() for k in (keywords or []) if str(k).strip()]
-    for idx, kw in enumerate(clean_keywords[:5]):
-        role = _query_role(idx)
-        tasks = _collect_provider_tasks(
-            [kw], pexels_key, pixabay_key, coverr_key, max_w, per_keyword, want_video, want_image, media, page=page
-        )
-        if tasks:
-            with ThreadPoolExecutor(max_workers=min(8, len(tasks))) as pool:
-                _absorb(list(pool.map(lambda task: task(), tasks)), role=role, query=kw)
-        if _good_context_count(scene, results) >= min_good:
-            break
-        if len(results) >= max_raw:
-            break
+    _search_mainstream_ladder(
+        clean_keywords, pexels_key, pixabay_key, coverr_key, max_w, per_keyword,
+        want_video, want_image, media, page, scene, results, seen, query_role_prefix
+    )
 
     # Fallback dirigido: so consulta bancos extras (Wikimedia/Openverse) quando o
     # pool mainstream veio fraco. Mantem o pool enxuto e a visao dentro do limite.
-    if extra_image_banks and keywords and _good_context_count(scene, results) < max(4, per_keyword):
-        extra_tasks = _collect_extra_image_tasks(keywords, max_w)
-        with ThreadPoolExecutor(max_workers=min(4, len(extra_tasks))) as pool:
-            _absorb(list(pool.map(lambda task: task(), extra_tasks)), role="fallback", query=keywords[0])
+    if extra_image_banks:
+        _search_extra_image_banks(clean_keywords, max_w, per_keyword, scene, results, seen, query_role_prefix)
 
     return _sort_and_trim_by_context(scene, results[:max_raw], per_keyword)
