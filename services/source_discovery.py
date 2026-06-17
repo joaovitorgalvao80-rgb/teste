@@ -111,7 +111,12 @@ def _scene_terms(scene: dict) -> list[str]:
         narration = re.sub(r"\s+", " ", str(scene.get("narration") or "")).strip()
         if narration:
             terms.append(narration[:140])
-    return terms[:4]
+    capped: list[str] = []
+    for term in terms:
+        if len(capped) >= 4:
+            break
+        capped.append(term)
+    return capped
 
 
 def _query_for_scene(scene: dict) -> str:
@@ -234,6 +239,41 @@ def _firecrawl_search(query: str, key: str, limit: int) -> tuple[list[dict], lis
     return [i for i in image_items if isinstance(i, dict)], [p for p in page_items if isinstance(p, dict)]
 
 
+def _scrape_root(data: dict) -> dict:
+    root = data.get("data") if isinstance(data, dict) else {}
+    if isinstance(root, dict):
+        return root
+    return data if isinstance(data, dict) else {}
+
+
+def _image_entries_from_scrape(images: list, page_url: str) -> list[dict]:
+    out: list[dict] = []
+    for image in images:
+        if isinstance(image, str):
+            out.append({"imageUrl": image, "url": page_url})
+            continue
+        if isinstance(image, dict):
+            out.append({**image, "url": image.get("url") or page_url})
+    return out
+
+
+def _link_url(link) -> str:
+    if isinstance(link, str):
+        return link
+    if isinstance(link, dict):
+        return str(link.get("url") or "")
+    return ""
+
+
+def _image_entries_from_links(links: list, page_url: str) -> list[dict]:
+    out: list[dict] = []
+    for link in links:
+        raw = _link_url(link)
+        if raw and _looks_like_image(raw):
+            out.append({"imageUrl": raw, "url": page_url})
+    return out
+
+
 def _firecrawl_scrape_images(url: str, key: str) -> list[dict]:
     if not key or not _is_http_url(url):
         return []
@@ -245,22 +285,13 @@ def _firecrawl_scrape_images(url: str, key: str) -> list[dict]:
         headers={"Authorization": f"Bearer {key}", "Content-Type": CONTENT_TYPE_JSON},
         payload=payload,
     )
-    root = data.get("data") if isinstance(data, dict) else {}
-    if not isinstance(root, dict):
-        root = data if isinstance(data, dict) else {}
+    root = _scrape_root(data)
     images = root.get("images") or root.get("imageUrls") or []
-    out: list[dict] = []
-    for image in images:
-        if isinstance(image, str):
-            out.append({"imageUrl": image, "url": url})
-        elif isinstance(image, dict):
-            out.append({**image, "url": image.get("url") or url})
     links = root.get("links") or []
-    for link in links:
-        raw = link if isinstance(link, str) else (link.get("url") if isinstance(link, dict) else "")
-        if raw and _looks_like_image(raw):
-            out.append({"imageUrl": raw, "url": url})
-    return out
+    return [
+        *_image_entries_from_scrape(images, url),
+        *_image_entries_from_links(links, url),
+    ]
 
 
 def _exa_search(query: str, key: str, limit: int) -> list[dict]:
