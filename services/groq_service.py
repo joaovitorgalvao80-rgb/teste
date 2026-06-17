@@ -434,26 +434,45 @@ def _fetch_briefs_from_groq(
     return by_id
 
 
+def _as_list(value) -> list:
+    if isinstance(value, str):
+        return [value]
+    return list(value or [])
+
+
+def _allowed_or_default(value: str, allowed: set[str], default: str) -> str:
+    clean = str(value or "").strip()
+    return clean if clean in allowed else default
+
+
+def _bounded_float(value, default: float) -> float:
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _clean_text_list(value) -> list[str]:
+    return [str(k).strip() for k in (value or []) if str(k).strip()]
+
+
 def _merge_brief(scene: dict, ai: dict, fb: dict, avatar_safe_area: str) -> dict:
     """Combina o brief da IA com o fallback, garantindo campos completos."""
-    query_ladder = ai.get("query_ladder") or ai.get("keywords") or fb["query_ladder"]
-    if isinstance(query_ladder, str):
-        query_ladder = [query_ladder]
+    query_ladder = _as_list(ai.get("query_ladder") or ai.get("keywords") or fb["query_ladder"])
     query_ladder = _sanitize_query_ladder(query_ladder, {**scene, **ai}, fb["query_ladder"])
-    keywords = ai.get("keywords") or query_ladder[:3] or fb["keywords"]
-    if isinstance(keywords, str):
-        keywords = [keywords]
+    keywords = _as_list(ai.get("keywords") or query_ladder[:3] or fb["keywords"])
     keywords = _sanitize_query_ladder(keywords, {**scene, **ai}, query_ladder)[:3]
-    screen_mode = str(ai.get("screen_mode") or fb["screen_mode"]).strip()
-    if screen_mode not in {"avatar_only", "broll", "hybrid", "optional_broll"}:
-        screen_mode = fb["screen_mode"]
-    strategy = str(ai.get("visual_strategy") or fb["visual_strategy"]).strip()
-    if strategy not in {"literal", "evidence", "environment", "symbolic", "none"}:
-        strategy = fb["visual_strategy"]
-    try:
-        visual_need = max(0.0, min(1.0, float(ai.get("visual_need", fb["visual_need"]))))
-    except (TypeError, ValueError):
-        visual_need = fb["visual_need"]
+    screen_mode = _allowed_or_default(
+        ai.get("screen_mode") or fb["screen_mode"],
+        {"avatar_only", "broll", "hybrid", "optional_broll"},
+        fb["screen_mode"],
+    )
+    strategy = _allowed_or_default(
+        ai.get("visual_strategy") or fb["visual_strategy"],
+        {"literal", "evidence", "environment", "symbolic", "none"},
+        fb["visual_strategy"],
+    )
+    visual_need = _bounded_float(ai.get("visual_need", fb["visual_need"]), fb["visual_need"])
     return {
         "scene_id": scene["scene_id"],
         "visual_goal": (ai.get("visual_goal") or fb["visual_goal"]).strip(),
@@ -463,8 +482,8 @@ def _merge_brief(scene: dict, ai: dict, fb: dict, avatar_safe_area: str) -> dict
         "visual_target": str(ai.get("visual_target") or fb["visual_target"]).strip()[:160],
         "keywords": keywords or query_ladder[:3] or fb["keywords"],
         "query_ladder": query_ladder,
-        "must_show": [str(k).strip() for k in (ai.get("must_show") or ai.get("must_have") or []) if str(k).strip()],
-        "must_not_show": [str(k).strip() for k in (ai.get("must_not_show") or ai.get("avoid") or fb["must_not_show"]) if str(k).strip()],
+        "must_show": _clean_text_list(ai.get("must_show") or ai.get("must_have")),
+        "must_not_show": _clean_text_list(ai.get("must_not_show") or ai.get("avoid") or fb["must_not_show"]),
         "asset_type": ai.get("asset_type") or "video",
         "overlay_text": str(ai.get("overlay_text") or "").upper()[:60],
         "avatar_safe_area": avatar_safe_area,
@@ -548,6 +567,53 @@ def transcribe_audio(
     return "\n".join(lines)
 
 
+def _rejected_assets_block(rejected_assets: Optional[list[dict]]) -> str:
+    rejected_lines = []
+    for item in rejected_assets or []:
+        reason = str(item.get("rejection_reason") or item.get("reason") or "").strip()
+        keyword = str(item.get("keyword") or "").strip()
+        source = str(item.get("source") or "").strip()
+        bit = " / ".join(p for p in [keyword, source, reason] if p)
+        if bit:
+            rejected_lines.append("- " + bit[:140])
+    if not rejected_lines:
+        return ""
+    return "\nPreviously rejected results to avoid repeating:\n" + "\n".join(rejected_lines[:8]) + "\n"
+
+
+def _regenerate_keywords_prompt(
+    narration: str,
+    visual_goal: str,
+    style: str,
+    language: str,
+    rejected_assets: Optional[list[dict]],
+) -> str:
+    return (
+        "Generate 3 FRESH English video search phrases for Pexels/Pixabay for this scene, "
+        "different from obvious literal terms (the previous results were rejected).\n"
+        "Order them: 1) most concrete primary, 2) a different semantic angle, "
+        "3) a broader safe fallback. 2-4 words each, no generic single words "
+        "(background/business/concept). If the narration is metaphorical, search the "
+        "real underlying meaning, not the literal words.\n"
+        f"Visual style: {style}.\n"
+        f"Narration ({language_name(language)}): {narration}\n"
+        f"Visual goal: {visual_goal}\n"
+        f"{_rejected_assets_block(rejected_assets)}"
+        'Return JSON only: {"keywords": ["...", "...", "..."]}'
+    )
+
+
+def _extract_regenerated_keywords(resp, narration: str, visual_goal: str) -> list[str]:
+    if resp.status_code >= 400:
+        return []
+    data = json.loads(resp.json()["choices"][0]["message"]["content"])
+    kws = [str(k).strip() for k in data.get("keywords", []) if str(k).strip()]
+    if not kws:
+        return []
+    scene = {"narration": narration, "visual_goal": visual_goal, "must_show": []}
+    return _sanitize_query_ladder(kws, scene, _fallback_queries(scene))[:3]
+
+
 def regenerate_keywords(
     narration: str,
     visual_goal: str,
@@ -560,31 +626,7 @@ def regenerate_keywords(
     """Gera um novo conjunto de keywords para uma unica cena (botao 'gerar novas keywords')."""
     if groq_key:
         try:
-            rejected_lines = []
-            for item in rejected_assets or []:
-                reason = str(item.get("rejection_reason") or item.get("reason") or "").strip()
-                keyword = str(item.get("keyword") or "").strip()
-                source = str(item.get("source") or "").strip()
-                bit = " / ".join(p for p in [keyword, source, reason] if p)
-                if bit:
-                    rejected_lines.append("- " + bit[:140])
-            rejected_block = (
-                "\nPreviously rejected results to avoid repeating:\n" + "\n".join(rejected_lines[:8]) + "\n"
-                if rejected_lines else ""
-            )
-            prompt = (
-                "Generate 3 FRESH English video search phrases for Pexels/Pixabay for this scene, "
-                "different from obvious literal terms (the previous results were rejected).\n"
-                "Order them: 1) most concrete primary, 2) a different semantic angle, "
-                "3) a broader safe fallback. 2-4 words each, no generic single words "
-                "(background/business/concept). If the narration is metaphorical, search the "
-                "real underlying meaning, not the literal words.\n"
-                f"Visual style: {style}.\n"
-                f"Narration ({language_name(language)}): {narration}\n"
-                f"Visual goal: {visual_goal}\n"
-                f"{rejected_block}"
-                'Return JSON only: {"keywords": ["...", "...", "..."]}'
-            )
+            prompt = _regenerate_keywords_prompt(narration, visual_goal, style, language, rejected_assets)
             resp = _tracked_post(
                 "regenerate_keywords",
                 GROQ_URL,
@@ -597,12 +639,9 @@ def regenerate_keywords(
                 },
                 timeout=90,
             )
-            if resp.status_code < 400:
-                data = json.loads(resp.json()["choices"][0]["message"]["content"])
-                kws = [str(k).strip() for k in data.get("keywords", []) if str(k).strip()]
-                if kws:
-                    scene = {"narration": narration, "visual_goal": visual_goal, "must_show": []}
-                    return _sanitize_query_ladder(kws, scene, _fallback_queries(scene))[:3]
+            kws = _extract_regenerated_keywords(resp, narration, visual_goal)
+            if kws:
+                return kws
         except Exception as exc:  # noqa: BLE001
             logger.warning("Groq regenerate erro: %s", exc)
     return fallback_scene_brief({"scene_id": "x", "narration": narration}, "right")["keywords"]
