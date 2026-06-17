@@ -148,11 +148,11 @@ def _translated_tokens(text: str) -> list[str]:
 def _clean_query_phrase(phrase: str) -> str:
     tokens = _translated_tokens(phrase)
     tokens = [t for t in tokens if t not in _BAD_SEARCH_WORDS]
-    if tokens == ["bucket"]:
+    if len(tokens) == 1 and tokens[0] == "bucket":
         return ""
     if "mosquito" in tokens and {"eggs", "bucket", "water"}.intersection(tokens):
         tokens = ["mosquito", "larvae", "water"]
-    return " ".join(tokens[:4]).strip()
+    return " ".join(tokens[0:4]).strip()
 
 
 def _fallback_queries(scene: dict) -> list[str]:
@@ -239,7 +239,7 @@ def fallback_scene_brief(scene: dict, avatar_safe_area: str) -> dict:
     tokens = [t for t in scoring.normalize_tokens(text, min_len=4) if not t.isdigit()]
     if tokens:
         keywords.append(" ".join(sorted(tokens)[:4]))
-    for fb in _ZONE_FALLBACK.get(scene.get("zone", ""), ["close up detail", "real environment"]):
+    for fb in _ZONE_FALLBACK.get(scene.get("zone", ""), [QUERY_CLOSE_UP_DETAIL, QUERY_REAL_ENVIRONMENT]):
         if fb not in keywords:
             keywords.append(fb)
     editorial = classify_scene_editorial(scene)

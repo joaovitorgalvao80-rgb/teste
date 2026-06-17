@@ -408,7 +408,10 @@ def search_openverse_images(keyword: str, per_page: int = 5) -> list[dict]:
 
 
 def _wikimedia_item(page: dict, keyword: str) -> Optional[dict]:
-    info = (page.get("imageinfo") or [{}])[0]
+    imageinfo = page.get("imageinfo") or []
+    if not imageinfo:
+        return None
+    info = imageinfo[0]
     mime = str(info.get("mime") or "")
     if mime not in {"image/jpeg", "image/png", "image/webp"}:
         return None  # pula SVG/PDF/audio/video
