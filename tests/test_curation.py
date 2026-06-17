@@ -293,6 +293,30 @@ class KeywordFallbackTest(unittest.TestCase):
         # algum filler de CTA deve aparecer
         self.assertTrue("action" in joined or "hands" in joined or "working" in joined)
 
+    def test_fallback_translates_portuguese_terms_for_stock_search(self) -> None:
+        scene = {"scene_id": "scene_001", "zone": "DESENVOLVIMENTO",
+                 "narration": "mosquito da dengue na agua parada do quintal"}
+        brief = groq_service.fallback_scene_brief(scene, "right")
+        joined = " ".join(brief["query_ladder"]).lower()
+        self.assertIn("mosquito", joined)
+        self.assertIn("water", joined)
+        self.assertNotIn("agua", joined)
+        self.assertNotIn("quintal", joined)
+
+    def test_normalized_scene_queries_sanitizes_existing_bad_ladder(self) -> None:
+        scene = {
+            "scene_id": "scene_001",
+            "zone": "DESENVOLVIMENTO",
+            "narration": "larvas de mosquito na agua parada",
+            "query_ladder": ["documentary real scene", "background footage"],
+            "keywords": ["agua parada"],
+        }
+        queries = groq_service.normalized_scene_queries(scene)
+        joined = " ".join(queries)
+        self.assertIn("mosquito", joined)
+        self.assertIn("water", joined)
+        self.assertNotIn("background", joined)
+
     def test_prompt_requests_multi_query_strategy(self) -> None:
         prompt = groq_service._build_prompt(
             [{"scene_id": "scene_001", "start_time": 0.0, "end_time": 4.0, "narration": "teste"}],
@@ -598,6 +622,7 @@ class VisionJobTest(unittest.TestCase):
         db.update_scene_keywords(scene["id"], ["novo principal", "reserva ampla"])
         scene2 = db.get_scene(scene["id"])
         self.assertEqual(scene2["keyword_roles"], ["primary", "alternative"])
+        self.assertEqual(scene2["query_ladder"], ["novo principal", "reserva ampla"])
 
     def test_preview_page_shows_chosen_take_and_warnings(self) -> None:
         from unittest.mock import patch

@@ -602,6 +602,7 @@
             <div class="take-meta">
               <span>{{ a.source }} · {{ a.width }}x{{ a.height }}{% if a.duration %} · {{ a.duration }}s{% endif %}</span>
               <span class="kw-label">{{ a.keyword }}</span>
+              {% if a.query_role %}<span class="kw-label">{{ a.query_role|replace('_', ' ') }}</span>{% endif %}
             </div>
             <div class="take-meta">
               <span class="tally {% if a.relevance_label == 'alta' %}tally-ok{% elif a.relevance_label == 'baixa' %}tally-warn{% endif %}"

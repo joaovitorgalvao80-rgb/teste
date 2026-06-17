@@ -482,10 +482,14 @@ _TAKE_STATE_RANK = {"accepted": 3, "selected": 2, "favorite": 1, "pending": 0, "
 
 
 def _take_sort_key(asset: dict) -> tuple:
+    query_role = str(asset.get("query_role") or "")
+    manual_rank = 1 if query_role.startswith("manual_") else 0
     return (
         _TAKE_STATE_RANK.get(asset.get("state", "pending"), 0),
+        manual_rank,
         float(asset.get("vision_score") or 0),
         float(asset.get("relevance") or 0),
+        int(asset.get("id") or 0),
     )
 
 
@@ -1187,7 +1191,7 @@ def run_search_job(
             db.update_job(job_id, status="running", message=f"[{scene_idx}/{broll_count}] {scene['scene_id']} — buscando assets")
             with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="search_assets"):
                 results = asset_search.search_scene(
-                    scene.get("query_ladder") or scene["keywords"],
+                    groq_service.normalized_scene_queries(scene),
                     pexels_key,
                     pixabay_key,
                     max_w=max_w,
@@ -1265,7 +1269,7 @@ def run_part_search_job(
             db.update_job(job_id, status="running", message=f"[{scene_idx}/{broll_count}] {scene['scene_id']} — buscando (parte {part_idx})")
             with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="search_part"):
                 results = asset_search.search_scene(
-                    scene.get("query_ladder") or scene["keywords"],
+                    groq_service.normalized_scene_queries(scene),
                     pexels_key,
                     pixabay_key,
                     max_w=max_w,
@@ -1553,7 +1557,7 @@ def _research_one_scene(
     existing = {a["download_url"] for a in assets_by_scene.get(scene["id"], [])}
     with api_usage.context(user_id=user_id, project_id=scene.get("project_id"), job_id=job_id, operation="research_assets"):
         results = asset_search.search_scene(
-            scene.get("query_ladder") or scene["keywords"],
+            groq_service.normalized_scene_queries(scene),
             keys["pexels"],
             keys["pixabay"],
             max_w=max_w,

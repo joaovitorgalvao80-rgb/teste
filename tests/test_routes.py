@@ -365,11 +365,21 @@ class SearchRoutesTest(unittest.TestCase):
         with TestClient(webapp.app) as client:
             user_id, project_id, scene_id = self._seed("smore2")
             db.update_api_keys(user_id, "pk", "xk", "")
+            for i in range(16):
+                db.add_assets(scene_id, [{
+                    "source": "pexels",
+                    "asset_type": "video",
+                    "download_url": f"https://x.com/old-{i}.mp4",
+                    "keyword": "old",
+                }])
             _login(client, "smore2")
-            with patch.object(webapp.asset_search, "search_scene", return_value=fake):
-                resp = client.post(f"/scenes/{scene_id}/search-more", data={"keyword": "mosquito"})
+            with patch.object(webapp.asset_search, "search_scene", return_value=fake) as spy:
+                resp = client.post(f"/scenes/{scene_id}/search-more", data={"keyword": "mosquito", "media": "video"})
         self.assertEqual(resp.status_code, 200)
         self.assertGreaterEqual(resp.json()["added"], 0)
+        _, kwargs = spy.call_args
+        self.assertGreaterEqual(kwargs["page"], 2)
+        self.assertEqual(kwargs["query_role_prefix"], "manual_video")
 
     def test_search_more_unknown_scene_404(self) -> None:
         with TestClient(webapp.app) as client:

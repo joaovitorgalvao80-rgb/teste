@@ -447,6 +447,24 @@ class DeployContractsTest(unittest.TestCase):
         )
         self.assertEqual(state["code"], "needs_map")
 
+    def test_manual_search_results_sort_above_automatic_candidates(self) -> None:
+        automatic = {
+            "id": 10,
+            "state": "pending",
+            "query_role": "primary",
+            "vision_score": 95,
+            "relevance": 0.95,
+        }
+        manual = {
+            "id": 11,
+            "state": "pending",
+            "query_role": "manual_image_primary",
+            "vision_score": 40,
+            "relevance": 0.4,
+        }
+        ranked = sorted([automatic, manual], key=webapp._take_sort_key, reverse=True)
+        self.assertEqual(ranked[0], manual)
+
     def test_preflight_lists_release_gates(self) -> None:
         names = [check.name for check in preflight.planned_checks()]
         self.assertIn("unit contracts", names)

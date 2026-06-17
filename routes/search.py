@@ -241,9 +241,17 @@ def search_more(
     if media not in {"all", "video", "image"}:
         media = "all"
     max_w = resolution_width(config)
-    existing = {a["download_url"] for a in db.list_assets(scene_db_id)}
+    existing_assets = db.list_assets(scene_db_id)
+    existing = {a["download_url"] for a in existing_assets}
     custom = [k.strip() for k in str(keyword or "").split(",") if k.strip()][:5]
-    search_keywords = custom or scene.get("query_ladder") or scene["keywords"]
+    search_keywords = custom or groq_service.normalized_scene_queries(scene)
+    same_media_count = sum(
+        1 for a in existing_assets
+        if media == "all" or a.get("asset_type") == media
+    )
+    # O botao "+ imagens/videos" precisa sair da pagina 1; senao os provedores
+    # retornam as mesmas URLs e a deduplicacao faz parecer que nada aconteceu.
+    next_page = max(2, min(10, same_media_count // max(1, int(config["per_keyword"])) + 1))
     with api_usage.context(user_id=user["id"], project_id=project["id"], operation="search_more"):
         results = asset_search.search_scene(
             search_keywords,
@@ -256,6 +264,8 @@ def search_more(
             media=media,
             coverr_key=user.get("coverr_key", ""),
             extra_image_banks=True,
+            page=next_page,
+            query_role_prefix=f"manual_{media}",
         )
     added = db.add_assets(scene_db_id, results)
     if added:
@@ -275,6 +285,7 @@ def regen_keywords(request: Request, scene_db_id: int, csrf_token: Annotated[str
         raise HTTPException(404)
     ensure_project_not_busy(project)
     config = project_config(project)
+    rejected = [a for a in db.list_assets(scene_db_id) if a.get("state") == "rejected"]
     with api_usage.context(user_id=user["id"], project_id=project["id"], operation="regenerate_keywords"):
         kws = groq_service.regenerate_keywords(
             scene.get("narration", ""),
@@ -283,6 +294,7 @@ def regen_keywords(request: Request, scene_db_id: int, csrf_token: Annotated[str
             config["visual_style"],
             model=user.get("groq_model") or groq_service.DEFAULT_MODEL,
             language=config["script_language"],
+            rejected_assets=rejected,
         )
     db.update_scene_keywords(scene_db_id, kws)
     mark_project_dirty(project["id"])

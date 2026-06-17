@@ -76,10 +76,126 @@ def _overlay_from(text: str) -> str:
 
 # Fillers de fallback por zona narrativa: menos genéricos que um único default.
 _ZONE_FALLBACK = {
-    "GANCHO": ["close up curious detail", "everyday real life moment"],
-    "CTA": ["person taking action outdoors", "hands working close up"],
-    "DESENVOLVIMENTO": ["documentary real scene", "natural environment detail"],
+    "GANCHO": ["close up detail", "real situation"],
+    "CTA": ["person taking action", "hands working"],
+    "DESENVOLVIMENTO": ["close up detail", "real environment"],
 }
+
+_SEARCH_TRANSLATIONS = {
+    "agua": "water",
+    "parada": "stagnant",
+    "quintal": "backyard",
+    "casa": "home",
+    "rua": "street",
+    "cidade": "city",
+    "mosquito": "mosquito",
+    "dengue": "mosquito",
+    "larva": "larvae",
+    "larvas": "larvae",
+    "ovo": "eggs",
+    "ovos": "eggs",
+    "chuva": "rain",
+    "balde": "bucket",
+    "pneu": "tire",
+    "vaso": "plant pot",
+    "planta": "plant",
+    "crianca": "child",
+    "criancas": "children",
+    "idoso": "elderly person",
+    "idosos": "elderly people",
+    "maos": "hands",
+    "mao": "hand",
+    "pessoa": "person",
+    "pessoas": "people",
+    "familia": "family",
+    "dinheiro": "money",
+    "mercado": "market",
+    "saude": "health",
+    "medico": "doctor",
+    "hospital": "hospital",
+    "celular": "smartphone",
+    "telefone": "smartphone",
+    "computador": "computer",
+    "documento": "document",
+}
+
+_BAD_SEARCH_WORDS = {
+    "abstract", "background", "concept", "conceptual", "cinematic", "documentary",
+    "footage", "generic", "image", "moment", "scene", "shot", "stock", "video",
+    "visual", "view",
+}
+
+
+def _translated_tokens(text: str) -> list[str]:
+    raw = re.findall(r"[a-z0-9]+", remove_accents(str(text or "")).lower())
+    out: list[str] = []
+    for token in raw:
+        if len(token) < 3 or token.isdigit():
+            continue
+        mapped = _SEARCH_TRANSLATIONS.get(token, token)
+        for part in mapped.split():
+            if part and part not in out and part not in _BAD_SEARCH_WORDS:
+                out.append(part)
+    return out
+
+
+def _clean_query_phrase(phrase: str) -> str:
+    tokens = _translated_tokens(phrase)
+    tokens = [t for t in tokens if t not in _BAD_SEARCH_WORDS]
+    return " ".join(tokens[:4]).strip()
+
+
+def _fallback_queries(scene: dict) -> list[str]:
+    text = " ".join(
+        str(scene.get(k) or "")
+        for k in ("visual_target", "visual_goal", "narration")
+    )
+    tokens = _translated_tokens(text)
+    queries: list[str] = []
+
+    def add(words: list[str]) -> None:
+        phrase = " ".join(w for w in words if w)[:80].strip()
+        if phrase and phrase not in queries:
+            queries.append(phrase)
+
+    must = _translated_tokens(" ".join(scene.get("must_show") or []))
+    if must:
+        add(must[:4])
+    if "mosquito" in tokens and "water" in tokens:
+        add(["mosquito", "stagnant", "water"])
+        add(["mosquito", "larvae", "water"])
+        add(["standing", "water", "backyard"])
+    add(tokens[:4])
+    add(tokens[1:5])
+    for fb in _ZONE_FALLBACK.get(scene.get("zone", ""), ["close up detail", "real environment"]):
+        add(_translated_tokens(fb))
+    return queries[:5]
+
+
+def _sanitize_query_ladder(raw: list[str], scene: dict, fallback: list[str]) -> list[str]:
+    out: list[str] = []
+    for phrase in raw or []:
+        clean = _clean_query_phrase(str(phrase))
+        if not clean:
+            continue
+        parts = clean.split()
+        if len(parts) == 1 and parts[0] in _BAD_SEARCH_WORDS:
+            continue
+        if clean not in out:
+            out.append(clean)
+    for phrase in fallback or _fallback_queries(scene):
+        clean = _clean_query_phrase(str(phrase))
+        if clean and clean not in out:
+            out.append(clean)
+    return out[:5]
+
+
+def normalized_scene_queries(scene: dict) -> list[str]:
+    """Escada buscavel e saneada para cenas novas ou antigas."""
+    raw = scene.get("query_ladder") or scene.get("keywords") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    return _sanitize_query_ladder(raw, scene, _fallback_queries(scene))
 
 
 def classify_scene_editorial(scene: dict) -> dict:
@@ -112,12 +228,13 @@ def fallback_scene_brief(scene: dict, avatar_safe_area: str) -> dict:
     # tokens significativos (sem stopwords PT/EN), não só "len > 4"
     tokens = [t for t in scoring.normalize_tokens(text, min_len=4) if not t.isdigit()]
     if tokens:
-        keywords.append(" ".join(sorted(tokens)[:3]))
-    for fb in _ZONE_FALLBACK.get(scene.get("zone", ""), ["real life close up detail", "natural outdoor scene"]):
+        keywords.append(" ".join(sorted(tokens)[:4]))
+    for fb in _ZONE_FALLBACK.get(scene.get("zone", ""), ["close up detail", "real environment"]):
         if fb not in keywords:
             keywords.append(fb)
     editorial = classify_scene_editorial(scene)
     visual_target = keywords[0] if keywords else f"editorial evidence for {text}"[:80]
+    query_ladder = _sanitize_query_ladder(keywords, scene, _fallback_queries(scene))
     return {
         "scene_id": scene["scene_id"],
         "visual_goal": f"Concrete editorial B-roll for: {text}"[:240],
@@ -125,8 +242,8 @@ def fallback_scene_brief(scene: dict, avatar_safe_area: str) -> dict:
         "visual_need": editorial["visual_need"],
         "visual_strategy": editorial["visual_strategy"],
         "visual_target": visual_target,
-        "keywords": keywords[:3],
-        "query_ladder": keywords[:4],
+        "keywords": query_ladder[:3],
+        "query_ladder": query_ladder,
         "must_show": [],
         "must_not_show": ["corporate stock", "watermark", "text inside footage"],
         "asset_type": "video",
@@ -307,10 +424,11 @@ def _merge_brief(scene: dict, ai: dict, fb: dict, avatar_safe_area: str) -> dict
     query_ladder = ai.get("query_ladder") or ai.get("keywords") or fb["query_ladder"]
     if isinstance(query_ladder, str):
         query_ladder = [query_ladder]
-    query_ladder = [str(k).strip() for k in query_ladder if str(k).strip()][:5] or fb["query_ladder"]
+    query_ladder = _sanitize_query_ladder(query_ladder, {**scene, **ai}, fb["query_ladder"])
     keywords = ai.get("keywords") or query_ladder[:3] or fb["keywords"]
     if isinstance(keywords, str):
         keywords = [keywords]
+    keywords = _sanitize_query_ladder(keywords, {**scene, **ai}, query_ladder)[:3]
     screen_mode = str(ai.get("screen_mode") or fb["screen_mode"]).strip()
     if screen_mode not in {"avatar_only", "broll", "hybrid", "optional_broll"}:
         screen_mode = fb["screen_mode"]
@@ -328,7 +446,7 @@ def _merge_brief(scene: dict, ai: dict, fb: dict, avatar_safe_area: str) -> dict
         "visual_need": visual_need,
         "visual_strategy": strategy,
         "visual_target": str(ai.get("visual_target") or fb["visual_target"]).strip()[:160],
-        "keywords": [str(k).strip() for k in keywords if str(k).strip()][:3] or fb["keywords"],
+        "keywords": keywords or query_ladder[:3] or fb["keywords"],
         "query_ladder": query_ladder,
         "must_show": [str(k).strip() for k in (ai.get("must_show") or ai.get("must_have") or []) if str(k).strip()],
         "must_not_show": [str(k).strip() for k in (ai.get("must_not_show") or ai.get("avoid") or fb["must_not_show"]) if str(k).strip()],
@@ -468,7 +586,8 @@ def regenerate_keywords(
                 data = json.loads(resp.json()["choices"][0]["message"]["content"])
                 kws = [str(k).strip() for k in data.get("keywords", []) if str(k).strip()]
                 if kws:
-                    return kws[:3]
+                    scene = {"narration": narration, "visual_goal": visual_goal, "must_show": []}
+                    return _sanitize_query_ladder(kws, scene, _fallback_queries(scene))[:3]
         except Exception as exc:  # noqa: BLE001
             logger.warning("Groq regenerate erro: %s", exc)
     return fallback_scene_brief({"scene_id": "x", "narration": narration}, "right")["keywords"]

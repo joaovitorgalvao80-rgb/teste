@@ -960,10 +960,11 @@ def update_scene_keywords(
     conn = _connect()
     try:
         conn.execute(
-            "UPDATE scenes SET keywords_json = ?, keyword_roles_json = ? WHERE id = ?",
+            "UPDATE scenes SET keywords_json = ?, keyword_roles_json = ?, query_ladder_json = ? WHERE id = ?",
             (
                 json.dumps(keywords, ensure_ascii=False),
                 json.dumps(roles or scoring.assign_roles(keywords), ensure_ascii=False),
+                json.dumps(keywords, ensure_ascii=False),
                 scene_db_id,
             ),
         )

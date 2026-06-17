@@ -123,7 +123,7 @@ def _best_pexels_video_file(video: dict, max_w: int) -> Optional[dict]:
     return max(pool, key=lambda f: (f.get("width", 0), f.get("height", 0)))
 
 
-def search_pexels_videos(keyword: str, key: str, max_w: int, per_page: int = 8) -> list[dict]:
+def search_pexels_videos(keyword: str, key: str, max_w: int, per_page: int = 8, page: int = 1) -> list[dict]:
     if not key:
         return []
     per_page = _bounded_per_page(per_page)
@@ -131,7 +131,7 @@ def search_pexels_videos(keyword: str, key: str, max_w: int, per_page: int = 8) 
         resp = _pexels_get(
             PEXELS_VIDEO_URL,
             headers={"Authorization": key},
-            params={"query": keyword, "orientation": "landscape", "per_page": per_page},
+            params={"query": keyword, "orientation": "landscape", "per_page": per_page, "page": max(1, int(page or 1))},
             operation="video_search",
         )
     except Exception as exc:  # noqa: BLE001
@@ -165,7 +165,7 @@ def search_pexels_videos(keyword: str, key: str, max_w: int, per_page: int = 8) 
     return out
 
 
-def search_pixabay_videos(keyword: str, key: str, max_w: int, per_page: int = 8) -> list[dict]:
+def search_pixabay_videos(keyword: str, key: str, max_w: int, per_page: int = 8, page: int = 1) -> list[dict]:
     if not key:
         return []
     per_page = _bounded_per_page(per_page, default=8, minimum=3)
@@ -174,7 +174,8 @@ def search_pixabay_videos(keyword: str, key: str, max_w: int, per_page: int = 8)
             "pixabay",
             "video_search",
             PIXABAY_VIDEO_URL,
-            params={"key": key, "q": keyword, "video_type": "film", "per_page": per_page, "safesearch": "true"},
+            params={"key": key, "q": keyword, "video_type": "film", "per_page": per_page,
+                    "page": max(1, int(page or 1)), "safesearch": "true"},
             timeout=REQUEST_TIMEOUT,
         )
     except Exception as exc:  # noqa: BLE001
@@ -213,7 +214,7 @@ def search_pixabay_videos(keyword: str, key: str, max_w: int, per_page: int = 8)
     return out
 
 
-def search_pexels_images(keyword: str, key: str, per_page: int = 6) -> list[dict]:
+def search_pexels_images(keyword: str, key: str, per_page: int = 6, page: int = 1) -> list[dict]:
     if not key:
         return []
     per_page = _bounded_per_page(per_page, default=6)
@@ -221,7 +222,7 @@ def search_pexels_images(keyword: str, key: str, per_page: int = 6) -> list[dict
         resp = _pexels_get(
             PEXELS_IMAGE_URL,
             headers={"Authorization": key},
-            params={"query": keyword, "orientation": "landscape", "per_page": per_page},
+            params={"query": keyword, "orientation": "landscape", "per_page": per_page, "page": max(1, int(page or 1))},
             operation="image_search",
         )
     except Exception as exc:  # noqa: BLE001
@@ -251,7 +252,7 @@ def search_pexels_images(keyword: str, key: str, per_page: int = 6) -> list[dict
     return out
 
 
-def search_pixabay_images(keyword: str, key: str, per_page: int = 6) -> list[dict]:
+def search_pixabay_images(keyword: str, key: str, per_page: int = 6, page: int = 1) -> list[dict]:
     if not key:
         return []
     per_page = _bounded_per_page(per_page, default=6, minimum=3)
@@ -261,7 +262,7 @@ def search_pixabay_images(keyword: str, key: str, per_page: int = 6) -> list[dic
             "image_search",
             PIXABAY_IMAGE_URL,
             params={"key": key, "q": keyword, "image_type": "photo", "orientation": "horizontal",
-                    "per_page": per_page, "safesearch": "true"},
+                    "per_page": per_page, "page": max(1, int(page or 1)), "safesearch": "true"},
             timeout=REQUEST_TIMEOUT,
         )
     except Exception as exc:  # noqa: BLE001
@@ -290,7 +291,7 @@ def search_pixabay_images(keyword: str, key: str, per_page: int = 6) -> list[dic
     return out
 
 
-def search_coverr_videos(keyword: str, key: str, per_page: int = 8) -> list[dict]:
+def search_coverr_videos(keyword: str, key: str, per_page: int = 8, page: int = 1) -> list[dict]:
     if not key:
         return []
     per_page = _bounded_per_page(per_page)
@@ -300,7 +301,7 @@ def search_coverr_videos(keyword: str, key: str, per_page: int = 8) -> list[dict
                 "coverr",
                 "video_search",
                 COVERR_URL,
-                params={"query": keyword, "page_size": per_page, "api_key": key},
+                params={"query": keyword, "page_size": per_page, "page": max(1, int(page or 1)), "api_key": key},
                 timeout=REQUEST_TIMEOUT,
             )
     except Exception as exc:  # noqa: BLE001
@@ -452,20 +453,21 @@ def _collect_provider_tasks(
     want_video: bool,
     want_image: bool,
     media: str,
+    page: int = 1,
 ) -> list[Callable[[], list[dict]]]:
     """Monta as buscas mainstream em ordem deterministica (executadas em paralelo)."""
     tasks: list[Callable[[], list[dict]]] = []
     for i, kw in enumerate(keywords[:3]):
         if want_video:
-            tasks.append(lambda kw=kw: search_pexels_videos(kw, pexels_key, max_w, per_keyword))
-            tasks.append(lambda kw=kw: search_pixabay_videos(kw, pixabay_key, max_w, per_keyword))
+            tasks.append(lambda kw=kw, page=page: search_pexels_videos(kw, pexels_key, max_w, per_keyword, page=page))
+            tasks.append(lambda kw=kw, page=page: search_pixabay_videos(kw, pixabay_key, max_w, per_keyword, page=page))
             # Coverr so na keyword principal (limite ~50 req/hora)
             if coverr_key and i == 0:
-                tasks.append(lambda kw=kw: search_coverr_videos(kw, coverr_key, per_keyword))
+                tasks.append(lambda kw=kw, page=page: search_coverr_videos(kw, coverr_key, per_keyword, page=page))
         if want_image:
             n = per_keyword if media == "image" else (per_keyword // 2 or 1)
-            tasks.append(lambda kw=kw, n=n: search_pexels_images(kw, pexels_key, n))
-            tasks.append(lambda kw=kw, n=n: search_pixabay_images(kw, pixabay_key, n))
+            tasks.append(lambda kw=kw, n=n, page=page: search_pexels_images(kw, pexels_key, n, page=page))
+            tasks.append(lambda kw=kw, n=n, page=page: search_pixabay_images(kw, pixabay_key, n, page=page))
     return tasks
 
 
@@ -499,6 +501,8 @@ def search_scene(
     media: str = "all",
     coverr_key: str = "",
     extra_image_banks: bool = False,
+    page: int = 1,
+    query_role_prefix: str = "",
 ) -> list[dict]:
     """Busca todas as keywords de uma cena e devolve candidatos deduplicados.
 
@@ -521,7 +525,10 @@ def search_scene(
                 if url in seen:
                     continue
                 seen.add(url)
-                item.setdefault("query_role", role)
+                if query_role_prefix:
+                    item["query_role"] = f"{query_role_prefix}_{role}" if role else query_role_prefix
+                else:
+                    item.setdefault("query_role", role)
                 item.setdefault("query_text", query or item.get("keyword", ""))
                 results.append(item)
 
@@ -533,7 +540,7 @@ def search_scene(
     for idx, kw in enumerate(clean_keywords[:5]):
         role = _query_role(idx)
         tasks = _collect_provider_tasks(
-            [kw], pexels_key, pixabay_key, coverr_key, max_w, per_keyword, want_video, want_image, media
+            [kw], pexels_key, pixabay_key, coverr_key, max_w, per_keyword, want_video, want_image, media, page=page
         )
         if tasks:
             with ThreadPoolExecutor(max_workers=min(8, len(tasks))) as pool:
