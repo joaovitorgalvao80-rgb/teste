@@ -12,6 +12,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import Callable, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -32,6 +33,14 @@ WIKIMEDIA_URL = "https://commons.wikimedia.org/w/api.php"
 # Wikimedia exige um User-Agent identificavel (politica de etiqueta da API).
 WIKIMEDIA_UA = "NWRCH-Studio/1.0 (b-roll curation; contact via app)"
 REQUEST_TIMEOUT = 25
+
+
+@dataclass
+class _SearchRun:
+    scene: Optional[dict]
+    results: list[dict]
+    seen: set
+    query_role_prefix: str
 
 # Coverr tem limite apertado (~50 req/hora): serializa e usamos so a keyword
 # principal por cena (ver search_scene). A URL do MP4 e deterministica a partir
@@ -407,20 +416,34 @@ def search_openverse_images(keyword: str, per_page: int = 5) -> list[dict]:
     return out
 
 
-def _wikimedia_item(page: dict, keyword: str) -> Optional[dict]:
+def _wikimedia_info(page: dict) -> Optional[dict]:
     imageinfo = page.get("imageinfo") or []
     if not imageinfo:
         return None
     info = imageinfo[0]
-    mime = str(info.get("mime") or "")
-    if mime not in {"image/jpeg", "image/png", "image/webp"}:
+    if str(info.get("mime") or "") not in {"image/jpeg", "image/png", "image/webp"}:
         return None  # pula SVG/PDF/audio/video
+    return info
+
+
+def _is_landscape_or_unknown(width: int, height: int) -> bool:
+    return not (width and height and height > width)
+
+
+def _wikimedia_artist(meta: dict) -> str:
+    artist = str((meta.get("Artist") or {}).get("value") or "")
+    return re.sub(r"<[^>]+>", "", artist).strip()[:120]
+
+
+def _wikimedia_item(page: dict, keyword: str) -> Optional[dict]:
+    info = _wikimedia_info(page)
+    if not info:
+        return None
     width, height = int(info.get("width") or 0), int(info.get("height") or 0)
-    if width and height and height > width:
+    if not _is_landscape_or_unknown(width, height):
         return None  # so paisagem
     meta = info.get("extmetadata") or {}
-    artist = str((meta.get("Artist") or {}).get("value") or "")
-    artist = re.sub(r"<[^>]+>", "", artist).strip()[:120]
+    artist = _wikimedia_artist(meta)
     return {
         "source": "wikimedia",
         "source_id": str(page.get("pageid", "")),
@@ -577,26 +600,28 @@ def _search_task_batches(tasks: list[Callable[[], list[dict]]], max_workers: int
         return list(pool.map(lambda task: task(), tasks))
 
 
+def _apply_query_role(item: dict, query_role_prefix: str, role: str) -> None:
+    if query_role_prefix:
+        item["query_role"] = f"{query_role_prefix}_{role}" if role else query_role_prefix
+    else:
+        item.setdefault("query_role", role)
+
+
 def _absorb_search_batches(
     batches: list[list[dict]],
-    results: list[dict],
-    seen: set,
-    query_role_prefix: str,
+    run: _SearchRun,
     role: str = "",
     query: str = "",
 ) -> None:
     for batch in batches:
         for item in batch:
             url = item.get("download_url")
-            if not url or url in seen:
+            if not url or url in run.seen:
                 continue
-            seen.add(url)
-            if query_role_prefix:
-                item["query_role"] = f"{query_role_prefix}_{role}" if role else query_role_prefix
-            else:
-                item.setdefault("query_role", role)
+            run.seen.add(url)
+            _apply_query_role(item, run.query_role_prefix, role)
             item.setdefault("query_text", query or item.get("keyword", ""))
-            results.append(item)
+            run.results.append(item)
 
 
 def _search_mainstream_ladder(
@@ -610,10 +635,7 @@ def _search_mainstream_ladder(
     want_image: bool,
     media: str,
     page: int,
-    scene: Optional[dict],
-    results: list[dict],
-    seen: set,
-    query_role_prefix: str,
+    run: _SearchRun,
 ) -> None:
     min_good = max(6, per_keyword)
     for idx, kw in enumerate(clean_keywords[:5]):
@@ -622,8 +644,8 @@ def _search_mainstream_ladder(
             [kw], pexels_key, pixabay_key, coverr_key, max_w, per_keyword, want_video, want_image, media, page=page
         )
         batches = _search_task_batches(tasks, 8)
-        _absorb_search_batches(batches, results, seen, query_role_prefix, role=role, query=kw)
-        if _good_context_count(scene, results) >= min_good or len(results) >= 40:
+        _absorb_search_batches(batches, run, role=role, query=kw)
+        if _good_context_count(run.scene, run.results) >= min_good or len(run.results) >= 40:
             break
 
 
@@ -631,16 +653,13 @@ def _search_extra_image_banks(
     keywords: list[str],
     max_w: int,
     per_keyword: int,
-    scene: Optional[dict],
-    results: list[dict],
-    seen: set,
-    query_role_prefix: str,
+    run: _SearchRun,
 ) -> None:
-    if not keywords or _good_context_count(scene, results) >= max(4, per_keyword):
+    if not keywords or _good_context_count(run.scene, run.results) >= max(4, per_keyword):
         return
     extra_tasks = _collect_extra_image_tasks(keywords, max_w)
     batches = _search_task_batches(extra_tasks, 4)
-    _absorb_search_batches(batches, results, seen, query_role_prefix, role="fallback", query=keywords[0])
+    _absorb_search_batches(batches, run, role="fallback", query=keywords[0])
 
 
 def search_scene(
@@ -671,6 +690,7 @@ def search_scene(
     results: list[dict] = []
     want_video = media in {"all", "video"}
     want_image = media == "image" or (media == "all" and allow_images)
+    run = _SearchRun(scene=scene, results=results, seen=seen, query_role_prefix=query_role_prefix)
 
     # Busca em escada: tenta a query principal primeiro e so avanca enquanto o
     # pool ainda estiver fraco. Cada provedor ja devolve [] em erro/chave ausente.
@@ -678,12 +698,12 @@ def search_scene(
     clean_keywords = [str(k).strip() for k in (keywords or []) if str(k).strip()]
     _search_mainstream_ladder(
         clean_keywords, pexels_key, pixabay_key, coverr_key, max_w, per_keyword,
-        want_video, want_image, media, page, scene, results, seen, query_role_prefix
+        want_video, want_image, media, page, run
     )
 
     # Fallback dirigido: so consulta bancos extras (Wikimedia/Openverse) quando o
     # pool mainstream veio fraco. Mantem o pool enxuto e a visao dentro do limite.
     if extra_image_banks:
-        _search_extra_image_banks(clean_keywords, max_w, per_keyword, scene, results, seen, query_role_prefix)
+        _search_extra_image_banks(clean_keywords, max_w, per_keyword, run)
 
     return _sort_and_trim_by_context(scene, results[:max_raw], per_keyword)

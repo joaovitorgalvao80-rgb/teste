@@ -148,7 +148,7 @@ def _translated_tokens(text: str) -> list[str]:
 def _clean_query_phrase(phrase: str) -> str:
     tokens = _translated_tokens(phrase)
     tokens = [t for t in tokens if t not in _BAD_SEARCH_WORDS]
-    if len(tokens) == 1 and tokens[0] == "bucket":
+    if tuple(tokens) == ("bucket",):
         return ""
     if "mosquito" in tokens and {"eggs", "bucket", "water"}.intersection(tokens):
         tokens = ["mosquito", "larvae", "water"]
