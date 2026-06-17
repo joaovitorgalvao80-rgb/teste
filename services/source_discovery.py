@@ -239,11 +239,11 @@ def _firecrawl_search(query: str, key: str, limit: int) -> tuple[list[dict], lis
     return [i for i in image_items if isinstance(i, dict)], [p for p in page_items if isinstance(p, dict)]
 
 
-def _scrape_root(data: object) -> dict:
-    root = data.get("data") if isinstance(data, dict) else {}
+def _scrape_root(data: dict) -> dict:
+    root = data.get("data")
     if isinstance(root, dict):
         return root
-    return data if isinstance(data, dict) else {}
+    return data
 
 
 def _image_entries_from_scrape(images: list, page_url: str) -> list[dict]:
