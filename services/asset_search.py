@@ -17,7 +17,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import requests
 
-from . import api_usage
+from . import api_usage, scoring
 
 logger = logging.getLogger("nwrch.assets")
 
@@ -519,6 +519,52 @@ def _query_role(index: int) -> str:
     return "fallback"
 
 
+def _context_floor(context: dict) -> float:
+    return 0.55 if context.get("risks") else 0.33
+
+
+def _is_contextual_enough(scene: Optional[dict], asset: dict) -> bool:
+    if not scene:
+        return True
+    context = scoring.context_analysis(scene, asset)
+    return float(context["context_score"]) >= _context_floor(context)
+
+
+def _good_context_count(scene: Optional[dict], assets: list[dict]) -> int:
+    if not scene:
+        return len(assets)
+    return sum(1 for asset in assets if _is_contextual_enough(scene, asset))
+
+
+def _sort_and_trim_by_context(scene: Optional[dict], assets: list[dict], per_keyword: int) -> list[dict]:
+    """Promote context-matching candidates and hide obvious false positives.
+
+    Stock APIs often return many pretty but unrelated hits for a keyword. When
+    we have at least one plausible candidate, keep the pool focused; when every
+    result is weak, return the sorted weak pool so the user can still recover
+    manually instead of seeing an empty scene.
+    """
+    if not scene or not assets:
+        return assets
+    annotated = []
+    for idx, asset in enumerate(assets):
+        context = scoring.context_analysis(scene, asset)
+        score = float(context["context_score"])
+        risks = context.get("risks") or []
+        acceptable = score >= _context_floor(context)
+        annotated.append((acceptable, score, bool(risks), idx, asset))
+
+    accepted = [row for row in annotated if row[0]]
+    if accepted:
+        weak_clean = [row for row in annotated if not row[0] and not row[2]]
+        keep = accepted + weak_clean[:max(0, max(4, per_keyword) - len(accepted))]
+    else:
+        keep = annotated
+
+    keep.sort(key=lambda row: (row[0], row[1], not row[2], -row[3]), reverse=True)
+    return [row[4] for row in keep]
+
+
 def search_scene(
     keywords: list[str],
     pexels_key: str,
@@ -532,6 +578,7 @@ def search_scene(
     extra_image_banks: bool = False,
     page: int = 1,
     query_role_prefix: str = "",
+    scene: Optional[dict] = None,
 ) -> list[dict]:
     """Busca todas as keywords de uma cena e devolve candidatos deduplicados.
 
@@ -574,16 +621,16 @@ def search_scene(
         if tasks:
             with ThreadPoolExecutor(max_workers=min(8, len(tasks))) as pool:
                 _absorb(list(pool.map(lambda task: task(), tasks)), role=role, query=kw)
-        if len(results) >= min_good:
+        if _good_context_count(scene, results) >= min_good:
             break
         if len(results) >= max_raw:
             break
 
     # Fallback dirigido: so consulta bancos extras (Wikimedia/Openverse) quando o
     # pool mainstream veio fraco. Mantem o pool enxuto e a visao dentro do limite.
-    if extra_image_banks and keywords and len(results) < max(4, per_keyword):
+    if extra_image_banks and keywords and _good_context_count(scene, results) < max(4, per_keyword):
         extra_tasks = _collect_extra_image_tasks(keywords, max_w)
         with ThreadPoolExecutor(max_workers=min(4, len(extra_tasks))) as pool:
             _absorb(list(pool.map(lambda task: task(), extra_tasks)), role="fallback", query=keywords[0])
 
-    return results[:max_raw]
+    return _sort_and_trim_by_context(scene, results[:max_raw], per_keyword)

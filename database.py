@@ -1061,9 +1061,38 @@ def list_assets(scene_db_id: int) -> list[dict]:
     conn = _connect()
     try:
         rows = conn.execute(
-            "SELECT * FROM assets WHERE scene_id = ? ORDER BY id", (scene_db_id,)
+            "SELECT * FROM assets WHERE scene_id = ? AND state != 'archived' ORDER BY id", (scene_db_id,)
         ).fetchall()
         return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def list_scene_asset_urls(scene_db_id: int) -> set[str]:
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT download_url FROM assets WHERE scene_id = ?", (scene_db_id,)
+        ).fetchall()
+        return {str(r["download_url"]) for r in rows if r["download_url"]}
+    finally:
+        conn.close()
+
+
+def archive_scene_assets(scene_db_id: int, keep_states: tuple[str, ...] = ("selected", "accepted")) -> int:
+    """Hide replaceable scene assets while keeping URL dedupe history."""
+    conn = _connect()
+    try:
+        placeholders = ",".join("?" for _ in keep_states)
+        params: tuple[Any, ...] = (time.time(), scene_db_id, *keep_states)
+        cur = conn.execute(
+            f"""UPDATE assets
+                SET state = 'archived', rejection_reason = 'refresh', rejected_at = ?
+                WHERE scene_id = ? AND state NOT IN ({placeholders})""",
+            params,
+        )
+        conn.commit()
+        return int(cur.rowcount or 0)
     finally:
         conn.close()
 
@@ -1079,6 +1108,7 @@ def list_assets_for_project(project_id: int) -> dict[int, list[dict]]:
             """SELECT a.* FROM assets a
                JOIN scenes s ON a.scene_id = s.id
                WHERE s.project_id = ?
+                 AND a.state != 'archived'
                ORDER BY a.scene_id, a.id""",
             (project_id,),
         ).fetchall()

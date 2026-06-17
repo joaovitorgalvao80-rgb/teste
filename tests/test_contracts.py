@@ -375,6 +375,8 @@ class DeployContractsTest(unittest.TestCase):
         self.assertIn(f'action="/projects/{project_id}/auto-select"', project_page.text)
         self.assertIn("Seleção automática", project_page.text)
         self.assertIn('id="curadoria"', project_page.text)
+        self.assertIn("refreshAssets", project_page.text)
+        self.assertIn("atualizar", project_page.text)
         self.assertEqual(review_page.status_code, 200)
         self.assertIn("toggleGenPanel", review_page.text)
         self.assertIn(f"gen-panel-{scene['id']}", review_page.text)
@@ -1932,6 +1934,51 @@ class HardeningAndOptimizationTest(unittest.TestCase):
                 ["kw1"], "pk", "bk", max_w=1920, per_keyword=1, media="video", seen_urls=seen
             )
         self.assertEqual(results, [])
+
+    def test_search_scene_keeps_searching_when_first_pool_is_off_context(self) -> None:
+        scene = {
+            "scene_id": "scene_001",
+            "narration": "mosquito da dengue chegando na agua parada",
+            "visual_goal": "mosquito larvae in stagnant water",
+            "keywords": ["mosquito flying", "mosquito larvae water"],
+            "must_show": ["mosquito", "water"],
+            "must_not_show": ["dog", "child"],
+        }
+
+        def pexels(kw, *_args, **_kwargs):
+            if kw == "mosquito flying":
+                return [
+                    {
+                        "source": "pexels",
+                        "download_url": f"https://pexels.example/bad-{i}.mp4",
+                        "keyword": kw,
+                        "provider_payload": {"tags": "dog snow child"},
+                    }
+                    for i in range(8)
+                ]
+            return [
+                {
+                    "source": "pexels",
+                    "download_url": "https://pexels.example/good.mp4",
+                    "keyword": kw,
+                    "provider_payload": {"tags": "mosquito larvae water"},
+                }
+            ]
+
+        with patch.object(asset_search, "search_pexels_videos", pexels), \
+             patch.object(asset_search, "search_pixabay_videos", lambda *_a, **_k: []):
+            results = asset_search.search_scene(
+                ["mosquito flying", "mosquito larvae water"],
+                "pk",
+                "bk",
+                max_w=1920,
+                per_keyword=6,
+                media="video",
+                scene=scene,
+            )
+
+        self.assertEqual(results[0]["download_url"], "https://pexels.example/good.mp4")
+        self.assertNotIn("https://pexels.example/bad-0.mp4", {r["download_url"] for r in results})
 
     def test_extra_banks_fire_only_when_pool_is_thin(self) -> None:
         def fake(source, kw, n):

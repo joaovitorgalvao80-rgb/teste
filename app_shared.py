@@ -1210,6 +1210,7 @@ def run_search_job(
                     seen_urls=seen,
                     coverr_key=coverr_key,
                     extra_image_banks=True,
+                    scene=scene,
                 )
             check_job_canceled(job_id)
             added = db.add_assets(scene["id"], results)
@@ -1288,6 +1289,7 @@ def run_part_search_job(
                     seen_urls=seen,
                     coverr_key=coverr_key,
                     extra_image_banks=True,
+                    scene=scene,
                 )
             check_job_canceled(job_id)
             added = db.add_assets(scene["id"], results)
@@ -1576,6 +1578,7 @@ def _research_one_scene(
             seen_urls=existing,
             coverr_key=keys["coverr"],
             extra_image_banks=True,
+            scene=scene,
         )
         deep_results = source_discovery.discover_scene_assets(
             scene,

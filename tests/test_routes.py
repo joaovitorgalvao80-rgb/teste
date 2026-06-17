@@ -381,6 +381,49 @@ class SearchRoutesTest(unittest.TestCase):
         self.assertGreaterEqual(kwargs["page"], 2)
         self.assertEqual(kwargs["query_role_prefix"], "manual_video")
 
+    def test_refresh_assets_replaces_unprotected_pool(self) -> None:
+        fake = [{"source": "pexels", "asset_type": "video",
+                 "download_url": "https://x.com/new.mp4", "keyword": "mosquito"}]
+        with TestClient(webapp.app) as client:
+            user_id, project_id, scene_id = self._seed("refresh1")
+            db.update_api_keys(user_id, "pk", "xk", "")
+            db.add_assets(scene_id, [
+                {"source": "pexels", "asset_type": "video",
+                 "download_url": "https://x.com/old.mp4", "keyword": "old"},
+                {"source": "pexels", "asset_type": "video",
+                 "download_url": "https://x.com/keep.mp4", "keyword": "keep"},
+            ])
+            keep = next(a for a in db.list_assets(scene_id) if a["download_url"].endswith("keep.mp4"))
+            db.set_asset_state(keep["id"], "selected")
+            _login(client, "refresh1")
+            with patch.object(webapp.asset_search, "search_scene", return_value=fake) as spy:
+                resp = client.post(f"/scenes/{scene_id}/refresh-assets", data={"media": "all"})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["added"], 1)
+        self.assertEqual(resp.json()["removed"], 1)
+        visible_urls = {a["download_url"] for a in db.list_assets(scene_id)}
+        self.assertEqual(visible_urls, {"https://x.com/keep.mp4", "https://x.com/new.mp4"})
+        self.assertEqual(len(db.list_assets_by_state(project_id, ["archived"])), 1)
+        _, kwargs = spy.call_args
+        self.assertIn("https://x.com/old.mp4", kwargs["seen_urls"])
+        self.assertEqual(kwargs["query_role_prefix"], "refresh_all")
+
+    def test_refresh_assets_keeps_current_pool_when_no_new_results(self) -> None:
+        with TestClient(webapp.app) as client:
+            user_id, _project_id, scene_id = self._seed("refresh2")
+            db.update_api_keys(user_id, "pk", "xk", "")
+            db.add_assets(scene_id, [{"source": "pexels", "asset_type": "video",
+                                      "download_url": "https://x.com/old.mp4", "keyword": "old"}])
+            _login(client, "refresh2")
+            with patch.object(webapp.asset_search, "search_scene", return_value=[]):
+                resp = client.post(f"/scenes/{scene_id}/refresh-assets", data={"media": "all"})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["added"], 0)
+        self.assertEqual(resp.json()["removed"], 0)
+        self.assertEqual([a["download_url"] for a in db.list_assets(scene_id)], ["https://x.com/old.mp4"])
+
     def test_search_more_unknown_scene_404(self) -> None:
         with TestClient(webapp.app) as client:
             db.create_user("smore3", "password123")

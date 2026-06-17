@@ -134,6 +134,28 @@ async function searchMore(sceneId, btn, media) {
   }
 }
 
+async function refreshAssets(sceneId, btn, media) {
+  const original = btn.textContent;
+  btn.textContent = "atualizando...";
+  btn.disabled = true;
+  const kwInput = document.getElementById("kw-search-" + sceneId);
+  const keyword = kwInput ? kwInput.value.trim() : "";
+  try {
+    const res = await postForm(`/scenes/${sceneId}/refresh-assets`, { media: media || "all", keyword });
+    if (res.added > 0) {
+      notify(`${res.removed || 0} antigos removidos, ${res.added} novos takes - recarregando...`, "ok");
+      setTimeout(() => location.reload(), 600);
+    } else {
+      notify("Nenhum resultado novo encontrado. Mantive os takes atuais.", "info");
+      setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 1200);
+    }
+  } catch (e) {
+    btn.textContent = original;
+    btn.disabled = false;
+    notify("Falha ao atualizar: " + e.message, "error");
+  }
+}
+
 // ------------------------------------------------------------------
 // Geração de imagem por IA (Puter.js no browser)
 // ------------------------------------------------------------------

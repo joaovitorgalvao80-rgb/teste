@@ -266,11 +266,70 @@ def search_more(
             extra_image_banks=True,
             page=next_page,
             query_role_prefix=f"manual_{media}",
+            scene=scene,
         )
     added = db.add_assets(scene_db_id, results)
     if added:
         mark_project_dirty(project["id"])
     return JSONResponse({"added": added, "media": media})
+
+
+@router.post("/scenes/{scene_db_id}/refresh-assets", responses=ERROR_RESPONSES)
+def refresh_assets(
+    request: Request,
+    scene_db_id: int,
+    media: Annotated[str, Form()] = "all",
+    keyword: Annotated[str, Form()] = "",
+    csrf_token: Annotated[str, Form()] = "",
+):
+    user = require_user(request)
+    verify_csrf(request, csrf_token)
+    scene = db.get_scene(scene_db_id)
+    if not scene:
+        raise HTTPException(404)
+    project = db.get_project(scene["project_id"], user["id"])
+    if not project:
+        raise HTTPException(404)
+    ensure_project_not_busy(project)
+    if not has_visual_provider(user):
+        raise HTTPException(400, MSG_NO_API_KEYS)
+    config = project_config(project)
+    if media not in {"all", "video", "image"}:
+        media = "all"
+    max_w = resolution_width(config)
+    active_assets = db.list_assets(scene_db_id)
+    seen = db.list_scene_asset_urls(scene_db_id)
+    custom = [k.strip() for k in str(keyword or "").split(",") if k.strip()][:5]
+    search_keywords = custom or groq_service.normalized_scene_queries(scene)
+    per_keyword = int(config["per_keyword"]) + 4
+    same_media_count = sum(
+        1 for a in active_assets
+        if media == "all" or a.get("asset_type") == media
+    )
+    next_page = max(2, min(10, (same_media_count + len(seen)) // max(1, per_keyword) + 1))
+    with api_usage.context(user_id=user["id"], project_id=project["id"], operation="refresh_assets"):
+        results = asset_search.search_scene(
+            search_keywords,
+            user["pexels_key"],
+            user["pixabay_key"],
+            max_w=max_w,
+            per_keyword=per_keyword,
+            allow_images=True,
+            seen_urls=set(seen),
+            media=media,
+            coverr_key=user.get("coverr_key", ""),
+            extra_image_banks=True,
+            page=next_page,
+            query_role_prefix=f"refresh_{media}",
+            scene=scene,
+        )
+    if not results:
+        return JSONResponse({"added": 0, "removed": 0, "media": media})
+    removed = db.archive_scene_assets(scene_db_id)
+    added = db.add_assets(scene_db_id, results)
+    if added or removed:
+        mark_project_dirty(project["id"])
+    return JSONResponse({"added": added, "removed": removed, "media": media})
 
 
 @router.post("/scenes/{scene_db_id}/regen-keywords", responses=ERROR_RESPONSES)
