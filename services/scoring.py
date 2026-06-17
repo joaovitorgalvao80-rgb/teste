@@ -90,6 +90,58 @@ def scene_concept_tokens(scene: dict) -> set[str]:
 #   primary     -> depiction concreta e literal do assunto principal
 #   alternative -> ângulo semântico diferente, igualmente no tema
 #   fallback    -> consulta mais ampla, ainda no tema (rede de segurança)
+def asset_context_tokens(asset: dict) -> set[str]:
+    """Tokens offline usados para julgar contexto do asset."""
+    tokens: set[str] = set()
+    for field in ("keyword", "source_id", "page_url", "author", "attribution"):
+        tokens |= normalize_tokens(str(asset.get(field) or ""))
+    return tokens
+
+
+def _phrase_match(tokens: set[str], phrase: str) -> bool:
+    phrase_tokens = normalize_tokens(str(phrase))
+    return bool(phrase_tokens) and phrase_tokens <= tokens
+
+
+def context_analysis(scene: dict, asset: dict) -> dict:
+    """Score de contexto em [0,1] com matched/missing/risks auditaveis."""
+    tokens = asset_context_tokens(asset)
+    must = [str(item).strip() for item in (scene.get("must_show") or []) if str(item).strip()]
+    avoid = [str(item).strip() for item in (scene.get("must_not_show") or []) if str(item).strip()]
+
+    matched = [item for item in must if _phrase_match(tokens, item)]
+    missing = [item for item in must if item not in matched]
+    risks = [item for item in avoid if normalize_tokens(item) & tokens]
+
+    keyword_score = keyword_relevance(scene, asset)
+    if must:
+        must_score = len(matched) / len(must)
+        score = 0.65 * must_score + 0.35 * keyword_score
+        if not matched:
+            score = min(score, 0.32)
+        elif missing:
+            score = min(score, 0.62)
+    else:
+        score = keyword_score
+
+    generic = is_generic_keyword(asset.get("keyword", ""))
+    if risks:
+        score -= 0.45
+    if generic:
+        score = min(score, 0.25)
+
+    return {
+        "context_score": round(max(0.0, min(1.0, score)), 3),
+        "matched": matched,
+        "missing": missing,
+        "risks": risks + (["keyword_generica"] if generic else []),
+    }
+
+
+def context_relevance(scene: dict, asset: dict) -> float:
+    return float(context_analysis(scene, asset)["context_score"])
+
+
 ROLE_PRIMARY = "primary"
 ROLE_ALTERNATIVE = "alternative"
 ROLE_FALLBACK = "fallback"

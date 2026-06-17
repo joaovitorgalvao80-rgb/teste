@@ -89,7 +89,7 @@ def heuristic_score(scene: dict, asset: dict, config: dict) -> float:
 
     # relevância textual: o quanto a keyword que trouxe o asset corresponde ao
     # conceito visual da cena (sem ela, assets da mesma busca ordenavam só por pixels).
-    score += RELEVANCE_WEIGHT * scoring.keyword_relevance(scene, asset)
+    score += RELEVANCE_WEIGHT * scoring.context_relevance(scene, asset)
 
     # penaliza keyword puramente genérica de banco de imagem
     if scoring.is_generic_keyword(asset.get("keyword", "")):
@@ -264,7 +264,7 @@ def _resolve_take(
     # já usados em outras cenas (diversidade visual entre cenas).
     asset = _best_with_diversity(scene, top, config, used_signatures, used_authors)
     score = heuristic_score(scene, asset, config)
-    relevance = scoring.keyword_relevance(scene, asset)
+    relevance = scoring.context_relevance(scene, asset)
     return asset, (asset["id"], score, _fallback_reason(relevance))
 
 

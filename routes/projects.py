@@ -157,8 +157,14 @@ def project_page(request: Request, project_id: int):
     for s in scenes:
         annotated = annotate_assets_with_vision(s, assets_by_scene.get(s["id"], []), config)
         annotated.sort(key=_take_sort_key, reverse=True)
-        s["assets"] = annotated
-        s["selected"] = next((a for a in s["assets"] if a["state"] in CHOSEN_ASSET_STATES), None)
+        s["asset_pool_total"] = len(annotated)
+        s["good_candidate_count"] = sum(
+            1 for a in annotated
+            if not a.get("low_relevance") and a.get("vision_verdict") != "descartar"
+        )
+        s["pool_fraco"] = bool(annotated) and s["good_candidate_count"] < 6
+        s["assets"] = annotated[:12]
+        s["selected"] = next((a for a in annotated if a["state"] in CHOSEN_ASSET_STATES), None)
         s["low_relevance_count"] = sum(1 for a in annotated if a.get("low_relevance"))
     curation_stats = annotate_broll_requirements(scenes, config)
     asset_count = sum(len(s["assets"]) for s in scenes)

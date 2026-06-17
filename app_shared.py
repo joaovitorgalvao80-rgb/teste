@@ -8,6 +8,7 @@ Não contém a instância FastAPI (app) para evitar importações circulares:
 """
 from __future__ import annotations
 
+import base64
 import json
 import hmac
 import logging
@@ -476,6 +477,7 @@ def problem_scenes(scenes: list[dict], config: dict, limit: int = 8) -> list[dic
 _VISION_PROVIDER = vision.HeuristicVisionProvider()
 VISION_LLM_TOP_N = int(os.getenv("VISION_LLM_TOP_N", "8"))
 VISION_SHEET_N = int(os.getenv("VISION_SHEET_N", "5"))
+VIDEO_FRAME_VISION_MAX_FRAMES = int(os.getenv("VIDEO_FRAME_VISION_MAX_FRAMES", "9"))
 _TAKE_STATE_RANK = {"accepted": 3, "selected": 2, "favorite": 1, "pending": 0, "rejected": -1}
 
 
@@ -492,7 +494,8 @@ def annotate_assets_with_vision(scene: dict, assets: list[dict], config: dict) -
     annotated: list[dict] = []
     for asset in assets:
         item = dict(asset)
-        relevance = scoring.keyword_relevance(scene, asset)
+        context = scoring.context_analysis(scene, asset)
+        relevance = float(context["context_score"])
         if asset.get("vision_analyzed"):
             try:
                 flags = json.loads(asset.get("vision_flags_json") or "[]")
@@ -512,6 +515,10 @@ def annotate_assets_with_vision(scene: dict, assets: list[dict], config: dict) -
             item["vision_reason"] = "; ".join(analysis.reasons)
             item["low_relevance"] = analysis.relevance < 0.33
         item["relevance"] = round(relevance, 3)
+        item["context_score"] = round(relevance, 3)
+        item["matched_terms"] = context["matched"]
+        item["missing_terms"] = context["missing"]
+        item["context_risks"] = context["risks"]
         item["relevance_label"] = scoring.relevance_label(relevance)
         annotated.append(item)
     return annotated
@@ -519,6 +526,122 @@ def annotate_assets_with_vision(scene: dict, assets: list[dict], config: dict) -
 
 def project_work_dir(project_id: int) -> Path:
     return _app_setting("WORK_DIR", WORK_DIR) / f"project_{project_id}"
+
+
+def _frame_data_url(path: Path) -> str:
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return ""
+    if not raw:
+        return ""
+    mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+    return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+
+
+def _verdict_for_frame_score(score: float, discarded: bool) -> str:
+    if discarded or score < 35:
+        return "descartar"
+    if score >= 70:
+        return "otimo"
+    if score >= 45:
+        return "bom"
+    return "fraco"
+
+
+def _analyze_video_frame_samples(
+    project_id: int,
+    user: dict,
+    project_work: Path,
+    payload: dict,
+    manifest_path: Path,
+) -> None:
+    if payload.get("vision_status") == "analyzed":
+        return
+    groq_key = user.get("groq_key", "")
+    if not groq_key:
+        payload["vision_status"] = "unavailable"
+        payload["vision_reason"] = "sem chave Groq para analisar frames"
+        manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return
+    scenes = db.list_scenes(project_id)
+    config = project_config(db.get_project(project_id, user["id"]) or {})
+    _inject_video_theme(scenes, config)
+    scenes_by_code = {s.get("scene_id"): s for s in scenes}
+    provider = vision.get_provider("groq", api_key=groq_key)
+    analyzed_frames = 0
+
+    for sample in payload.get("samples") or []:
+        scene = scenes_by_code.get(sample.get("scene_id")) or {}
+        frame_results = []
+        for frame in sample.get("frames") or []:
+            if analyzed_frames >= VIDEO_FRAME_VISION_MAX_FRAMES:
+                break
+            rel = str(frame.get("file") or "")
+            frame_path = project_work / "kaggle_output" / rel
+            data_url = _frame_data_url(frame_path)
+            if not data_url:
+                continue
+            asset = {
+                "id": analyzed_frames + 1,
+                "asset_type": "image",
+                "keyword": sample.get("selected_asset") or scene.get("visual_target") or scene.get("visual_goal") or "",
+                "frame_data_url": data_url,
+                "width": 640,
+                "height": 360,
+            }
+            result = provider.analyze(asset, scene, config)
+            frame_results.append(
+                {
+                    "file": rel,
+                    "score": result.score,
+                    "verdict": result.verdict,
+                    "reasons": result.reasons[:3],
+                    "flags": result.flags,
+                    "provider": result.provider,
+                }
+            )
+            analyzed_frames += 1
+        if frame_results:
+            avg = sum(float(r["score"]) for r in frame_results) / len(frame_results)
+            discarded = any(r["verdict"] == "descartar" for r in frame_results)
+            sample["frame_vision"] = frame_results
+            sample["video_frame_score"] = round(avg, 1)
+            sample["video_frame_verdict"] = _verdict_for_frame_score(avg, discarded)
+            sample["reason"] = "frames analisados por visao" if not discarded else "ao menos um frame foi descartado pela visao"
+    payload["vision_status"] = "analyzed" if analyzed_frames else "unavailable"
+    payload["vision_provider"] = provider.name if analyzed_frames else ""
+    payload["analyzed_frames"] = analyzed_frames
+    manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def local_video_frame_samples(project_work: Path, project_id: int = 0, user: Optional[dict] = None) -> dict:
+    """Resumo leve dos frames extraidos no Kaggle para videos finalistas."""
+    candidates = [
+        project_work / "kaggle_output" / "metadata" / "video_frame_samples.json",
+        project_work / "kaggle_output" / "video_frame_samples.json",
+    ]
+    path = next((p for p in candidates if p.exists()), None)
+    if not path:
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if project_id and user:
+        _analyze_video_frame_samples(project_id, user, project_work, payload, path)
+    samples = payload.get("samples") or []
+    sampled_frames = sum(int(s.get("sampled_frames") or 0) for s in samples)
+    return {
+        "status": payload.get("status") or "",
+        "vision_status": payload.get("vision_status") or "",
+        "vision_provider": payload.get("vision_provider") or "",
+        "analyzed_frames": int(payload.get("analyzed_frames") or 0),
+        "manifest": str(path),
+        "sampled_videos": len(samples),
+        "sampled_frames": sampled_frames,
+        "errors": payload.get("errors") or [],
+    }
 
 
 def _safe_child_dir(root: Path, child: Path) -> Optional[Path]:
@@ -900,7 +1023,12 @@ def run_generate_map_job(
             merged.append({
                 **s,
                 "visual_goal": b.get("visual_goal", ""),
+                "screen_mode": b.get("screen_mode", ""),
+                "visual_need": b.get("visual_need", 0),
+                "visual_strategy": b.get("visual_strategy", ""),
+                "visual_target": b.get("visual_target", ""),
                 "keywords": b.get("keywords", []),
+                "query_ladder": b.get("query_ladder", b.get("keywords", [])),
                 "must_show": b.get("must_show", []),
                 "must_not_show": b.get("must_not_show", []),
                 "asset_type": b.get("asset_type", "video"),
@@ -1059,7 +1187,7 @@ def run_search_job(
             db.update_job(job_id, status="running", message=f"[{scene_idx}/{broll_count}] {scene['scene_id']} — buscando assets")
             with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="search_assets"):
                 results = asset_search.search_scene(
-                    scene["keywords"],
+                    scene.get("query_ladder") or scene["keywords"],
                     pexels_key,
                     pixabay_key,
                     max_w=max_w,
@@ -1137,7 +1265,7 @@ def run_part_search_job(
             db.update_job(job_id, status="running", message=f"[{scene_idx}/{broll_count}] {scene['scene_id']} — buscando (parte {part_idx})")
             with api_usage.context(user_id=user_id, project_id=project_id, job_id=job_id, operation="search_part"):
                 results = asset_search.search_scene(
-                    scene["keywords"],
+                    scene.get("query_ladder") or scene["keywords"],
                     pexels_key,
                     pixabay_key,
                     max_w=max_w,
@@ -1200,7 +1328,7 @@ def _build_vision_providers(groq_key: str, nvidia_key: str) -> list:
 
 def _score_scene_assets(scene: dict, pend: list, provider, heuristic, config: dict, sheet_n: int):
     """Pontua as candidatas de uma cena (top-N no contact-sheet, resto na heurística)."""
-    ranked = sorted(pend, key=lambda a, scene=scene: scoring.keyword_relevance(scene, a), reverse=True)
+    ranked = sorted(pend, key=lambda a, scene=scene: scoring.context_relevance(scene, a), reverse=True)
     top, rest = ranked[:sheet_n], ranked[sheet_n:]
     results = provider.analyze_batch(top, scene, config)
     for asset in rest:
@@ -1411,6 +1539,10 @@ def _research_one_scene(
             config["visual_style"],
             model=keys["groq_model"] or groq_service.DEFAULT_MODEL,
             language=config["script_language"],
+            rejected_assets=[
+                a for a in assets_by_scene.get(scene["id"], [])
+                if a.get("state") == "rejected"
+            ],
         )
     check_job_canceled(job_id)
     if kws:
@@ -1421,7 +1553,7 @@ def _research_one_scene(
     existing = {a["download_url"] for a in assets_by_scene.get(scene["id"], [])}
     with api_usage.context(user_id=user_id, project_id=scene.get("project_id"), job_id=job_id, operation="research_assets"):
         results = asset_search.search_scene(
-            scene["keywords"],
+            scene.get("query_ladder") or scene["keywords"],
             keys["pexels"],
             keys["pixabay"],
             max_w=max_w,
@@ -1659,6 +1791,19 @@ def _validate_package_selection(selected_by_scene, broll_required, required_scen
         raise RuntimeError("Selecao vazia; escolha ao menos um asset antes de gerar pacote.")
 
 
+def _validate_avatar_contract(plan: dict, avatar_file: Optional[Path]) -> None:
+    """Falha antes do ZIP se o plano promete avatar mas o pacote nao o carrega."""
+    if not bool(plan.get("avatar_required")):
+        return
+    if not avatar_file or not avatar_file.exists():
+        raise RuntimeError("avatar obrigatorio no plano, mas o arquivo avatar.* nao foi encontrado.")
+    plan_avatar = plan.get("avatar") or {}
+    if not plan_avatar.get("src"):
+        raise RuntimeError("avatar obrigatorio sem edit_plan.avatar.src.")
+    if Path(str(plan_avatar["src"])).name != avatar_file.name:
+        raise RuntimeError("edit_plan.avatar.src nao aponta para o arquivo de avatar do pacote.")
+
+
 def _fallback_unselected_brolls_to_avatar(scenes: list[dict], selected_by_scene: dict[int, dict]) -> None:
     """Cenas b-roll sem take escolhido viram avatar no pacote/render."""
     for scene in scenes:
@@ -1713,6 +1858,7 @@ def _build_part_zip(ctx: "_PackageCtx", part: dict, parts_count: int, avatar_inp
         avatar_file=avatar_name,
         editorial_report=editorial_report,
     )
+    _validate_avatar_contract(part_plan, slice_out if avatar_name else None)
     (part_work / EDITORIAL_REPORT_FILENAME).write_text(
         json.dumps(editorial_report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -1785,6 +1931,7 @@ def _package_single_mode(ctx: "_PackageCtx") -> None:
         avatar_file=avatar_file.name if avatar_file else "",
         editorial_report=editorial_report,
     )
+    _validate_avatar_contract(plan, avatar_file)
     (project_work / EDIT_PLAN_FILENAME).write_text(
         json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -1838,7 +1985,13 @@ def run_package_job(job_id: int, project_id: int, user_id: int) -> None:
         _fallback_unselected_brolls_to_avatar(scenes, selected_by_scene)
         remove_project_artifacts(project_id)
         rejected_payload = [
-            {"scene_id": r["scene_code"], "source": r["source"], "url": r["download_url"], "keyword": r["keyword"]}
+            {
+                "scene_id": r["scene_code"],
+                "source": r["source"],
+                "url": r["download_url"],
+                "keyword": r["keyword"],
+                "reason": r.get("rejection_reason", ""),
+            }
             for r in rejected
         ]
         ctx = _PackageCtx(job_id, project_id, project, config, scenes, selected_by_scene, rejected_payload)
@@ -2100,6 +2253,9 @@ def _enrich_complete_kaggle_status(info: dict, project_id: int, k_slug: str, use
     hf = local_hyperframes_status(project_work)
     if hf:
         info["hyperframes"] = hf
+    frame_samples = local_video_frame_samples(project_work, project_id, user)
+    if frame_samples:
+        info["video_frame_samples"] = frame_samples
     info["validation"] = diagnostics.validate_outputs(
         project_work,
         expected_duration=expected_duration_from_scenes(db.list_scenes(project_id)),

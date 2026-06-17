@@ -144,7 +144,9 @@
   <div class="kaggle-row hyperframes-row">
     <span class="tag">05 Master (FFmpeg)</span>
     <span id="hyperframes-state" class="kaggle-state">
-      {%- if hyperframes_status.get('status') in ('complete', 'fallback_complete') -%}
+      {%- if hyperframes_status.get('requested_avatar') and not hyperframes_status.get('avatar') -%}
+        erro no master - avatar solicitado e ausente
+      {%- elif hyperframes_status.get('status') in ('complete', 'fallback_complete') -%}
         master pronto ({{ hyperframes_status.get('render_mode', 'ffmpeg') }}{% if hyperframes_status.get('audio') %}, com narração{% endif %}{% if hyperframes_status.get('avatar') %}, com avatar{% endif %})
       {%- elif hyperframes_status.get('status') == 'error' -%}
         erro no master — base preservada
@@ -603,9 +605,16 @@
             </div>
             <div class="take-meta">
               <span class="tally {% if a.relevance_label == 'alta' %}tally-ok{% elif a.relevance_label == 'baixa' %}tally-warn{% endif %}"
-                    title="Relevância da keyword vs. a cena (score {{ a.vision_score }})">relevância {{ a.relevance_label }}</span>
+                    title="Contexto vs. a cena (score {{ a.context_score }})">contexto {{ a.relevance_label }}</span>
               {% if a.auto_reason %}<span class="kw-label" title="{{ a.auto_reason }}">IA: {{ a.auto_reason|truncate(40) }}</span>{% endif %}
             </div>
+            {% if a.matched_terms or a.missing_terms or a.context_risks %}
+              <p class="t-small t-faint" style="padding:0 var(--sp-3)">
+                {% if a.matched_terms %}bateu: {{ a.matched_terms|join(' + ') }}{% endif %}
+                {% if a.missing_terms %}{% if a.matched_terms %} · {% endif %}faltou: {{ a.missing_terms|join(', ') }}{% endif %}
+                {% if a.context_risks %}{% if a.matched_terms or a.missing_terms %} · {% endif %}risco: {{ a.context_risks|join(', ') }}{% endif %}
+              </p>
+            {% endif %}
             {% if a.vision_flags %}
               <p class="t-small t-faint" style="padding:0 var(--sp-3)">⚠ {{ a.vision_flags|join(', ') }}</p>
             {% endif %}

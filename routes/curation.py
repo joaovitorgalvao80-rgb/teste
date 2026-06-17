@@ -52,6 +52,7 @@ def asset_state(
     request: Request,
     asset_id: int,
     state: Annotated[str, Form()],
+    reject_reason: Annotated[str, Form()] = "",
     csrf_token: Annotated[str, Form()] = "",
     redirect: Annotated[str, Form()] = "",
 ):
@@ -66,7 +67,7 @@ def asset_state(
     if not project:
         raise HTTPException(404)
     ensure_project_not_busy(project)
-    updated = db.set_asset_state(asset_id, state)
+    updated = db.set_asset_state(asset_id, state, rejection_reason=reject_reason)
     if not updated:
         raise HTTPException(404)
     _revert_part_on_take_change(project, owner, asset_id)

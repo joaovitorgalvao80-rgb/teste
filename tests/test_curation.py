@@ -69,6 +69,22 @@ class ScoringTest(unittest.TestCase):
         # 'cartoon' está em must_not_show -> relevância derrubada
         self.assertLess(scoring.keyword_relevance(scene, offending), 0.5)
 
+    def test_context_score_requires_must_show_not_only_related_keyword(self) -> None:
+        scene = _scene(
+            must_show=["mosquito", "stagnant water"],
+            must_not_show=["bird", "lake"],
+        )
+        wrong = _asset(4, "bird lake water")
+        good = _asset(5, "mosquito stagnant water")
+
+        wrong_ctx = scoring.context_analysis(scene, wrong)
+        good_ctx = scoring.context_analysis(scene, good)
+
+        self.assertLess(wrong_ctx["context_score"], 0.33)
+        self.assertIn("mosquito", wrong_ctx["missing"])
+        self.assertIn("bird", wrong_ctx["risks"])
+        self.assertGreater(good_ctx["context_score"], 0.66)
+
     def test_generic_keyword_detection(self) -> None:
         self.assertTrue(scoring.is_generic_keyword("business background"))
         self.assertTrue(scoring.is_generic_keyword("abstract concept"))
@@ -600,7 +616,7 @@ class VisionJobTest(unittest.TestCase):
         self.assertIn("Preview da montagem", r.text)
         self.assertIn("scene_001", r.text)
         # baixa relevância / descarte do take genérico aparece como alerta
-        self.assertIn("relevância baixa", r.text)
+        self.assertIn("contexto baixa", r.text)
 
     def test_gallery_sorts_chosen_and_best_first(self) -> None:
         user_id, project_id = self._seed()

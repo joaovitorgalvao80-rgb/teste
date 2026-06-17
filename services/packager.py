@@ -58,6 +58,16 @@ def _stamp(seconds: float) -> str:
     return f"{int(seconds // 60):02d}-{int(seconds % 60):02d}"
 
 
+def _frame_sampling_policy(asset: Optional[dict]) -> dict:
+    if not asset or asset.get("asset_type") != "video":
+        return {"enabled": False}
+    return {
+        "enabled": True,
+        "max_frames": 3,
+        "positions": [0.25, 0.5, 0.75],
+    }
+
+
 def _copy_generated(asset: dict, work_dir: Path, dest: Path, max_bytes: int) -> bool:
     """Copia imagem gerada por IA (arquivo local no work dir) em vez de baixar.
 
@@ -150,6 +160,8 @@ def build_guide(project: dict, config: dict, scenes: list[dict], selected_by_sce
                 "height": asset.get("height", 0),
                 "original_duration": asset.get("duration", 0),
                 "keyword": asset.get("keyword", ""),
+                "query_role": asset.get("query_role", ""),
+                "query_text": asset.get("query_text", asset.get("keyword", "")),
             }
         guide_scenes.append(
             {
@@ -167,6 +179,7 @@ def build_guide(project: dict, config: dict, scenes: list[dict], selected_by_sce
                 "asset_type": asset.get("asset_type", scene.get("asset_type", "video")) if asset else scene.get("asset_type", "video"),
                 "selected_asset": f"assets/{filename}" if filename else None,
                 "motion": "natural_video" if (asset and asset.get("asset_type") == "video") else "still_kenburns",
+                "video_frame_sampling": _frame_sampling_policy(asset),
                 "overlay_text": scene.get("overlay_text", ""),
                 "overlay_position": "left" if config.get("avatar_safe_area", "right") == "right" else "right",
                 "avatar_safe_area": scene.get("avatar_safe_area", config.get("avatar_safe_area", "right")),
@@ -316,6 +329,7 @@ def _licenses_md() -> str:
             "- Consulte `metadata/generated_sources.json` para imagens adicionadas pelo usuario.",
             "- Consulte `editorial_report.json` para riscos editoriais e revisoes recomendadas.",
             "- Consulte `metadata/rejected_assets.json` para auditoria de curadoria.",
+            "- Consulte `metadata/video_frame_samples.json` para prints extraidos dos videos finalistas no Kaggle.",
             "",
             "Nao redistribua este pacote como CC0 sem revisar as licencas dos provedores.",
         ]

@@ -316,7 +316,9 @@ function renderHyperframes(hfState, hf) {
   const extras = [];
   if (hf.audio) extras.push("com narração");
   if (hf.avatar) extras.push("com avatar");
-  if (hf.status === "complete") {
+  if (hf.requested_avatar && !hf.avatar) {
+    hfState.textContent = "erro no master - avatar solicitado e ausente";
+  } else if (hf.status === "complete") {
     hfState.textContent = "master pronto (" + (hf.render_mode || "mp4") + (extras.length ? ", " + extras.join(", ") : "") + ")";
   } else if (hf.status === "fallback_complete") {
     hfState.textContent = "master via fallback FFmpeg" + (extras.length ? " (" + extras.join(", ") + ")" : "") + " — HyperFrames falhou";

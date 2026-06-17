@@ -147,8 +147,13 @@ CREATE TABLE IF NOT EXISTS scenes (
     duration        REAL DEFAULT 0,
     narration       TEXT DEFAULT '',
     visual_goal     TEXT DEFAULT '',
+    screen_mode     TEXT DEFAULT '',
+    visual_need     REAL DEFAULT 0,
+    visual_strategy TEXT DEFAULT '',
+    visual_target   TEXT DEFAULT '',
     keywords_json   TEXT DEFAULT '[]',
     keyword_roles_json TEXT DEFAULT '[]',
+    query_ladder_json TEXT DEFAULT '[]',
     must_show_json  TEXT DEFAULT '[]',
     must_not_show_json TEXT DEFAULT '[]',
     asset_type      TEXT DEFAULT 'video',
@@ -180,12 +185,16 @@ CREATE TABLE IF NOT EXISTS assets (
     discovery_provider TEXT DEFAULT '',
     scrape_url    TEXT DEFAULT '',
     scrape_status TEXT DEFAULT '',
+    query_role    TEXT DEFAULT '',
+    query_text    TEXT DEFAULT '',
     provider_payload_json TEXT DEFAULT '{}',
     confidence    REAL DEFAULT 0,
     state         TEXT DEFAULT 'pending',
     auto_score    REAL DEFAULT 0,
     auto_reason   TEXT DEFAULT '',
     review_round  INTEGER DEFAULT 0,
+    rejection_reason TEXT DEFAULT '',
+    rejected_at    REAL DEFAULT 0,
     vision_score    REAL DEFAULT 0,
     vision_verdict  TEXT DEFAULT '',
     vision_reason   TEXT DEFAULT '',
@@ -266,10 +275,17 @@ _MIGRATIONS = [
     "ALTER TABLE projects ADD COLUMN review_round INTEGER DEFAULT 0",
     "ALTER TABLE scenes ADD COLUMN part INTEGER DEFAULT 1",
     "ALTER TABLE scenes ADD COLUMN keyword_roles_json TEXT DEFAULT '[]'",
+    "ALTER TABLE scenes ADD COLUMN screen_mode TEXT DEFAULT ''",
+    "ALTER TABLE scenes ADD COLUMN visual_need REAL DEFAULT 0",
+    "ALTER TABLE scenes ADD COLUMN visual_strategy TEXT DEFAULT ''",
+    "ALTER TABLE scenes ADD COLUMN visual_target TEXT DEFAULT ''",
+    "ALTER TABLE scenes ADD COLUMN query_ladder_json TEXT DEFAULT '[]'",
     "ALTER TABLE scenes ADD COLUMN broll_override INTEGER DEFAULT 0",
     "ALTER TABLE assets ADD COLUMN auto_score REAL DEFAULT 0",
     "ALTER TABLE assets ADD COLUMN auto_reason TEXT DEFAULT ''",
     "ALTER TABLE assets ADD COLUMN review_round INTEGER DEFAULT 0",
+    "ALTER TABLE assets ADD COLUMN rejection_reason TEXT DEFAULT ''",
+    "ALTER TABLE assets ADD COLUMN rejected_at REAL DEFAULT 0",
     "ALTER TABLE assets ADD COLUMN vision_score REAL DEFAULT 0",
     "ALTER TABLE assets ADD COLUMN vision_verdict TEXT DEFAULT ''",
     "ALTER TABLE assets ADD COLUMN vision_reason TEXT DEFAULT ''",
@@ -282,6 +298,8 @@ _MIGRATIONS = [
     "ALTER TABLE assets ADD COLUMN discovery_provider TEXT DEFAULT ''",
     "ALTER TABLE assets ADD COLUMN scrape_url TEXT DEFAULT ''",
     "ALTER TABLE assets ADD COLUMN scrape_status TEXT DEFAULT ''",
+    "ALTER TABLE assets ADD COLUMN query_role TEXT DEFAULT ''",
+    "ALTER TABLE assets ADD COLUMN query_text TEXT DEFAULT ''",
     "ALTER TABLE assets ADD COLUMN provider_payload_json TEXT DEFAULT '{}'",
     "ALTER TABLE assets ADD COLUMN confidence REAL DEFAULT 0",
     "ALTER TABLE render_parts ADD COLUMN curation_status TEXT DEFAULT 'pending'",
@@ -861,10 +879,11 @@ def replace_scenes(project_id: int, scenes: list[dict]) -> None:
             conn.execute(
                 """INSERT INTO scenes
                 (project_id, scene_id, idx, zone, start_time, end_time, duration,
-                 narration, visual_goal, keywords_json, keyword_roles_json,
+                 narration, visual_goal, screen_mode, visual_need, visual_strategy, visual_target,
+                 keywords_json, keyword_roles_json, query_ladder_json,
                  must_show_json, must_not_show_json,
                  asset_type, overlay_text, avatar_safe_area, part)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     project_id,
                     s["scene_id"],
@@ -875,11 +894,16 @@ def replace_scenes(project_id: int, scenes: list[dict]) -> None:
                     s.get("duration", 0),
                     s.get("narration", ""),
                     s.get("visual_goal", ""),
+                    s.get("screen_mode", ""),
+                    float(s.get("visual_need") or 0),
+                    s.get("visual_strategy", ""),
+                    s.get("visual_target", ""),
                     json.dumps(s.get("keywords", []), ensure_ascii=False),
                     json.dumps(
                         s.get("keyword_roles") or scoring.assign_roles(s.get("keywords", [])),
                         ensure_ascii=False,
                     ),
+                    json.dumps(s.get("query_ladder", s.get("keywords", [])), ensure_ascii=False),
                     json.dumps(s.get("must_show", []), ensure_ascii=False),
                     json.dumps(s.get("must_not_show", []), ensure_ascii=False),
                     s.get("asset_type", "video"),
@@ -901,6 +925,9 @@ def _scene_to_dict(row: sqlite3.Row) -> dict:
     if len(roles) != len(d["keywords"]):
         roles = scoring.assign_roles(d["keywords"])
     d["keyword_roles"] = roles
+    d["query_ladder"] = json.loads(d.pop("query_ladder_json", None) or "[]")
+    if not d["query_ladder"]:
+        d["query_ladder"] = list(d["keywords"])
     d["must_show"] = json.loads(d.pop("must_show_json") or "[]")
     d["must_not_show"] = json.loads(d.pop("must_not_show_json") or "[]")
     d["broll_override"] = int(d.get("broll_override") or 0)
@@ -994,8 +1021,8 @@ def add_assets(scene_db_id: int, assets: list[dict]) -> int:
                 (scene_id, source, source_id, asset_type, preview_url, download_url, page_url,
                  width, height, duration, keyword, author, author_url, license, license_url,
                  attribution, discovery_provider, scrape_url, scrape_status,
-                 provider_payload_json, confidence, state)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending')""",
+                 query_role, query_text, provider_payload_json, confidence, state)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending')""",
                 (
                     scene_db_id,
                     a.get("source", ""),
@@ -1016,6 +1043,8 @@ def add_assets(scene_db_id: int, assets: list[dict]) -> int:
                     a.get("discovery_provider", ""),
                     a.get("scrape_url", ""),
                     a.get("scrape_status", ""),
+                    a.get("query_role", ""),
+                    a.get("query_text", a.get("keyword", "")),
                     _json_payload(a.get("provider_payload_json", a.get("provider_payload"))),
                     float(a.get("confidence") or 0),
                 ),
@@ -1114,6 +1143,7 @@ def set_asset_state(
     auto_score: Optional[float] = None,
     auto_reason: Optional[str] = None,
     review_round: Optional[int] = None,
+    rejection_reason: Optional[str] = None,
 ) -> Optional[dict]:
     conn = _connect()
     try:
@@ -1140,6 +1170,14 @@ def set_asset_state(
         if review_round is not None:
             fields.append("review_round = ?")
             values.append(review_round)
+        if state == "rejected":
+            fields.append("rejection_reason = ?")
+            values.append((rejection_reason or "").strip()[:80])
+            fields.append("rejected_at = ?")
+            values.append(time.time())
+        elif state in {"pending", "selected", "accepted", "favorite"}:
+            fields.append("rejection_reason = ''")
+            fields.append("rejected_at = 0")
         values.append(asset_id)
         conn.execute(f"UPDATE assets SET {', '.join(fields)} WHERE id = ?", values)
         conn.commit()

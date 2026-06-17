@@ -82,6 +82,23 @@ _ZONE_FALLBACK = {
 }
 
 
+def classify_scene_editorial(scene: dict) -> dict:
+    text = str(scene.get("narration") or "")
+    tokens = scoring.normalize_tokens(text, min_len=4)
+    has_number = any(ch.isdigit() for ch in text)
+    concrete = {
+        "mosquito", "agua", "water", "quintal", "bucket", "larva", "larvas",
+        "casa", "street", "rua", "plant", "animal", "person", "hands",
+        "food", "map", "chart", "document", "machine", "car", "city",
+    }
+    bridge = {"agora", "entao", "mas", "conclusao", "resumo", "importante", "obrigado"}
+    if len(tokens) <= 4 or tokens <= bridge:
+        return {"screen_mode": "avatar_only", "visual_need": 0.18, "visual_strategy": "none"}
+    if has_number or tokens & concrete:
+        return {"screen_mode": "broll", "visual_need": 0.82, "visual_strategy": "literal"}
+    return {"screen_mode": "optional_broll", "visual_need": 0.45, "visual_strategy": "evidence"}
+
+
 def fallback_scene_brief(scene: dict, avatar_safe_area: str) -> dict:
     """Brief determinístico (sem IA), usado só quando a Groq falha.
 
@@ -99,10 +116,17 @@ def fallback_scene_brief(scene: dict, avatar_safe_area: str) -> dict:
     for fb in _ZONE_FALLBACK.get(scene.get("zone", ""), ["real life close up detail", "natural outdoor scene"]):
         if fb not in keywords:
             keywords.append(fb)
+    editorial = classify_scene_editorial(scene)
+    visual_target = keywords[0] if keywords else f"editorial evidence for {text}"[:80]
     return {
         "scene_id": scene["scene_id"],
         "visual_goal": f"Concrete editorial B-roll for: {text}"[:240],
+        "screen_mode": editorial["screen_mode"],
+        "visual_need": editorial["visual_need"],
+        "visual_strategy": editorial["visual_strategy"],
+        "visual_target": visual_target,
         "keywords": keywords[:3],
+        "query_ladder": keywords[:4],
         "must_show": [],
         "must_not_show": ["corporate stock", "watermark", "text inside footage"],
         "asset_type": "video",
@@ -193,8 +217,13 @@ Return ONE JSON object only, shape:
   "scenes": [
     {{
       "scene_id": "scene_001",
+      "screen_mode": "avatar_only | broll | hybrid | optional_broll",
+      "visual_need": 0.0,
+      "visual_strategy": "literal | evidence | environment | symbolic | none",
+      "visual_target": "short concrete visual target",
       "visual_goal": "what footage should appear here, concrete, in English",
-      "keywords": ["english video search phrase", "english video search phrase", "english video search phrase"],
+      "query_ladder": ["primary searchable phrase", "alternative phrase", "evidence/context phrase"],
+      "keywords": ["same as first three query_ladder items"],
       "must_show": ["concrete element", "concrete element"],
       "must_not_show": ["thing to reject", "thing to reject"],
       "asset_type": "video",
@@ -221,6 +250,8 @@ Keyword strategy (CRITICAL — bad keywords cause irrelevant footage):
 - Avatar safe area is on the {avatar_safe_area} (~{safe_ratio*100:.0f}% of width). Keep main action and text away from it.
 - must_not_show should always include watermark / text inside footage / generic corporate stock.
 - Return one scene object per input scene, same scene_id, same order.
+- Use avatar_only for greetings, transitions, conclusions, short abstract claims, and lines with no natural footage.
+- Use optional_broll for hard literal scenes; prefer evidence/context queries instead of impossible scientific wording.
 
 SCENES:
 {joined}
@@ -273,15 +304,34 @@ def _fetch_briefs_from_groq(
 
 def _merge_brief(scene: dict, ai: dict, fb: dict, avatar_safe_area: str) -> dict:
     """Combina o brief da IA com o fallback, garantindo campos completos."""
-    keywords = ai.get("keywords") or fb["keywords"]
+    query_ladder = ai.get("query_ladder") or ai.get("keywords") or fb["query_ladder"]
+    if isinstance(query_ladder, str):
+        query_ladder = [query_ladder]
+    query_ladder = [str(k).strip() for k in query_ladder if str(k).strip()][:5] or fb["query_ladder"]
+    keywords = ai.get("keywords") or query_ladder[:3] or fb["keywords"]
     if isinstance(keywords, str):
         keywords = [keywords]
+    screen_mode = str(ai.get("screen_mode") or fb["screen_mode"]).strip()
+    if screen_mode not in {"avatar_only", "broll", "hybrid", "optional_broll"}:
+        screen_mode = fb["screen_mode"]
+    strategy = str(ai.get("visual_strategy") or fb["visual_strategy"]).strip()
+    if strategy not in {"literal", "evidence", "environment", "symbolic", "none"}:
+        strategy = fb["visual_strategy"]
+    try:
+        visual_need = max(0.0, min(1.0, float(ai.get("visual_need", fb["visual_need"]))))
+    except (TypeError, ValueError):
+        visual_need = fb["visual_need"]
     return {
         "scene_id": scene["scene_id"],
         "visual_goal": (ai.get("visual_goal") or fb["visual_goal"]).strip(),
+        "screen_mode": screen_mode,
+        "visual_need": visual_need,
+        "visual_strategy": strategy,
+        "visual_target": str(ai.get("visual_target") or fb["visual_target"]).strip()[:160],
         "keywords": [str(k).strip() for k in keywords if str(k).strip()][:3] or fb["keywords"],
-        "must_show": [str(k).strip() for k in (ai.get("must_show") or []) if str(k).strip()],
-        "must_not_show": [str(k).strip() for k in (ai.get("must_not_show") or fb["must_not_show"]) if str(k).strip()],
+        "query_ladder": query_ladder,
+        "must_show": [str(k).strip() for k in (ai.get("must_show") or ai.get("must_have") or []) if str(k).strip()],
+        "must_not_show": [str(k).strip() for k in (ai.get("must_not_show") or ai.get("avoid") or fb["must_not_show"]) if str(k).strip()],
         "asset_type": ai.get("asset_type") or "video",
         "overlay_text": str(ai.get("overlay_text") or "").upper()[:60],
         "avatar_safe_area": avatar_safe_area,
@@ -372,10 +422,23 @@ def regenerate_keywords(
     style: str,
     model: str = DEFAULT_MODEL,
     language: str = DEFAULT_LANGUAGE,
+    rejected_assets: Optional[list[dict]] = None,
 ) -> list[str]:
     """Gera um novo conjunto de keywords para uma unica cena (botao 'gerar novas keywords')."""
     if groq_key:
         try:
+            rejected_lines = []
+            for item in rejected_assets or []:
+                reason = str(item.get("rejection_reason") or item.get("reason") or "").strip()
+                keyword = str(item.get("keyword") or "").strip()
+                source = str(item.get("source") or "").strip()
+                bit = " / ".join(p for p in [keyword, source, reason] if p)
+                if bit:
+                    rejected_lines.append("- " + bit[:140])
+            rejected_block = (
+                "\nPreviously rejected results to avoid repeating:\n" + "\n".join(rejected_lines[:8]) + "\n"
+                if rejected_lines else ""
+            )
             prompt = (
                 "Generate 3 FRESH English video search phrases for Pexels/Pixabay for this scene, "
                 "different from obvious literal terms (the previous results were rejected).\n"
@@ -386,6 +449,7 @@ def regenerate_keywords(
                 f"Visual style: {style}.\n"
                 f"Narration ({language_name(language)}): {narration}\n"
                 f"Visual goal: {visual_goal}\n"
+                f"{rejected_block}"
                 'Return JSON only: {"keywords": ["...", "...", "..."]}'
             )
             resp = _tracked_post(

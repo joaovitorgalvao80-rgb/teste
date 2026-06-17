@@ -478,6 +478,16 @@ def _collect_extra_image_tasks(keywords: list[str], max_w: int) -> list[Callable
     return extra_tasks
 
 
+def _query_role(index: int) -> str:
+    if index == 0:
+        return "primary"
+    if index == 1:
+        return "alternative"
+    if index == 2:
+        return "evidence"
+    return "fallback"
+
+
 def search_scene(
     keywords: list[str],
     pexels_key: str,
@@ -504,28 +514,40 @@ def search_scene(
     want_video = media in {"all", "video"}
     want_image = media == "image" or (media == "all" and allow_images)
 
-    def _absorb(batches: list[list[dict]]) -> None:
+    def _absorb(batches: list[list[dict]], role: str = "", query: str = "") -> None:
         for batch in batches:
             for item in batch:
                 url = item["download_url"]
                 if url in seen:
                     continue
                 seen.add(url)
+                item.setdefault("query_role", role)
+                item.setdefault("query_text", query or item.get("keyword", ""))
                 results.append(item)
 
-    # cada provedor ja devolve [] em caso de erro/chave ausente.
-    tasks = _collect_provider_tasks(
-        keywords, pexels_key, pixabay_key, coverr_key, max_w, per_keyword, want_video, want_image, media
-    )
-    if tasks:
-        with ThreadPoolExecutor(max_workers=min(8, len(tasks))) as pool:
-            _absorb(list(pool.map(lambda task: task(), tasks)))
+    # Busca em escada: tenta a query principal primeiro e so avanca enquanto o
+    # pool ainda estiver fraco. Cada provedor ja devolve [] em erro/chave ausente.
+    min_good = max(6, per_keyword)
+    max_raw = 40
+    clean_keywords = [str(k).strip() for k in (keywords or []) if str(k).strip()]
+    for idx, kw in enumerate(clean_keywords[:5]):
+        role = _query_role(idx)
+        tasks = _collect_provider_tasks(
+            [kw], pexels_key, pixabay_key, coverr_key, max_w, per_keyword, want_video, want_image, media
+        )
+        if tasks:
+            with ThreadPoolExecutor(max_workers=min(8, len(tasks))) as pool:
+                _absorb(list(pool.map(lambda task: task(), tasks)), role=role, query=kw)
+        if len(results) >= min_good:
+            break
+        if len(results) >= max_raw:
+            break
 
     # Fallback dirigido: so consulta bancos extras (Wikimedia/Openverse) quando o
     # pool mainstream veio fraco. Mantem o pool enxuto e a visao dentro do limite.
     if extra_image_banks and keywords and len(results) < max(4, per_keyword):
         extra_tasks = _collect_extra_image_tasks(keywords, max_w)
         with ThreadPoolExecutor(max_workers=min(4, len(extra_tasks))) as pool:
-            _absorb(list(pool.map(lambda task: task(), extra_tasks)))
+            _absorb(list(pool.map(lambda task: task(), extra_tasks)), role="fallback", query=keywords[0])
 
-    return results
+    return results[:max_raw]

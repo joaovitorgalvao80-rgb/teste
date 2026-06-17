@@ -176,7 +176,7 @@ def _check_master_consistency(issues: list[dict], base: dict, master: dict, hype
     if requested_audio and hyperframes and not hyperframes.get("audio"):
         issues.append({"level": "error", "message": "Pos-processamento nao confirmou a narracao no master."})
     if requested_avatar and hyperframes and not hyperframes.get("avatar"):
-        issues.append({"level": "warn", "message": "Avatar foi solicitado, mas o status nao confirmou overlay no master."})
+        issues.append({"level": "error", "message": "Avatar foi solicitado, mas o status nao confirmou avatar no master."})
 
 
 def _status_from_levels(issues: list[dict]) -> str:

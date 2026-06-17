@@ -139,7 +139,7 @@ class HeuristicVisionProvider:
     def analyze(self, asset: dict, scene: dict, config: dict) -> VisionAnalysis:
         reasons: list[str] = []
         flags: list[str] = []
-        relevance = scoring.keyword_relevance(scene, asset)
+        relevance = scoring.context_relevance(scene, asset)
         score = 40.0 * relevance  # relevância textual domina a base
 
         # --- relevância / contexto -------------------------------------------
@@ -206,6 +206,8 @@ class LLMVisionProvider:
 
     @staticmethod
     def _thumb_for(asset: dict) -> str:
+        if asset.get("frame_data_url"):
+            return asset.get("frame_data_url") or ""
         # Para vídeo usamos o poster (preview_url); o download_url de vídeo é o
         # .mp4 e não serve para um endpoint de visão. Imagens têm os dois.
         thumb = asset.get("preview_url")
@@ -294,7 +296,7 @@ class LLMVisionProvider:
             asset_id=int(asset.get("id") or 0),
             score=round(score, 1),
             verdict=_verdict_for(score, flags),
-            relevance=round(scoring.keyword_relevance(scene, asset), 3),
+            relevance=round(scoring.context_relevance(scene, asset), 3),
             reasons=reasons or ["avaliado pela IA de visão"],
             flags=flags,
             provider=self.name,
@@ -346,7 +348,7 @@ class LLMVisionProvider:
             asset_id=int(asset.get("id") or 0),
             score=round(score, 1),
             verdict=_verdict_for(score, flags),
-            relevance=round(scoring.keyword_relevance(scene, asset), 3),
+            relevance=round(scoring.context_relevance(scene, asset), 3),
             reasons=reasons or ["avaliado pela IA de visão (lote)"],
             flags=flags,
             provider=self.name,

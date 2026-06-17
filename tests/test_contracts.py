@@ -13,6 +13,7 @@ from unittest.mock import patch
 os.environ["APP_ENV"] = "dev"
 
 import app as webapp  # noqa: E402
+import app_shared  # noqa: E402
 import database as db  # noqa: E402
 import montador  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -630,6 +631,146 @@ class DeployContractsTest(unittest.TestCase):
         self.assertFalse(guide["scenes"][1]["broll"])
         self.assertIsNone(guide["scenes"][1]["selected_asset"])
 
+    def test_packager_marks_selected_video_for_frame_sampling(self) -> None:
+        project = {"name": "Frames"}
+        config = {"avatar_safe_area": "right", "resolution": "1920x1080", "format": "16:9"}
+        scenes = [
+            {
+                "id": 1,
+                "scene_id": "scene_001",
+                "idx": 1,
+                "zone": "DESENVOLVIMENTO",
+                "start_time": 0.0,
+                "end_time": 4.0,
+                "duration": 4.0,
+                "narration": "parte um",
+                "visual_goal": "teste",
+                "keywords": [],
+                "must_show": [],
+                "must_not_show": [],
+                "asset_type": "video",
+                "overlay_text": "",
+                "avatar_safe_area": "right",
+                "broll": True,
+            }
+        ]
+        selected = {
+            1: {
+                "source": "pexels",
+                "download_url": "https://example.com/a.mp4",
+                "asset_type": "video",
+                "keyword": "test",
+            }
+        }
+
+        def fake_download(_url, dest, _max_bytes):
+            dest.write_bytes(b"fake-video")
+            return True
+
+        original_download = packager._download
+        packager._download = fake_download
+        try:
+            zip_path = packager.build_zip(project, config, scenes, selected, [], self.root / "work")
+            with zipfile.ZipFile(zip_path) as zf:
+                guide = json.loads(zf.read("guia_visual.json"))
+                licenses = zf.read("LICENSES.md").decode("utf-8")
+        finally:
+            packager._download = original_download
+
+        policy = guide["scenes"][0]["video_frame_sampling"]
+        self.assertTrue(policy["enabled"])
+        self.assertEqual(policy["max_frames"], 3)
+        self.assertEqual(policy["positions"], [0.25, 0.5, 0.75])
+        self.assertIn("metadata/video_frame_samples.json", licenses)
+
+    def test_local_video_frame_samples_analyzes_downloaded_frames_with_groq(self) -> None:
+        db.init_db()
+        user_id = db.create_user("frame-user", "password123")
+        db.update_api_keys(user_id, "", "", "gsk-test")
+        project_id = db.create_project(
+            user_id,
+            "Frame Vision",
+            "script",
+            {"resolution": "1920x1080", "video_theme": "mosquito control"},
+        )
+        db.replace_scenes(
+            project_id,
+            [
+                {
+                    "scene_id": "scene_001",
+                    "idx": 1,
+                    "zone": "DESENVOLVIMENTO",
+                    "start_time": 0.0,
+                    "end_time": 4.0,
+                    "duration": 4.0,
+                    "narration": "mosquito perto da agua parada",
+                    "visual_goal": "mosquito near stagnant water",
+                    "keywords": ["mosquito water"],
+                    "must_show": ["mosquito", "water"],
+                    "must_not_show": ["bird"],
+                    "asset_type": "video",
+                    "overlay_text": "",
+                    "avatar_safe_area": "right",
+                }
+            ],
+        )
+        project_work = webapp.WORK_DIR / f"project_{project_id}"
+        frames_dir = project_work / "kaggle_output" / "video_frame_samples"
+        meta_dir = project_work / "kaggle_output" / "metadata"
+        frames_dir.mkdir(parents=True)
+        meta_dir.mkdir(parents=True)
+        (frames_dir / "scene_001_frame_01.jpg").write_bytes(b"\xff\xd8fake-jpg\xff\xd9")
+        manifest = meta_dir / "video_frame_samples.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "status": "sampled",
+                    "samples": [
+                        {
+                            "scene_id": "scene_001",
+                            "selected_asset": "assets/scene_001.mp4",
+                            "sampled_frames": 1,
+                            "frames": [
+                                {"time": 1.0, "file": "video_frame_samples/scene_001_frame_01.jpg"}
+                            ],
+                        }
+                    ],
+                    "errors": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        class FakeProvider:
+            name = "groq-vision"
+
+            def analyze(self, _asset, _scene, _config):
+                return SimpleNamespace(
+                    score=91.0,
+                    verdict="otimo",
+                    reasons=["mostra mosquito e agua"],
+                    flags=[],
+                    provider=self.name,
+                )
+
+        original_provider = app_shared.vision.get_provider
+        try:
+            app_shared.vision.get_provider = lambda *_args, **_kwargs: FakeProvider()
+            summary = app_shared.local_video_frame_samples(
+                project_work,
+                project_id,
+                db.get_user(user_id),
+            )
+        finally:
+            app_shared.vision.get_provider = original_provider
+
+        updated = json.loads(manifest.read_text(encoding="utf-8"))
+        sample = updated["samples"][0]
+        self.assertEqual(summary["vision_status"], "analyzed")
+        self.assertEqual(summary["analyzed_frames"], 1)
+        self.assertEqual(sample["video_frame_verdict"], "otimo")
+        self.assertEqual(sample["frame_vision"][0]["provider"], "groq-vision")
+
     def test_montador_rejects_zip_slip_paths(self) -> None:
         bad_zip = self.root / "bad.zip"
         work = self.root / "work"
@@ -799,6 +940,26 @@ class DeployContractsTest(unittest.TestCase):
                     base = out_dir / "video_broll_base.mp4"
                     base.write_bytes(b"fake-mp4")
                     (out_dir / "final_master.mp4").write_bytes(b"fake-master")
+                    meta = out_dir / "metadata"
+                    meta.mkdir()
+                    (meta / "video_frame_samples.json").write_text(
+                        json.dumps(
+                            {
+                                "status": "sampled",
+                                "samples": [
+                                    {
+                                        "scene_id": "scene_001",
+                                        "sampled_frames": 3,
+                                        "frames": [
+                                            {"time": 1.0, "file": "video_frame_samples/scene_001_frame_01.jpg"}
+                                        ],
+                                    }
+                                ],
+                                "errors": [],
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
                     return base
 
                 webapp.kaggle_service.get_status = lambda *_args, **_kwargs: {
@@ -818,6 +979,9 @@ class DeployContractsTest(unittest.TestCase):
         self.assertEqual(payload["video_url"], f"/projects/{project_id}/download-master-video")
         self.assertEqual(payload["master_video_url"], f"/projects/{project_id}/download-master-video")
         self.assertEqual(payload["base_video_url"], f"/projects/{project_id}/download-base-video")
+        self.assertEqual(payload["video_frame_samples"]["status"], "sampled")
+        self.assertEqual(payload["video_frame_samples"]["sampled_videos"], 1)
+        self.assertEqual(payload["video_frame_samples"]["sampled_frames"], 3)
         self.assertIn("validation", payload)
 
     def test_output_validation_writes_diagnostic_file(self) -> None:
@@ -849,6 +1013,22 @@ class DeployContractsTest(unittest.TestCase):
         self.assertEqual(payload["status"], "error")
         messages = [issue["message"] for issue in payload["issues"]]
         self.assertTrue(any("narracao" in msg for msg in messages))
+
+    def test_output_validation_flags_requested_avatar_missing_as_error(self) -> None:
+        project_work = self.root / "project"
+        out = project_work / "kaggle_output"
+        out.mkdir(parents=True)
+        (out / "final_master.mp4").write_bytes(b"not-a-real-mp4")
+        (out / "hyperframes_status.json").write_text(
+            json.dumps({"requested_avatar": True, "avatar": False}),
+            encoding="utf-8",
+        )
+
+        payload = diagnostics.validate_outputs(project_work, expected_duration=0)
+
+        self.assertEqual(payload["status"], "error")
+        messages = [issue["message"] for issue in payload["issues"]]
+        self.assertTrue(any("Avatar foi solicitado" in msg for msg in messages))
 
     def test_send_to_kaggle_requires_valid_package_status(self) -> None:
         original_upload = webapp.kaggle_service.upload_dataset
@@ -937,6 +1117,7 @@ class DeployContractsTest(unittest.TestCase):
         pattern = calls[0][calls[0].index("--file-pattern") + 1]
         self.assertIn("hyperframes_status", pattern)
         self.assertIn("log_render", pattern)
+        self.assertIn("video_frame_samples", pattern)
 
     def test_push_kernel_uses_actual_slug_from_push_output(self) -> None:
         original_run = kaggle_service._run
@@ -1008,6 +1189,8 @@ class DeployContractsTest(unittest.TestCase):
         self.assertIn('"--player-ready-timeout"', kaggle_service._RUNNER)
         self.assertIn('"png-sequence"', kaggle_service._RUNNER)
         self.assertIn("hyperframes_frames", kaggle_service._RUNNER)
+        self.assertIn("sample_finalist_video_frames(source)", kaggle_service._RUNNER)
+        self.assertIn("video_frame_samples", kaggle_service._RUNNER)
         self.assertIn('"format=yuv420p"', kaggle_service._RUNNER)
         self.assertIn('"png-sequence+ffmpeg"', kaggle_service._RUNNER)
         self.assertIn('"performance": RUN_TIMINGS', kaggle_service._RUNNER)
@@ -1017,6 +1200,8 @@ class DeployContractsTest(unittest.TestCase):
         runner = kaggle_service._RUNNER
         compile(runner, "runner.py", "exec")
         self.assertIn("find_pack_extras(input_root)", runner)
+        self.assertIn("ensure_avatar_contract(edit_plan, avatar)", runner)
+        self.assertIn("assert_avatar_satisfied(postprocess)", runner)
         self.assertIn('"edit_plan.json"', runner)
         self.assertIn("render_hyperframes_master(out, edit_plan, narration_file, avatar_file)", runner)
         self.assertIn("apply_master_postprocess(master_out, narration, avatar, edit_plan, avatar_mode=avatar_mode)", runner)
@@ -1358,6 +1543,42 @@ class DeployContractsTest(unittest.TestCase):
         plan = json.loads(plan_path.read_text(encoding="utf-8"))
         self.assertEqual(plan["version"], 2)
         self.assertIn("broll", plan["scenes"][0])
+
+    def test_package_job_marks_and_carries_required_avatar(self) -> None:
+        db.init_db()
+        uid = db.create_user("avatar-contract", "password123")
+        project_id = db.create_project(uid, "proj avatar", "script", {"video_style": "avatar_broll"})
+        db.replace_scenes(
+            project_id,
+            [
+                {"scene_id": "scene_001", "idx": 1, "start_time": 0, "end_time": 4, "duration": 4, "narration": "a"},
+                {"scene_id": "scene_002", "idx": 2, "start_time": 4, "end_time": 8, "duration": 4, "narration": "mosquito na agua"},
+                {"scene_id": "scene_003", "idx": 3, "start_time": 8, "end_time": 12, "duration": 4, "narration": "c"},
+            ],
+        )
+        avatar_dir = webapp.WORK_DIR / f"project_{project_id}" / "inputs"
+        avatar_dir.mkdir(parents=True, exist_ok=True)
+        (avatar_dir / "avatar.mp4").write_bytes(b"fake-avatar")
+        scene = db.list_scenes(project_id)[1]
+        db.add_assets(scene["id"], [{"source": "pexels", "download_url": "https://example.com/a.mp4"}])
+        asset = db.list_assets(scene["id"])[0]
+        db.set_asset_state(asset["id"], "selected")
+        job_id = db.create_job(uid, "package", project_id, "pacote")
+
+        def fake_zip(**kwargs):
+            plan = kwargs["edit_plan"]
+            self.assertTrue(plan["avatar_required"])
+            self.assertEqual(plan["avatar"]["src"], "avatar.mp4")
+            self.assertTrue(any(p.name == "avatar.mp4" for p in kwargs["extra_files"]))
+            zp = kwargs["work_dir"] / "asset_pack_proj.zip"
+            zp.parent.mkdir(parents=True, exist_ok=True)
+            zp.write_bytes(b"zip")
+            return zp
+
+        with patch.object(webapp.packager, "build_zip", side_effect=fake_zip):
+            webapp.run_package_job(job_id, project_id, uid)
+
+        self.assertEqual(db.get_job(job_id, uid)["status"], "complete")
 
     def test_montador_keeps_full_audio_and_static_images(self) -> None:
         import inspect
@@ -2034,7 +2255,11 @@ class HardeningAndOptimizationTest(unittest.TestCase):
             page = client.get(f"/projects/{project_id}/review")
             resp = client.post(
                 f"/assets/{asset['id']}/state",
-                data={"state": "rejected", "redirect": f"/projects/{project_id}/review"},
+                data={
+                    "state": "rejected",
+                    "reject_reason": "fora de contexto",
+                    "redirect": f"/projects/{project_id}/review",
+                },
                 follow_redirects=False,
             )
             reopened = client.get(f"/projects/{project_id}/review")
@@ -2045,6 +2270,7 @@ class HardeningAndOptimizationTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 303)
         self.assertEqual(resp.headers["location"], f"/projects/{project_id}/review")
         self.assertEqual(db.get_project(project_id, uid)["status"], "reviewing")
+        self.assertEqual(db.get_asset(asset["id"])["rejection_reason"], "fora de contexto")
         self.assertFalse(report_path.exists())
         self.assertNotIn("curation-report", reopened.text)
 

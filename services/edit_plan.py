@@ -197,6 +197,11 @@ def _apply_density(
     return run + _scene_duration(scene)
 
 
+def _screen_mode(scene: dict) -> str:
+    mode = str(scene.get("screen_mode") or "").strip()
+    return mode if mode in {"avatar_only", "broll", "hybrid", "optional_broll"} else ""
+
+
 def _broll_flags(scenes: list[dict], density: str = "moderate", video_style: str = "avatar_broll") -> list[bool]:
     """Decide, cena a cena, se o b-roll cobre o avatar (deterministico).
 
@@ -213,10 +218,21 @@ def _broll_flags(scenes: list[dict], density: str = "moderate", video_style: str
     run = 0.0
 
     for i, scene in enumerate(scenes):
+        mode = _screen_mode(scene)
+        if video_style != "broll_only" and mode == "avatar_only":
+            run = 0.0
+            continue
         if _is_presentation(scene.get("narration")):
             run = 0.0
             continue
         if video_style != "broll_only" and (i == 0 or i == n - 1):
+            run = 0.0
+            continue
+        if mode in {"broll", "hybrid"}:
+            flags[i] = True
+            run += _scene_duration(scene)
+            continue
+        if mode == "optional_broll" and density == "key_moments":
             run = 0.0
             continue
         run = _apply_density(flags, i, scene, n, run, density)
@@ -487,6 +503,7 @@ def build_edit_plan(
     safe_area = (config.get("avatar_safe_area") or "right").lower()
     density = config.get("broll_density", "moderate")
     video_style = config.get("video_style", "avatar_broll")
+    avatar_required = bool(avatar_file and video_style != "broll_only")
     captioned_indexes = _caption_indexes(scenes)
     broll_flags = _broll_flags(scenes, density=density, video_style=video_style)
     plan_scenes = [
@@ -543,10 +560,11 @@ def build_edit_plan(
         "scenes": plan_scenes,
         "audio": None,
         "avatar": None,
+        "avatar_required": avatar_required,
     }
     if narration_file:
         plan["audio"] = {"src": narration_file, "volume": 1.0}
-    if avatar_file and video_style != "broll_only":
+    if avatar_required:
         # O avatar e a base do video: tela cheia, com os b-rolls por cima.
         plan["avatar"] = {
             "src": avatar_file,

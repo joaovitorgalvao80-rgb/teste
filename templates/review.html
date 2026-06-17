@@ -81,8 +81,15 @@
           <span>{{ a.source }} · {{ a.width }}x{{ a.height }}{% if a.duration %} · {{ a.duration }}s{% endif %}</span>
           {% if a.author %}<a class="t-small t-faint" href="{{ a.author_url }}" target="_blank" rel="noopener">{{ a.author }}</a>{% endif %}
           <span class="tally {% if a.relevance_label == 'alta' %}tally-ok{% elif a.relevance_label == 'baixa' %}tally-warn{% endif %}"
-                title="Relevância da keyword vs. a cena (score {{ a.vision_score }})">relevância {{ a.relevance_label }}</span>
+                title="Contexto vs. a cena (score {{ a.context_score }})">contexto {{ a.relevance_label }}</span>
         </div>
+        {% if a.matched_terms or a.missing_terms or a.context_risks %}
+          <p class="t-small t-faint">
+            {% if a.matched_terms %}bateu: {{ a.matched_terms|join(' + ') }}{% endif %}
+            {% if a.missing_terms %}{% if a.matched_terms %} · {% endif %}faltou: {{ a.missing_terms|join(', ') }}{% endif %}
+            {% if a.context_risks %}{% if a.matched_terms or a.missing_terms %} · {% endif %}risco: {{ a.context_risks|join(', ') }}{% endif %}
+          </p>
+        {% endif %}
         {% if a.low_relevance %}
           <p class="t-small t-faint">⚠ Baixa relevância para esta cena — considere rejeitar e buscar melhores.</p>
         {% endif %}
@@ -109,6 +116,14 @@
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="state" value="rejected">
             <input type="hidden" name="redirect" value="/projects/{{ project.id }}/review{% if part_idx %}?part={{ part_idx }}{% endif %}">
+            <select name="reject_reason" class="t-small" aria-label="Motivo da rejeição">
+              <option value="fora de contexto">fora de contexto</option>
+              <option value="muito generico">muito generico</option>
+              <option value="baixa qualidade">baixa qualidade</option>
+              <option value="nao mostra objeto">nao mostra objeto</option>
+              <option value="tipo errado">tipo errado</option>
+              <option value="estetica ruim">estetica ruim</option>
+            </select>
             <button type="submit" class="btn btn-danger btn-sm review-reject">Rejeitar</button>
           </form>
           <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}#scene-{{ scene.id }}">ver alternativas</a>
@@ -277,17 +292,20 @@ document.addEventListener("DOMContentLoaded", () => {
         parseInt(form.dataset.scene, 10),
         parseInt(form.dataset.asset, 10),
         form.dataset.state,
-        btn
+        btn,
+        new FormData(form)
       );
     });
   });
 });
 
-async function reviewDecision(sceneId, assetId, state, btn) {
+async function reviewDecision(sceneId, assetId, state, btn, formData) {
   const card = document.getElementById("review-" + sceneId);
   if (btn) btn.disabled = true;
   try {
-    const res = await postForm(`/assets/${assetId}/state`, { state });
+    const payload = { state };
+    if (formData && formData.get("reject_reason")) payload.reject_reason = formData.get("reject_reason");
+    const res = await postForm(`/assets/${assetId}/state`, payload);
     const bar = document.getElementById("review-bar");
     if (bar && res.project_status && res.project_status !== bar.dataset.projectStatus) {
       location.reload();

@@ -243,7 +243,7 @@ def search_more(
     max_w = resolution_width(config)
     existing = {a["download_url"] for a in db.list_assets(scene_db_id)}
     custom = [k.strip() for k in str(keyword or "").split(",") if k.strip()][:5]
-    search_keywords = custom or scene["keywords"]
+    search_keywords = custom or scene.get("query_ladder") or scene["keywords"]
     with api_usage.context(user_id=user["id"], project_id=project["id"], operation="search_more"):
         results = asset_search.search_scene(
             search_keywords,

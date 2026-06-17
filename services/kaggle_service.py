@@ -294,6 +294,7 @@ import shutil
 import subprocess
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 
@@ -303,6 +304,10 @@ HYPERFRAMES_VERSION = (os.environ.get("PRODUCER_HYPERFRAMES_VERSION") or "0.6.93
 HYPERFRAMES_PACKAGE = "hyperframes@" + HYPERFRAMES_VERSION
 HYPERFRAMES_CMD = ["npx", "-y", "--package", "node@22", "--package", HYPERFRAMES_PACKAGE, "hyperframes"]
 RUN_TIMINGS = []
+VIDEO_FRAME_SAMPLES_DIR = Path("/kaggle/working/video_frame_samples")
+VIDEO_FRAME_SAMPLES_MANIFEST = Path("/kaggle/working/metadata/video_frame_samples.json")
+VIDEO_FRAME_SAMPLES = {}
+MAX_FRAME_SAMPLED_VIDEOS = int(os.environ.get("PRODUCER_FRAME_SAMPLE_MAX_VIDEOS", "80") or "80")
 CHROME_LIBS = [
     "libatk-bridge2.0-0",
     "libatk1.0-0",
@@ -422,6 +427,170 @@ def ffprobe_duration(video_path):
         return max(float((result.stdout or "0").strip()), 0.1)
     except ValueError:
         return 1.0
+
+
+def safe_sample_name(text):
+    cleaned = "".join(c if c.isalnum() else "_" for c in str(text or ""))
+    cleaned = cleaned.strip("_")[:64]
+    return cleaned or "scene"
+
+
+def _safe_selected_asset_path(selected_asset):
+    rel = str(selected_asset or "").replace(chr(92), "/").lstrip("/")
+    parts = [p for p in rel.split("/") if p]
+    if len(parts) < 2 or parts[0] != "assets" or any(p in ("..", ".") for p in parts):
+        return ""
+    return "/".join(parts)
+
+
+def load_guide_from_source(source):
+    source = Path(source)
+    if source.is_file():
+        with zipfile.ZipFile(source) as zf:
+            return json.loads(zf.read("guia_visual.json").decode("utf-8"))
+    guide_path = source / "guia_visual.json"
+    return json.loads(guide_path.read_text(encoding="utf-8"))
+
+
+def extract_selected_asset(source, selected_asset, dest):
+    rel = _safe_selected_asset_path(selected_asset)
+    if not rel:
+        return False
+    source = Path(source)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_file():
+        with zipfile.ZipFile(source) as zf:
+            names = set(zf.namelist())
+            if rel not in names:
+                return False
+            dest.write_bytes(zf.read(rel))
+            return dest.exists() and dest.stat().st_size > 0
+    src = source / rel
+    if not src.exists() or not src.is_file():
+        return False
+    shutil.copy2(src, dest)
+    return dest.exists() and dest.stat().st_size > 0
+
+
+def frame_sample_offsets(duration, max_frames):
+    max_frames = max(1, min(int(max_frames or 3), 3))
+    duration = max(float(duration or 0), 0.1)
+    if duration < 2.5 or max_frames == 1:
+        return [max(0.1, duration * 0.5)]
+    positions = [0.25, 0.5, 0.75][:max_frames]
+    return [max(0.1, min(duration - 0.1, duration * pos)) for pos in positions]
+
+
+def sample_finalist_video_frames(source):
+    global VIDEO_FRAME_SAMPLES
+    started = time.monotonic()
+    manifest = {
+        "status": "empty",
+        "policy": {
+            "scope": "selected_video_assets_only",
+            "max_frames_per_video": 3,
+            "positions": [0.25, 0.5, 0.75],
+            "max_videos": MAX_FRAME_SAMPLED_VIDEOS,
+        },
+        "samples": [],
+        "errors": [],
+    }
+    try:
+        guide = load_guide_from_source(source)
+    except Exception as exc:
+        manifest["status"] = "error"
+        manifest["errors"].append({"stage": "load_guide", "error": str(exc)[:300]})
+        VIDEO_FRAME_SAMPLES_MANIFEST.parent.mkdir(parents=True, exist_ok=True)
+        VIDEO_FRAME_SAMPLES_MANIFEST.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        VIDEO_FRAME_SAMPLES = manifest
+        return manifest
+
+    VIDEO_FRAME_SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
+    VIDEO_FRAME_SAMPLES_MANIFEST.parent.mkdir(parents=True, exist_ok=True)
+    sampled_videos = 0
+    sampled_frames = 0
+    for scene in guide.get("scenes") or []:
+        selected_asset = scene.get("selected_asset")
+        if not selected_asset or scene.get("asset_type") != "video":
+            continue
+        policy = scene.get("video_frame_sampling") or {}
+        if policy and policy.get("enabled") is False:
+            continue
+        if sampled_videos >= MAX_FRAME_SAMPLED_VIDEOS:
+            manifest["errors"].append({"stage": "cap", "error": "limite global de videos amostrados atingido"})
+            break
+        scene_id = safe_sample_name(scene.get("id") or ("scene_" + str(sampled_videos + 1)))
+        source_ext = Path(str(selected_asset)).suffix.lower() or ".mp4"
+        temp_video = VIDEO_FRAME_SAMPLES_DIR / ("_source_" + scene_id + source_ext)
+        entry = {
+            "scene_id": scene.get("id") or "",
+            "selected_asset": selected_asset,
+            "asset_type": "video",
+            "video_frame_verdict": "fallback_thumbnail",
+            "sampled_frames": 0,
+            "frames": [],
+            "reason": "",
+        }
+        try:
+            if not extract_selected_asset(source, selected_asset, temp_video):
+                entry["reason"] = "asset selecionado nao encontrado no pacote"
+                manifest["samples"].append(entry)
+                continue
+            duration = ffprobe_duration(temp_video)
+            offsets = frame_sample_offsets(duration, policy.get("max_frames") or 3)
+            for frame_idx, offset in enumerate(offsets, start=1):
+                frame_name = scene_id + "_frame_%02d.jpg" % frame_idx
+                frame_path = VIDEO_FRAME_SAMPLES_DIR / frame_name
+                try:
+                    run_logged(
+                        [
+                            "ffmpeg",
+                            "-y",
+                            "-ss",
+                            "%.3f" % offset,
+                            "-i",
+                            str(temp_video),
+                            "-frames:v",
+                            "1",
+                            "-vf",
+                            "scale=640:-2:force_original_aspect_ratio=decrease",
+                            "-q:v",
+                            "3",
+                            str(frame_path),
+                        ],
+                        timeout=90,
+                    )
+                    if frame_path.exists() and frame_path.stat().st_size > 0:
+                        rel_frame = "video_frame_samples/" + frame_name
+                        entry["frames"].append({"time": round(offset, 3), "file": rel_frame})
+                        sampled_frames += 1
+                except Exception as frame_exc:
+                    manifest["errors"].append(
+                        {"stage": "frame", "scene_id": entry["scene_id"], "error": str(frame_exc)[:300]}
+                    )
+            entry["sampled_frames"] = len(entry["frames"])
+            if entry["sampled_frames"]:
+                entry["video_frame_verdict"] = "sampled"
+                entry["reason"] = "frames reais extraidos do video finalista"
+            else:
+                entry["reason"] = entry["reason"] or "ffmpeg nao conseguiu extrair frames"
+        except Exception as exc:
+            entry["reason"] = str(exc)[:300]
+            manifest["errors"].append({"stage": "video", "scene_id": entry["scene_id"], "error": str(exc)[:300]})
+        finally:
+            temp_video.unlink(missing_ok=True)
+        sampled_videos += 1
+        manifest["samples"].append(entry)
+
+    if sampled_frames:
+        manifest["status"] = "sampled"
+    elif manifest["samples"]:
+        manifest["status"] = "fallback_thumbnail"
+    VIDEO_FRAME_SAMPLES_MANIFEST.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    VIDEO_FRAME_SAMPLES = manifest
+    mark_timing("video_frame_sampling", started, sampled_videos=sampled_videos, sampled_frames=sampled_frames)
+    print("Video frame samples:", VIDEO_FRAME_SAMPLES_MANIFEST.read_text(encoding="utf-8"))
+    return manifest
 
 
 def write_status(payload):
@@ -697,6 +866,29 @@ def find_pack_extras(input_root):
         except Exception as exc:
             print("Aviso: edit_plan.json invalido, refinando sem plano:", exc)
     return plan, extras["narration"], extras["avatar"]
+
+
+def avatar_requested(edit_plan, avatar):
+    if edit_plan and "avatar_required" in edit_plan:
+        return bool(edit_plan.get("avatar_required"))
+    return bool(avatar)
+
+
+def ensure_avatar_contract(edit_plan, avatar):
+    if not avatar_requested(edit_plan, avatar):
+        return
+    if not avatar:
+        raise RuntimeError("avatar obrigatorio no edit_plan, mas avatar.* nao foi encontrado no pacote")
+    plan_avatar = (edit_plan or {}).get("avatar") or {}
+    if edit_plan and "avatar_required" in edit_plan and not plan_avatar.get("src"):
+        raise RuntimeError("avatar obrigatorio sem edit_plan.avatar.src")
+    if plan_avatar.get("src") and Path(str(plan_avatar.get("src"))).name != Path(avatar).name:
+        raise RuntimeError("edit_plan.avatar.src nao confere com o arquivo de avatar do pacote")
+
+
+def assert_avatar_satisfied(postprocess):
+    if postprocess.get("requested_avatar") and not postprocess.get("avatar"):
+        raise RuntimeError("avatar solicitado, mas o master nao confirmou avatar")
 
 
 def plan_resolution(edit_plan):
@@ -1331,11 +1523,12 @@ def has_audio_stream(path):
 def apply_master_postprocess(master_out, narration=None, avatar=None, edit_plan=None, avatar_mode="none"):
     # Garante narracao/avatar no MP4 final fora do browser renderer.
     avatar_in_composition = avatar_mode in ("base", "corner")
+    requested_avatar = avatar_requested(edit_plan, avatar)
     result = {
         "audio": False,
         "avatar": False,
         "requested_audio": bool(narration) or (avatar_mode == "base" and bool(avatar)),
-        "requested_avatar": bool(avatar),
+        "requested_avatar": requested_avatar,
         "avatar_mode": avatar_mode,
         "method": [],
     }
@@ -1454,6 +1647,7 @@ def apply_master_postprocess(master_out, narration=None, avatar=None, edit_plan=
 
 
 def plan_avatar_mode(edit_plan, avatar):
+    ensure_avatar_contract(edit_plan, avatar)
     if not avatar:
         return "none"
     plan_avatar = (edit_plan or {}).get("avatar") or {}
@@ -1476,6 +1670,7 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
     master_out = Path("/kaggle/working") / MASTER_VIDEO_NAME
     project_dir = Path("/kaggle/working/hyperframes_master")
     frames_dir = Path("/kaggle/working/hyperframes_frames")
+    ensure_avatar_contract(edit_plan, avatar)
     avatar_mode = plan_avatar_mode(edit_plan, avatar)
     width, height = plan_resolution(edit_plan)
 
@@ -1544,6 +1739,7 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
             raise RuntimeError("Pipeline nao gerou " + str(master_out))
         post_start = time.monotonic()
         postprocess = apply_master_postprocess(master_out, narration, avatar, edit_plan, avatar_mode=avatar_mode)
+        assert_avatar_satisfied(postprocess)
         mark_timing("ffmpeg_postprocess", post_start, avatar_mode=avatar_mode)
     else:
         # Modo legado (sem avatar): HyperFrames renderiza tudo
@@ -1595,6 +1791,7 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
             raise RuntimeError("HyperFrames terminou sem gerar " + str(master_out))
         post_start = time.monotonic()
         postprocess = apply_master_postprocess(master_out, narration, avatar, edit_plan, avatar_mode=avatar_mode)
+        assert_avatar_satisfied(postprocess)
         mark_timing("ffmpeg_postprocess", post_start, avatar_mode=avatar_mode)
 
     write_status(
@@ -1612,6 +1809,7 @@ def render_hyperframes_master(base_video, edit_plan=None, narration=None, avatar
             "requested_audio": postprocess["requested_audio"],
             "requested_avatar": postprocess["requested_avatar"],
             "postprocess": postprocess,
+            "video_frame_samples": VIDEO_FRAME_SAMPLES,
             "performance": RUN_TIMINGS,
             "hyperframes": {
                 "package": HYPERFRAMES_PACKAGE,
@@ -1647,6 +1845,8 @@ else:
 
 out = Path("/kaggle/working") / BASE_VIDEO_NAME
 print(f"Fonte: {source}")
+
+sample_finalist_video_frames(source)
 
 run_logged([sys.executable, str(montador), str(source), "--out", str(out), "--preset", "fast", "--no-overlay"], timeout=1800)
 print(f"Video: {out} ({out.stat().st_size/1024/1024:.1f} MB)")
@@ -1686,9 +1886,11 @@ except Exception as exc:
             postprocess = apply_master_postprocess(
                 fallback_master, narration_file, avatar_file, edit_plan, avatar_mode="base"
             )
+            assert_avatar_satisfied(postprocess)
         else:
             shutil.copy2(out, fallback_master)
             postprocess = apply_master_postprocess(fallback_master, narration_file, avatar_file, edit_plan)
+            assert_avatar_satisfied(postprocess)
         write_status(
             {
                 "status": "fallback_complete",
@@ -1701,11 +1903,12 @@ except Exception as exc:
                 "requested_audio": postprocess["requested_audio"],
                 "requested_avatar": postprocess["requested_avatar"],
                 "postprocess": postprocess,
+                "video_frame_samples": VIDEO_FRAME_SAMPLES,
             }
         )
         print("Master fallback pronto:", fallback_master)
     except Exception as fallback_exc:
-        write_status({"status": "error", "error": str(exc), "fallback_error": str(fallback_exc), "base_output": str(out)})
+        write_status({"status": "error", "error": str(exc), "fallback_error": str(fallback_exc), "base_output": str(out), "video_frame_samples": VIDEO_FRAME_SAMPLES})
         print("HyperFrames falhou, e o fallback tambem falhou:", fallback_exc)
 """
 
@@ -1840,7 +2043,7 @@ def pull_output_video(k_slug: str, username: str, token: str, out_dir: Path) -> 
             str(out_dir),
             "-o",
             "--file-pattern",
-            r"(final_master\.mp4|video_broll_base\.mp4|base_broll\.mp4|hyperframes_status\.json|log_render\.txt|guia_execucao_final\.json)$",
+            r"(final_master\.mp4|video_broll_base\.mp4|base_broll\.mp4|hyperframes_status\.json|log_render\.txt|guia_execucao_final\.json|metadata[/\\]video_frame_samples\.json|video_frame_samples[/\\].*\.jpg)$",
         ],
         username,
         token,

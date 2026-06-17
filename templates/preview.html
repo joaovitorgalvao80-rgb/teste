@@ -66,8 +66,15 @@
         {% if a %}
           <div class="row" style="gap:var(--sp-2);flex-wrap:wrap">
             <span class="t-faint t-small">{{ a.source }} · {{ a.width }}x{{ a.height }}{% if a.duration %} · {{ a.duration }}s{% endif %}</span>
-            <span class="tally {% if a.relevance_label == 'alta' %}tally-ok{% elif a.relevance_label == 'baixa' %}tally-warn{% endif %}">relevância {{ a.relevance_label }}</span>
+            <span class="tally {% if a.relevance_label == 'alta' %}tally-ok{% elif a.relevance_label == 'baixa' %}tally-warn{% endif %}">contexto {{ a.relevance_label }}</span>
           </div>
+          {% if a.matched_terms or a.missing_terms or a.context_risks %}
+            <p class="t-small t-faint">
+              {% if a.matched_terms %}bateu: {{ a.matched_terms|join(' + ') }}{% endif %}
+              {% if a.missing_terms %}{% if a.matched_terms %} · {% endif %}faltou: {{ a.missing_terms|join(', ') }}{% endif %}
+              {% if a.context_risks %}{% if a.matched_terms or a.missing_terms %} · {% endif %}risco: {{ a.context_risks|join(', ') }}{% endif %}
+            </p>
+          {% endif %}
           {% if a.vision_verdict == 'descartar' %}<p class="t-small t-faint">⚠ IA sugere descartar este take</p>{% endif %}
           {% if a.vision_flags %}<p class="t-small t-faint">⚠ {{ a.vision_flags|join(', ') }}</p>{% endif %}
         {% endif %}
