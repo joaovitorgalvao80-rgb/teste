@@ -1120,6 +1120,7 @@ class DeployContractsTest(unittest.TestCase):
         calls = []
         try:
             def fake_run(args, _username, _token, **_kwargs):
+                kaggle_service._validated_kaggle_args(args)
                 calls.append(args)
                 out_dir = Path(args[args.index("-p") + 1])
                 out_dir.mkdir(parents=True, exist_ok=True)
@@ -1138,6 +1139,18 @@ class DeployContractsTest(unittest.TestCase):
         self.assertIn("hyperframes_status", pattern)
         self.assertIn("log_render", pattern)
         self.assertIn("video_frame_samples", pattern)
+
+    def test_kaggle_arg_validator_accepts_output_file_pattern(self) -> None:
+        pattern = (
+            r"(final_master\.mp4|video_broll_base\.mp4|base_broll\.mp4|"
+            r"metadata[/\\]video_frame_samples\.json|video_frame_samples[/\\].*\.jpg)$"
+        )
+
+        args = kaggle_service._validated_kaggle_args(["kernels", "output", "user/kernel", "--file-pattern", pattern])
+
+        self.assertEqual(args[-1], pattern)
+        with self.assertRaisesRegex(RuntimeError, "Argumento invalido"):
+            kaggle_service._validated_kaggle_args(["kernels", "output", "user/kernel;rm"])
 
     def test_push_kernel_uses_actual_slug_from_push_output(self) -> None:
         original_run = kaggle_service._run

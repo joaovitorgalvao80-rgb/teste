@@ -1483,7 +1483,13 @@ def run_auto_select_job(
                 review_round=int(project.get("review_round") or 0),
             )
         if chosen <= 0:
-            raise RuntimeError("Nenhuma cena com candidatos pendentes para selecionar.")
+            db.set_project_status(project_id, "reviewing")
+            db.finish_job(
+                job_id,
+                "Nenhum take confiavel para selecao automatica; revise manualmente",
+                {"auto_selected": 0},
+            )
+            return
         db.set_project_status(project_id, "reviewing")
         db.finish_job(job_id, f"{chosen} takes selecionados", {"auto_selected": chosen})
     except JobCanceled:

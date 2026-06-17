@@ -31,7 +31,10 @@ MONTADOR_FILENAME = "montador.py"
 BASE_VIDEO_NAME = "video_broll_base.mp4"
 BASE_VIDEO_ALIAS = "base_broll.mp4"
 MASTER_VIDEO_NAME = "final_master.mp4"
-KAGGLE_ARG_PATTERN = re.compile(r"^[\w./:@+\\\-=,]+$")
+# Kaggle CLI args are passed as a subprocess list, not through a shell. Keep
+# whitespace/control chars blocked, but allow the regex punctuation required by
+# `kernels output --file-pattern` so completed renders can be pulled locally.
+KAGGLE_ARG_PATTERN = re.compile(r"^[\w./:@+\\\-=,()[\]|$*?]+$")
 
 
 def _slug(text: str, max_len: int = 36) -> str:

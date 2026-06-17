@@ -758,6 +758,38 @@ class VisionJobTest(unittest.TestCase):
         self.assertEqual(chosen, 0)
         self.assertEqual(db.get_asset(asset["id"])["state"], "pending")
 
+    def test_auto_select_job_completes_when_candidates_are_visible_but_not_confident(self) -> None:
+        user_id = db.create_user("weak-auto-job", "p")
+        project_id = db.create_project(user_id, "weak auto", "x", {"resolution": "1920x1080"})
+        db.replace_scenes(project_id, [{
+            "scene_id": "scene_001", "idx": 1, "start_time": 0, "end_time": 4, "duration": 4,
+            "narration": "mosquito na agua parada",
+            "visual_goal": "mosquito larvae in standing water bucket",
+            "keywords": ["mosquito larvae water"],
+            "must_show": ["mosquito", "water"],
+            "screen_mode": "broll",
+        }])
+        scene = db.list_scenes(project_id)[0]
+        db.add_assets(scene["id"], [{
+            "source": "pexels",
+            "asset_type": "image",
+            "download_url": "https://example.com/weak.jpg",
+            "preview_url": "https://example.com/weak.jpg",
+            "width": 1920,
+            "height": 1080,
+            "keyword": "mosquito larvae water",
+            "provider_payload": {"tags": "duck bird lake water"},
+        }])
+        job_id = db.create_job(user_id, "auto_select", project_id, "Selecao automatica na fila")
+
+        app_shared.run_auto_select_job(job_id, project_id, user_id, "", "")
+
+        job = db.get_job(job_id, user_id)
+        self.assertEqual(job["status"], "complete")
+        self.assertIn("revise manualmente", job["message"])
+        self.assertEqual(db.get_project(project_id, user_id)["status"], "reviewing")
+        self.assertEqual(db.list_assets(scene["id"])[0]["state"], "pending")
+
     def test_preview_page_shows_chosen_take_and_warnings(self) -> None:
         from unittest.mock import patch
         from fastapi.testclient import TestClient
