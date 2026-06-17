@@ -23,6 +23,7 @@ FIRECRAWL_SEARCH_URL = "https://api.firecrawl.dev/v2/search"
 FIRECRAWL_SCRAPE_URL = "https://api.firecrawl.dev/v2/scrape"
 DEFAULT_TIMEOUT = 25
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
+CONTENT_TYPE_JSON = "application/json"
 
 
 def _env_enabled(name: str, default: str = "1") -> bool:
@@ -189,6 +190,24 @@ def _dedupe_assets(assets: Iterable[dict], seen_urls: set[str], limit: int) -> l
     return out
 
 
+def _split_firecrawl_results(root) -> tuple[list[dict], list[dict]]:
+    image_items: list[dict] = []
+    page_items: list[dict] = []
+    if isinstance(root, dict):
+        image_items.extend(root.get("images") or root.get("imageResults") or [])
+        page_items.extend(root.get("web") or root.get("results") or [])
+    elif isinstance(root, list):
+        page_items.extend(root)
+    return image_items, page_items
+
+
+def _page_image_item(item: dict) -> Optional[dict]:
+    image = item.get("imageUrl") or item.get("image_url") or item.get("image")
+    if not image:
+        return None
+    return {**item, "imageUrl": image}
+
+
 def _firecrawl_search(query: str, key: str, limit: int) -> tuple[list[dict], list[dict]]:
     if not key:
         return [], []
@@ -201,23 +220,17 @@ def _firecrawl_search(query: str, key: str, limit: int) -> tuple[list[dict], lis
         "firecrawl",
         "search",
         FIRECRAWL_SEARCH_URL,
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        headers={"Authorization": f"Bearer {key}", "Content-Type": CONTENT_TYPE_JSON},
         payload=payload,
     )
     root = data.get("data") or data.get("results") or data
-    image_items: list[dict] = []
-    page_items: list[dict] = []
-    if isinstance(root, dict):
-        image_items.extend(root.get("images") or root.get("imageResults") or [])
-        page_items.extend(root.get("web") or root.get("results") or [])
-    elif isinstance(root, list):
-        page_items.extend(root)
-    for item in list(page_items):
+    image_items, page_items = _split_firecrawl_results(root)
+    for item in page_items:
         if not isinstance(item, dict):
             continue
-        image = item.get("imageUrl") or item.get("image_url") or item.get("image")
-        if image:
-            image_items.append({**item, "imageUrl": image})
+        image_item = _page_image_item(item)
+        if image_item:
+            image_items.append(image_item)
     return [i for i in image_items if isinstance(i, dict)], [p for p in page_items if isinstance(p, dict)]
 
 
@@ -229,7 +242,7 @@ def _firecrawl_scrape_images(url: str, key: str) -> list[dict]:
         "firecrawl",
         "scrape",
         FIRECRAWL_SCRAPE_URL,
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        headers={"Authorization": f"Bearer {key}", "Content-Type": CONTENT_TYPE_JSON},
         payload=payload,
     )
     root = data.get("data") if isinstance(data, dict) else {}
@@ -263,11 +276,95 @@ def _exa_search(query: str, key: str, limit: int) -> list[dict]:
         "exa",
         "search",
         EXA_SEARCH_URL,
-        headers={"x-api-key": key, "Content-Type": "application/json"},
+        headers={"x-api-key": key, "Content-Type": CONTENT_TYPE_JSON},
         payload=payload,
     )
     results = data.get("results") if isinstance(data, dict) else []
     return [r for r in (results or []) if isinstance(r, dict)]
+
+
+def _keyword_for_scene(scene: dict, query: str) -> str:
+    keywords = [str(k).strip() for k in (scene.get("keywords") or []) if str(k).strip()]
+    return keywords[0] if keywords else query
+
+
+def _assets_from_firecrawl_images(items: list[dict], keyword: str) -> list[dict]:
+    candidates: list[dict] = []
+    for item in items:
+        image = item.get("imageUrl") or item.get("image_url") or item.get("image")
+        asset = _asset_from_image(
+            image_url=image,
+            page_url=item.get("url") or item.get("pageUrl") or "",
+            keyword=keyword,
+            provider="firecrawl",
+            discovery_provider="firecrawl",
+            payload=item,
+            confidence=0.62,
+        )
+        if asset:
+            candidates.append(asset)
+    return candidates
+
+
+def _assets_from_exa_image_pages(items: list[dict], keyword: str) -> list[dict]:
+    candidates: list[dict] = []
+    for item in items:
+        url = item.get("url") or ""
+        if not _looks_like_image(url):
+            continue
+        asset = _asset_from_image(
+            image_url=url,
+            page_url=url,
+            keyword=keyword,
+            provider="exa",
+            discovery_provider="exa",
+            payload=item,
+            confidence=0.48,
+        )
+        if asset:
+            candidates.append(asset)
+    return candidates
+
+
+def _unique_page_urls(items: list[dict]) -> list[str]:
+    pages: list[str] = []
+    for item in items:
+        url = item.get("url") if isinstance(item, dict) else ""
+        if url and _is_http_url(url) and url not in pages:
+            pages.append(url)
+    return pages
+
+
+def _assets_from_scraped_pages(
+    pages: list[str],
+    exa_pages: list[dict],
+    firecrawl_key: str,
+    keyword: str,
+    limit: int,
+    existing_count: int,
+) -> list[dict]:
+    candidates: list[dict] = []
+    exa_urls = {str(p.get("url") or "") for p in exa_pages}
+    scrape_max = _env_int("FIRECRAWL_SCRAPE_MAX_PAGES", 3, 0, 8)
+    for page_url in pages[:scrape_max]:
+        if existing_count + len(candidates) >= limit:
+            break
+        for item in _firecrawl_scrape_images(page_url, firecrawl_key):
+            image = item.get("imageUrl") or item.get("image_url")
+            asset = _asset_from_image(
+                image_url=image,
+                page_url=page_url,
+                keyword=keyword,
+                provider="firecrawl",
+                discovery_provider="exa+firecrawl" if page_url in exa_urls else "firecrawl",
+                payload=item,
+                scrape_url=page_url,
+                scrape_status="scraped",
+                confidence=0.58,
+            )
+            if asset:
+                candidates.append(asset)
+    return candidates
 
 
 def discover_scene_assets(
@@ -290,63 +387,16 @@ def discover_scene_assets(
         return []
     seen = set(existing_urls or set())
     limit = min(max(int(limit or 1), 1), _env_int("DEEP_RESEARCH_MAX_RESULTS_PER_SCENE", 8, 1, 20))
-    keyword = (scene.get("keywords") or [query])[0]
+    keyword = _keyword_for_scene(scene, query)
 
     candidates: list[dict] = []
     fire_images, fire_pages = _firecrawl_search(query, firecrawl_key, limit)
-    for item in fire_images:
-        image = item.get("imageUrl") or item.get("image_url") or item.get("image")
-        asset = _asset_from_image(
-            image_url=image,
-            page_url=item.get("url") or item.get("pageUrl") or "",
-            keyword=keyword,
-            provider="firecrawl",
-            discovery_provider="firecrawl",
-            payload=item,
-            confidence=0.62,
-        )
-        if asset:
-            candidates.append(asset)
+    candidates.extend(_assets_from_firecrawl_images(fire_images, keyword))
 
     exa_pages = _exa_search(query, exa_key, limit) if len(candidates) < limit else []
-    for item in exa_pages:
-        url = item.get("url") or ""
-        if _looks_like_image(url):
-            asset = _asset_from_image(
-                image_url=url,
-                page_url=url,
-                keyword=keyword,
-                provider="exa",
-                discovery_provider="exa",
-                payload=item,
-                confidence=0.48,
-            )
-            if asset:
-                candidates.append(asset)
+    candidates.extend(_assets_from_exa_image_pages(exa_pages, keyword))
 
-    scrape_max = _env_int("FIRECRAWL_SCRAPE_MAX_PAGES", 3, 0, 8)
-    pages = []
-    for item in [*exa_pages, *fire_pages]:
-        url = item.get("url") if isinstance(item, dict) else ""
-        if url and _is_http_url(url) and url not in pages:
-            pages.append(url)
-    for page_url in pages[:scrape_max]:
-        if len(candidates) >= limit:
-            break
-        for item in _firecrawl_scrape_images(page_url, firecrawl_key):
-            image = item.get("imageUrl") or item.get("image_url")
-            asset = _asset_from_image(
-                image_url=image,
-                page_url=page_url,
-                keyword=keyword,
-                provider="firecrawl",
-                discovery_provider="exa+firecrawl" if page_url in [p.get("url") for p in exa_pages] else "firecrawl",
-                payload=item,
-                scrape_url=page_url,
-                scrape_status="scraped",
-                confidence=0.58,
-            )
-            if asset:
-                candidates.append(asset)
+    pages = _unique_page_urls([*exa_pages, *fire_pages])
+    candidates.extend(_assets_from_scraped_pages(pages, exa_pages, firecrawl_key, keyword, limit, len(candidates)))
 
     return _dedupe_assets(candidates, seen, limit)

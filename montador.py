@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Optional
 
 GUIA_VISUAL_NAME = "guia_visual.json"
+ALLOWED_TOOLS = {"ffmpeg", "ffprobe"}
 
 
 # ----------------------------------------------------------------------------
@@ -59,8 +60,19 @@ class Logger:
 # ----------------------------------------------------------------------------
 # FFmpeg helpers
 # ----------------------------------------------------------------------------
+def _validated_cmd(cmd: list[str]) -> list[str]:
+    if not cmd or not all(isinstance(part, str) and "\x00" not in part for part in cmd):
+        raise RuntimeError("Comando invalido para render.")
+    tool = Path(cmd[0]).name.lower()
+    if tool not in ALLOWED_TOOLS:
+        raise RuntimeError(f"Ferramenta nao permitida: {tool}")
+    return list(cmd)
+
+
 def run(cmd: list[str], timeout: Optional[int] = None, cwd: Optional[Path] = None) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=str(cwd) if cwd else None)
+    safe_cmd = _validated_cmd(cmd)
+    safe_cwd = str(cwd.resolve()) if cwd else None
+    return subprocess.run(safe_cmd, capture_output=True, text=True, timeout=timeout, cwd=safe_cwd)
 
 
 def require_tool(name: str) -> None:

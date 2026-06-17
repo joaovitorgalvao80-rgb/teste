@@ -31,6 +31,7 @@ MONTADOR_FILENAME = "montador.py"
 BASE_VIDEO_NAME = "video_broll_base.mp4"
 BASE_VIDEO_ALIAS = "base_broll.mp4"
 MASTER_VIDEO_NAME = "final_master.mp4"
+KAGGLE_ARG_PATTERN = re.compile(r"^[\w./:@+\\\-=,]+$")
 
 
 def _slug(text: str, max_len: int = 36) -> str:
@@ -172,13 +173,23 @@ def kernel_status_hint(k_slug: str, username: str, token: str) -> str:
     return ((result.stdout or "") + (result.stderr or "")).strip()
 
 
+def _validated_kaggle_args(args: list[str]) -> list[str]:
+    safe_args: list[str] = []
+    for arg in args:
+        value = str(arg)
+        if not value or "\x00" in value or not KAGGLE_ARG_PATTERN.match(value):
+            raise RuntimeError("Argumento invalido para Kaggle CLI.")
+        safe_args.append(value)
+    return safe_args
+
+
 def _run(args: list[str], username: str, token: str, **kwargs) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["KAGGLE_USERNAME"] = username
     env["KAGGLE_KEY"] = token
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
-    cmd = [sys.executable, "-m", "kaggle"] + args
+    cmd = [sys.executable, "-m", "kaggle"] + _validated_kaggle_args(args)
     start = time.monotonic()
     operation = " ".join(args[:2]) if args else "cli"
     try:

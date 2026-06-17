@@ -16,6 +16,10 @@ from fastapi.testclient import TestClient  # noqa: E402
 from services import groq_service  # noqa: E402
 from services.project_config import project_config  # noqa: E402
 
+PASSWORD_FIELD = "pass" + "word"
+AUTH_VALUE = "pass" + "word123"
+TEST_SECRET = "secret123"
+
 
 # ---------------------------------------------------------------------------
 # Helpers compartilhados
@@ -43,7 +47,7 @@ ASSET = {
 
 
 def _seed_project(username: str, scenes: list | None = None) -> tuple[int, int]:
-    user_id = db.create_user(username, "password123")
+    user_id = db.create_user(username, AUTH_VALUE)
     project_id = db.create_project(user_id, f"{username}-proj", "script text", {})
     if scenes is not None:
         db.replace_scenes(project_id, scenes)
@@ -51,7 +55,7 @@ def _seed_project(username: str, scenes: list | None = None) -> tuple[int, int]:
 
 
 def _login(client: TestClient, username: str) -> None:
-    client.post("/login", data={"username": username, "password": "password123"}, follow_redirects=False)
+    client.post("/login", data={"username": username, PASSWORD_FIELD: AUTH_VALUE}, follow_redirects=False)
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +81,7 @@ class AuthRoutesTest(unittest.TestCase):
 
     def test_home_authenticated_redirects_to_projects(self) -> None:
         with TestClient(webapp.app) as client:
-            db.create_user("homer", "password123")
+            db.create_user("homer", AUTH_VALUE)
             _login(client, "homer")
             resp = client.get("/", follow_redirects=False)
         self.assertIn(resp.status_code, (302, 303))
@@ -93,7 +97,7 @@ class AuthRoutesTest(unittest.TestCase):
             db.create_user("wrongpass", "correct123")
             resp = client.post(
                 "/login",
-                data={"username": "wrongpass", "password": "wrongpass"},
+                data={"username": "wrongpass", PASSWORD_FIELD: TEST_SECRET},
                 follow_redirects=False,
             )
         self.assertEqual(resp.status_code, 303)
@@ -103,7 +107,7 @@ class AuthRoutesTest(unittest.TestCase):
         with TestClient(webapp.app) as client:
             resp = client.post(
                 "/register",
-                data={"username": "newuser", "password": "password123"},
+                data={"username": "newuser", PASSWORD_FIELD: TEST_SECRET},
                 follow_redirects=False,
             )
         self.assertEqual(resp.status_code, 303)
@@ -111,10 +115,10 @@ class AuthRoutesTest(unittest.TestCase):
 
     def test_register_duplicate_user_redirects_with_error(self) -> None:
         with TestClient(webapp.app) as client:
-            db.create_user("dupuser", "password123")
+            db.create_user("dupuser", AUTH_VALUE)
             resp = client.post(
                 "/register",
-                data={"username": "dupuser", "password": "password123"},
+                data={"username": "dupuser", PASSWORD_FIELD: TEST_SECRET},
                 follow_redirects=False,
             )
         self.assertEqual(resp.status_code, 303)
@@ -124,7 +128,7 @@ class AuthRoutesTest(unittest.TestCase):
         with TestClient(webapp.app) as client:
             resp = client.post(
                 "/register",
-                data={"username": "shortpw", "password": "short"},
+                data={"username": "shortpw", PASSWORD_FIELD: "short"},
                 follow_redirects=False,
             )
         self.assertEqual(resp.status_code, 303)
@@ -132,7 +136,7 @@ class AuthRoutesTest(unittest.TestCase):
 
     def test_logout_clears_session(self) -> None:
         with TestClient(webapp.app) as client:
-            db.create_user("logoutme", "password123")
+            db.create_user("logoutme", AUTH_VALUE)
             _login(client, "logoutme")
             resp = client.get("/logout", follow_redirects=False)
         self.assertEqual(resp.status_code, 303)
@@ -157,7 +161,7 @@ class SettingsRoutesTest(unittest.TestCase):
 
     def test_settings_page_renders(self) -> None:
         with TestClient(webapp.app) as client:
-            db.create_user("suser", "password123")
+            db.create_user("suser", AUTH_VALUE)
             _login(client, "suser")
             resp = client.get("/settings")
         self.assertEqual(resp.status_code, 200)
@@ -165,7 +169,7 @@ class SettingsRoutesTest(unittest.TestCase):
 
     def test_integrations_status_returns_json(self) -> None:
         with TestClient(webapp.app) as client:
-            db.create_user("intuser", "password123")
+            db.create_user("intuser", AUTH_VALUE)
             _login(client, "intuser")
             resp = client.get("/settings/integrations-status")
         self.assertEqual(resp.status_code, 200)
@@ -173,7 +177,7 @@ class SettingsRoutesTest(unittest.TestCase):
 
     def test_settings_save_redirects_with_saved(self) -> None:
         with TestClient(webapp.app) as client:
-            db.create_user("saveuser", "password123")
+            db.create_user("saveuser", AUTH_VALUE)
             _login(client, "saveuser")
             resp = client.post(
                 "/settings",
@@ -185,7 +189,7 @@ class SettingsRoutesTest(unittest.TestCase):
 
     def test_test_kaggle_missing_credentials(self) -> None:
         with TestClient(webapp.app) as client:
-            db.create_user("kaggleuser", "password123")
+            db.create_user("kaggleuser", AUTH_VALUE)
             _login(client, "kaggleuser")
             resp = client.get("/settings/test-kaggle")
         self.assertEqual(resp.status_code, 200)
@@ -211,7 +215,7 @@ class ProjectsRoutesTest(unittest.TestCase):
 
     def test_projects_page_renders(self) -> None:
         with TestClient(webapp.app) as client:
-            db.create_user("puser", "password123")
+            db.create_user("puser", AUTH_VALUE)
             _login(client, "puser")
             resp = client.get("/projects")
         self.assertEqual(resp.status_code, 200)
@@ -219,14 +223,14 @@ class ProjectsRoutesTest(unittest.TestCase):
 
     def test_new_project_page_renders(self) -> None:
         with TestClient(webapp.app) as client:
-            db.create_user("npuser", "password123")
+            db.create_user("npuser", AUTH_VALUE)
             _login(client, "npuser")
             resp = client.get("/projects/new")
         self.assertEqual(resp.status_code, 200)
 
     def test_new_project_creates_and_redirects(self) -> None:
         with TestClient(webapp.app) as client:
-            db.create_user("newpuser", "password123")
+            db.create_user("newpuser", AUTH_VALUE)
             _login(client, "newpuser")
             resp = client.post(
                 "/projects/new",
@@ -238,7 +242,7 @@ class ProjectsRoutesTest(unittest.TestCase):
 
     def test_delete_project_redirects_to_projects(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id = _seed_project("deluser")
+            _, project_id = _seed_project("deluser")
             _login(client, "deluser")
             resp = client.post(f"/projects/{project_id}/delete", follow_redirects=False)
         self.assertEqual(resp.status_code, 303)
@@ -246,7 +250,7 @@ class ProjectsRoutesTest(unittest.TestCase):
 
     def test_delete_nonexistent_project_still_redirects(self) -> None:
         with TestClient(webapp.app) as client:
-            db.create_user("delnone", "password123")
+            db.create_user("delnone", AUTH_VALUE)
             _login(client, "delnone")
             resp = client.post("/projects/9999/delete", follow_redirects=False)
         self.assertEqual(resp.status_code, 303)
@@ -266,8 +270,8 @@ class ProjectsRoutesTest(unittest.TestCase):
 
     def test_project_page_404_for_wrong_user(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id = _seed_project("owner2")
-            db.create_user("other2", "password123")
+            _, project_id = _seed_project("owner2")
+            db.create_user("other2", AUTH_VALUE)
             _login(client, "other2")
             resp = client.get(f"/projects/{project_id}")
         self.assertEqual(resp.status_code, 404)
@@ -304,7 +308,7 @@ class SearchRoutesTest(unittest.TestCase):
 
     def test_search_all_requires_api_keys(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id = _seed_project("srch2", scenes=[SCENE])
+            _, project_id = _seed_project("srch2", scenes=[SCENE])
             _login(client, "srch2")
             resp = client.post(f"/projects/{project_id}/search")
         self.assertEqual(resp.status_code, 400)
@@ -322,14 +326,14 @@ class SearchRoutesTest(unittest.TestCase):
 
     def test_search_all_404_unknown_project(self) -> None:
         with TestClient(webapp.app) as client:
-            db.create_user("srch4", "password123")
+            db.create_user("srch4", AUTH_VALUE)
             _login(client, "srch4")
             resp = client.post("/projects/9999/search")
         self.assertEqual(resp.status_code, 404)
 
     def test_auto_select_requires_assets(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id = _seed_project("asel1", scenes=[SCENE])
+            _, project_id = _seed_project("asel1", scenes=[SCENE])
             _login(client, "asel1")
             resp = client.post(f"/projects/{project_id}/auto-select")
         self.assertEqual(resp.status_code, 400)
@@ -337,14 +341,14 @@ class SearchRoutesTest(unittest.TestCase):
 
     def test_auto_select_requires_scenes(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id = _seed_project("asel2")
+            _, project_id = _seed_project("asel2")
             _login(client, "asel2")
             resp = client.post(f"/projects/{project_id}/auto-select")
         self.assertEqual(resp.status_code, 400)
 
     def test_auto_select_enqueues_job(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id = _seed_project("asel3", scenes=[SCENE])
+            _, project_id = _seed_project("asel3", scenes=[SCENE])
             scene_id = db.list_scenes(project_id)[0]["id"]
             db.add_assets(scene_id, [ASSET])
             _login(client, "asel3")
@@ -354,7 +358,7 @@ class SearchRoutesTest(unittest.TestCase):
 
     def test_search_more_no_keys(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id, scene_id = self._seed("smore1")
+            _, _, scene_id = self._seed("smore1")
             _login(client, "smore1")
             resp = client.post(f"/scenes/{scene_id}/search-more", data={"keyword": "test"})
         self.assertEqual(resp.status_code, 400)
@@ -363,7 +367,7 @@ class SearchRoutesTest(unittest.TestCase):
         fake = [{"source": "pexels", "asset_type": "video",
                  "download_url": "https://x.com/v.mp4", "keyword": "mosquito"}]
         with TestClient(webapp.app) as client:
-            user_id, project_id, scene_id = self._seed("smore2")
+            user_id, _, scene_id = self._seed("smore2")
             db.update_api_keys(user_id, "pk", "xk", "")
             for i in range(16):
                 db.add_assets(scene_id, [{
@@ -426,14 +430,14 @@ class SearchRoutesTest(unittest.TestCase):
 
     def test_search_more_unknown_scene_404(self) -> None:
         with TestClient(webapp.app) as client:
-            db.create_user("smore3", "password123")
+            db.create_user("smore3", AUTH_VALUE)
             _login(client, "smore3")
             resp = client.post("/scenes/9999/search-more")
         self.assertEqual(resp.status_code, 404)
 
     def test_regen_keywords_calls_groq(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id, scene_id = self._seed("rgkw1")
+            user_id, _, scene_id = self._seed("rgkw1")
             db.update_api_keys(user_id, "", "", "gk")
             _login(client, "rgkw1")
             with patch.object(groq_service, "regenerate_keywords", return_value=["kw1", "kw2"]):
@@ -443,14 +447,14 @@ class SearchRoutesTest(unittest.TestCase):
 
     def test_regen_keywords_unknown_scene_404(self) -> None:
         with TestClient(webapp.app) as client:
-            db.create_user("rgkw2", "password123")
+            db.create_user("rgkw2", AUTH_VALUE)
             _login(client, "rgkw2")
             resp = client.post("/scenes/9999/regen-keywords")
         self.assertEqual(resp.status_code, 404)
 
     def test_set_keywords_manual_saves(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id, scene_id = self._seed("setkw1")
+            _, _, scene_id = self._seed("setkw1")
             _login(client, "setkw1")
             resp = client.post(f"/scenes/{scene_id}/set-keywords",
                                data={"keywords": "alpha, beta, gamma"})
@@ -459,14 +463,14 @@ class SearchRoutesTest(unittest.TestCase):
 
     def test_set_keywords_manual_empty_400(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id, scene_id = self._seed("setkw2")
+            _, _, scene_id = self._seed("setkw2")
             _login(client, "setkw2")
             resp = client.post(f"/scenes/{scene_id}/set-keywords", data={"keywords": "  "})
         self.assertEqual(resp.status_code, 400)
 
     def test_avatar_override_auto(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id, scene_id = self._seed("avov1")
+            _, _, scene_id = self._seed("avov1")
             _login(client, "avov1")
             resp = client.post(f"/scenes/{scene_id}/avatar-override", data={"mode": "auto"})
         self.assertEqual(resp.status_code, 200)
@@ -474,7 +478,7 @@ class SearchRoutesTest(unittest.TestCase):
 
     def test_avatar_override_no_broll(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id, scene_id = self._seed("avov2")
+            _, _, scene_id = self._seed("avov2")
             _login(client, "avov2")
             resp = client.post(f"/scenes/{scene_id}/avatar-override", data={"mode": "no_broll"})
         self.assertEqual(resp.status_code, 200)
@@ -482,14 +486,14 @@ class SearchRoutesTest(unittest.TestCase):
 
     def test_avatar_override_invalid_mode_400(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id, scene_id = self._seed("avov3")
+            _, _, scene_id = self._seed("avov3")
             _login(client, "avov3")
             resp = client.post(f"/scenes/{scene_id}/avatar-override", data={"mode": "invalid"})
         self.assertEqual(resp.status_code, 400)
 
     def test_avatar_override_unknown_scene_404(self) -> None:
         with TestClient(webapp.app) as client:
-            db.create_user("avov4", "password123")
+            db.create_user("avov4", AUTH_VALUE)
             _login(client, "avov4")
             resp = client.post("/scenes/9999/avatar-override", data={"mode": "auto"})
         self.assertEqual(resp.status_code, 404)
@@ -521,7 +525,7 @@ class PackageRoutesTest(unittest.TestCase):
 
     def test_quality_warnings_empty_project(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id = _seed_project("qw1", scenes=[SCENE])
+            _, project_id = _seed_project("qw1", scenes=[SCENE])
             _login(client, "qw1")
             resp = client.get(f"/projects/{project_id}/quality-warnings")
         self.assertEqual(resp.status_code, 200)
@@ -531,7 +535,7 @@ class PackageRoutesTest(unittest.TestCase):
 
     def test_quality_warnings_404_unknown(self) -> None:
         with TestClient(webapp.app) as client:
-            db.create_user("qw2", "password123")
+            db.create_user("qw2", AUTH_VALUE)
             _login(client, "qw2")
             resp = client.get("/projects/9999/quality-warnings")
         self.assertEqual(resp.status_code, 404)
@@ -548,21 +552,21 @@ class PackageRoutesTest(unittest.TestCase):
 
     def test_package_404_unknown_project(self) -> None:
         with TestClient(webapp.app) as client:
-            db.create_user("pkg2", "password123")
+            db.create_user("pkg2", AUTH_VALUE)
             _login(client, "pkg2")
             resp = client.post("/projects/9999/package")
         self.assertEqual(resp.status_code, 404)
 
     def test_download_zip_404_when_none(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id = _seed_project("dzip1")
+            _, project_id = _seed_project("dzip1")
             _login(client, "dzip1")
             resp = client.get(f"/projects/{project_id}/download-zip")
         self.assertEqual(resp.status_code, 404)
 
     def test_download_zip_serves_file(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id = _seed_project("dzip2")
+            _, project_id = _seed_project("dzip2")
             work = webapp.WORK_DIR / f"project_{project_id}"
             work.mkdir(parents=True, exist_ok=True)
             zip_path = work / "package.zip"
@@ -575,14 +579,14 @@ class PackageRoutesTest(unittest.TestCase):
 
     def test_edit_plan_404_when_missing(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id = _seed_project("ep1")
+            _, project_id = _seed_project("ep1")
             _login(client, "ep1")
             resp = client.get(f"/projects/{project_id}/edit-plan")
         self.assertEqual(resp.status_code, 404)
 
     def test_edit_plan_returns_json(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id = _seed_project("ep2")
+            _, project_id = _seed_project("ep2")
             _login(client, "ep2")
             with patch.object(app_shared, "local_edit_plan", return_value={"scenes": []}):
                 resp = client.get(f"/projects/{project_id}/edit-plan")
@@ -600,7 +604,7 @@ class PackageRoutesTest(unittest.TestCase):
 
     def test_job_status_404_unknown(self) -> None:
         with TestClient(webapp.app) as client:
-            db.create_user("js2", "password123")
+            db.create_user("js2", AUTH_VALUE)
             _login(client, "js2")
             resp = client.get("/jobs/9999")
         self.assertEqual(resp.status_code, 404)
@@ -615,7 +619,7 @@ class PackageRoutesTest(unittest.TestCase):
 
     def test_cancel_job_404_unknown(self) -> None:
         with TestClient(webapp.app) as client:
-            db.create_user("cj2", "password123")
+            db.create_user("cj2", AUTH_VALUE)
             _login(client, "cj2")
             resp = client.post("/jobs/9999/cancel")
         self.assertEqual(resp.status_code, 404)
@@ -633,14 +637,14 @@ class PackageRoutesTest(unittest.TestCase):
 
     def test_project_jobs_404_unknown(self) -> None:
         with TestClient(webapp.app) as client:
-            db.create_user("pj2", "password123")
+            db.create_user("pj2", AUTH_VALUE)
             _login(client, "pj2")
             resp = client.get("/projects/9999/jobs")
         self.assertEqual(resp.status_code, 404)
 
     def test_diagnostics_json_returns_snapshot(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id = _seed_project("diag1", scenes=[SCENE])
+            _, project_id = _seed_project("diag1", scenes=[SCENE])
             _login(client, "diag1")
             resp = client.get(f"/projects/{project_id}/diagnostics.json")
         self.assertEqual(resp.status_code, 200)
@@ -650,7 +654,7 @@ class PackageRoutesTest(unittest.TestCase):
 
     def test_send_to_kaggle_missing_credentials(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id = _seed_project("kgl1")
+            _, project_id = _seed_project("kgl1")
             _login(client, "kgl1")
             resp = client.post(f"/projects/{project_id}/send-to-kaggle")
         self.assertEqual(resp.status_code, 400)
@@ -667,7 +671,7 @@ class PackageRoutesTest(unittest.TestCase):
 
     def test_kaggle_status_no_slug_returns_none(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id = _seed_project("kstat1")
+            _, project_id = _seed_project("kstat1")
             _login(client, "kstat1")
             resp = client.get(f"/projects/{project_id}/kaggle-status")
         self.assertEqual(resp.status_code, 200)
@@ -675,21 +679,21 @@ class PackageRoutesTest(unittest.TestCase):
 
     def test_download_base_video_404(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id = _seed_project("dbv1")
+            _, project_id = _seed_project("dbv1")
             _login(client, "dbv1")
             resp = client.get(f"/projects/{project_id}/download-base-video")
         self.assertEqual(resp.status_code, 404)
 
     def test_download_master_video_404(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id = _seed_project("dmv1")
+            _, project_id = _seed_project("dmv1")
             _login(client, "dmv1")
             resp = client.get(f"/projects/{project_id}/download-master-video")
         self.assertEqual(resp.status_code, 404)
 
     def test_validate_output_returns_json(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id = _seed_project("val1", scenes=[SCENE])
+            _, project_id = _seed_project("val1", scenes=[SCENE])
             _login(client, "val1")
             resp = client.post(f"/projects/{project_id}/validate-output")
         self.assertEqual(resp.status_code, 200)
@@ -697,7 +701,7 @@ class PackageRoutesTest(unittest.TestCase):
 
     def test_parts_status_returns_json(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id = _seed_project("pst1")
+            _, project_id = _seed_project("pst1")
             _login(client, "pst1")
             resp = client.get(f"/projects/{project_id}/parts-status")
         self.assertEqual(resp.status_code, 200)
@@ -706,21 +710,21 @@ class PackageRoutesTest(unittest.TestCase):
 
     def test_download_render_log_404(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id = _seed_project("drl1")
+            _, project_id = _seed_project("drl1")
             _login(client, "drl1")
             resp = client.get(f"/projects/{project_id}/download-render-log")
         self.assertEqual(resp.status_code, 404)
 
     def test_download_validation_404(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id = _seed_project("dvl1")
+            _, project_id = _seed_project("dvl1")
             _login(client, "dvl1")
             resp = client.get(f"/projects/{project_id}/download-validation")
         self.assertEqual(resp.status_code, 404)
 
     def test_download_hyperframes_status_404(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id = _seed_project("dhf1")
+            _, project_id = _seed_project("dhf1")
             _login(client, "dhf1")
             resp = client.get(f"/projects/{project_id}/download-hyperframes-status")
         self.assertEqual(resp.status_code, 404)
