@@ -47,6 +47,38 @@ from app_shared import (
 router = APIRouter()
 
 
+def _current_part_for_gallery(parts: list[dict], scenes: list[dict]) -> Optional[int]:
+    if not parts:
+        return None
+
+    assets_by_part: dict[int, int] = {}
+    for scene in scenes:
+        part_idx = int(scene.get("part") or 1)
+        assets_by_part[part_idx] = assets_by_part.get(part_idx, 0) + len(scene.get("assets") or [])
+
+    visible_statuses = {"searching", "searched", "reviewing"}
+    return next(
+        (
+            p["part_idx"]
+            for p in parts
+            if p.get("curation_status") in visible_statuses
+            and assets_by_part.get(p["part_idx"], 0) > 0
+        ),
+        next(
+            (
+                p["part_idx"]
+                for p in parts
+                if p.get("curation_status") != "curated"
+                and assets_by_part.get(p["part_idx"], 0) > 0
+            ),
+            next(
+                (p["part_idx"] for p in parts if p.get("curation_status") != "curated"),
+                parts[-1]["part_idx"],
+            ),
+        ),
+    )
+
+
 @router.get("/projects", response_class=HTMLResponse, responses=ERROR_RESPONSES)
 def projects_page(request: Request):
     user = require_user(request)
@@ -179,10 +211,7 @@ def project_page(request: Request, project_id: int):
     parts = db.list_parts(project_id) if config.get("long_mode") else []
     current_part = None
     if parts:
-        current_part = next(
-            (p["part_idx"] for p in parts if p.get("curation_status") != "curated"),
-            parts[-1]["part_idx"],
-        )
+        current_part = _current_part_for_gallery(parts, scenes)
         gallery_scenes = [s for s in scenes if int(s.get("part") or 1) == current_part]
     else:
         gallery_scenes = scenes

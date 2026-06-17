@@ -563,7 +563,7 @@ def _good_context_count(scene: Optional[dict], assets: list[dict]) -> int:
 
 
 def _sort_and_trim_by_context(scene: Optional[dict], assets: list[dict], per_keyword: int) -> list[dict]:
-    """Promote context-matching candidates and hide obvious false positives.
+    """Promote context-matching candidates without hiding the manual pool.
 
     Stock APIs often return many pretty but unrelated hits for a keyword. When
     we have at least one plausible candidate, keep the pool focused; when every
@@ -584,8 +584,6 @@ def _sort_and_trim_by_context(scene: Optional[dict], assets: list[dict], per_key
     if accepted:
         weak_clean = [row for row in annotated if not row[0] and not row[2]]
         keep = accepted + weak_clean[:max(0, max(4, per_keyword) - len(accepted))]
-    elif scoring.requires_visual_evidence(scene):
-        return []
     else:
         keep = annotated
 

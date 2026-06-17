@@ -268,6 +268,33 @@ class ProjectsRoutesTest(unittest.TestCase):
         cfg = project_config(db.get_project(project_id, user_id))
         self.assertEqual(cfg.get("broll_density"), "full_coverage")
 
+    def test_long_mode_project_page_opens_part_with_visible_assets(self) -> None:
+        scenes = [
+            {**SCENE, "scene_id": "scene_001", "idx": 1, "part": 1, "narration": "parte sem asset"},
+            {**SCENE, "scene_id": "scene_002", "idx": 2, "part": 2, "narration": "mosquito na agua"},
+        ]
+        with TestClient(webapp.app) as client:
+            user_id, project_id = _seed_project("longassets", scenes=scenes)
+            db.set_project_config(project_id, {"long_mode": True})
+            db.replace_parts(
+                project_id,
+                [
+                    {"part_idx": 1, "scene_count": 1, "duration": 4},
+                    {"part_idx": 2, "scene_count": 1, "duration": 4},
+                ],
+            )
+            db.update_part(project_id, 2, curation_status="reviewing")
+            scene_with_assets = [s for s in db.list_scenes(project_id) if s["scene_id"] == "scene_002"][0]
+            db.add_assets(scene_with_assets["id"], [ASSET])
+            self.assertIsNotNone(user_id)
+            _login(client, "longassets")
+            resp = client.get(f"/projects/{project_id}")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Parte 02", resp.text)
+        self.assertIn("https://example.com/v.mp4", resp.text)
+        self.assertNotIn("parte sem asset", resp.text)
+
     def test_project_page_404_for_wrong_user(self) -> None:
         with TestClient(webapp.app) as client:
             _, project_id = _seed_project("owner2")

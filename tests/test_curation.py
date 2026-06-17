@@ -15,7 +15,7 @@ os.environ["APP_ENV"] = "dev"
 import app as webapp  # noqa: E402
 import app_shared  # noqa: E402
 import database as db  # noqa: E402
-from services import auto_select, groq_service, scoring, vision  # noqa: E402
+from services import asset_search, auto_select, groq_service, scoring, vision  # noqa: E402
 
 
 def _scene(**over) -> dict:
@@ -174,6 +174,23 @@ class HeuristicScoreTest(unittest.TestCase):
         choices = auto_select.choose_best_takes(
             [scene], {scene["id"]: [duck, egg]}, CONFIG, groq_key=""
         )
+        self.assertNotIn(scene["id"], choices)
+
+    def test_search_keeps_weak_candidates_visible_for_manual_curation(self) -> None:
+        scene = _scene(
+            visual_goal="mosquito eggs and larvae in standing water bucket",
+            keywords=["mosquito larvae water"],
+            must_show=["mosquito", "water"],
+        )
+        weak = [
+            _asset(15, "mosquito larvae water", provider_payload={"tags": "duck bird lake water"}),
+            _asset(16, "dead mosquito eggs", provider_payload={"tags": "fried egg yolk food"}),
+        ]
+
+        visible = asset_search._sort_and_trim_by_context(scene, weak, per_keyword=4)
+
+        self.assertEqual([a["id"] for a in visible], [15, 16])
+        choices = auto_select.choose_best_takes([scene], {scene["id"]: visible}, CONFIG, groq_key="")
         self.assertNotIn(scene["id"], choices)
 
     def test_diversity_penalizes_reused_asset_across_scenes(self) -> None:
