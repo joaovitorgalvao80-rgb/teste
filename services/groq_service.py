@@ -152,7 +152,12 @@ def _clean_query_phrase(phrase: str) -> str:
         return ""
     if "mosquito" in tokens and {"eggs", "bucket", "water"}.intersection(tokens):
         tokens = ["mosquito", "larvae", "water"]
-    return " ".join(tokens[0:4]).strip()
+    selected: list[str] = []
+    for token in tokens:
+        if len(selected) >= 4:
+            break
+        selected.append(token)
+    return " ".join(selected).strip()
 
 
 def _fallback_queries(scene: dict) -> list[str]:
