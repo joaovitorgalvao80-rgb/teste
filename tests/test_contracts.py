@@ -1980,6 +1980,41 @@ class HardeningAndOptimizationTest(unittest.TestCase):
         self.assertEqual(results[0]["download_url"], "https://pexels.example/good.mp4")
         self.assertNotIn("https://pexels.example/bad-0.mp4", {r["download_url"] for r in results})
 
+    def test_search_scene_hides_strict_scene_pool_when_no_asset_matches_subject(self) -> None:
+        scene = {
+            "scene_id": "scene_001",
+            "narration": "mosquito femea indo para o balde botar ovo",
+            "visual_goal": "mosquito near stagnant water",
+            "keywords": ["mosquito stagnant water"],
+            "must_show": ["mosquito", "water"],
+        }
+        bad = [
+            {
+                "source": "pixabay",
+                "download_url": f"https://pixabay.example/water-{i}.mp4",
+                "keyword": "mosquito stagnant water",
+                "provider_payload": {"tags": "ocean waves water"},
+            }
+            for i in range(8)
+        ]
+
+        with patch.object(asset_search, "search_pexels_videos", lambda *_a, **_k: []), \
+             patch.object(asset_search, "search_pixabay_videos", lambda *_a, **_k: bad), \
+             patch.object(asset_search, "search_wikimedia_images", lambda *_a, **_k: []), \
+             patch.object(asset_search, "search_openverse_images", lambda *_a, **_k: []):
+            results = asset_search.search_scene(
+                ["mosquito stagnant water"],
+                "pk",
+                "bk",
+                max_w=1920,
+                per_keyword=6,
+                media="video",
+                extra_image_banks=True,
+                scene=scene,
+            )
+
+        self.assertEqual(results, [])
+
     def test_extra_banks_fire_only_when_pool_is_thin(self) -> None:
         def fake(source, kw, n):
             return [

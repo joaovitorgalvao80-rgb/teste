@@ -101,10 +101,12 @@ def asset_context_tokens(asset: dict) -> set[str]:
 
 
 def asset_visual_tokens(asset: dict) -> set[str]:
-    """Tokens vindos de metadados do resultado, nao da query que buscou o asset."""
+    """Tokens vindos de metadados visuais do resultado.
+
+    Nao usa page_url/author/query: esses campos podem carregar a busca que
+    trouxe o asset e contaminar o score com algo que a imagem/video nao mostra.
+    """
     tokens: set[str] = set()
-    for field in ("page_url", "author", "attribution"):
-        tokens |= normalize_tokens(str(asset.get(field) or ""))
     payload = asset.get("provider_payload_json") or asset.get("provider_payload") or {}
     if isinstance(payload, str):
         try:
@@ -112,7 +114,7 @@ def asset_visual_tokens(asset: dict) -> set[str]:
         except (TypeError, ValueError):
             payload = {"raw": payload}
     if isinstance(payload, dict):
-        for key in ("tags", "title", "alt", "description", "slug", "url", "page_url", "raw"):
+        for key in ("tags", "title", "alt", "description", "slug", "raw"):
             value = payload.get(key)
             if isinstance(value, (list, tuple)):
                 value = " ".join(str(v) for v in value)
@@ -125,25 +127,41 @@ def _phrase_match(tokens: set[str], phrase: str) -> bool:
     return bool(phrase_tokens) and phrase_tokens <= tokens
 
 
-_MOSQUITO_ALIASES = {"mosquito", "mosquitoes", "larvae", "larva", "insect", "aedes", "dengue"}
+_MOSQUITO_ALIASES = {"mosquito", "mosquitoes", "larvae", "larva", "aedes", "dengue"}
 _MOSQUITO_FALSE_POSITIVES = {
     "bird", "birds", "duck", "ducks", "swan", "swans", "goose", "geese",
     "chicken", "chickens", "rooster", "egg", "eggs", "yolk", "fried",
     "flower", "flowers", "dog", "dogs", "cat", "cats", "child", "children",
-    "girl", "boy", "woman", "man",
+    "girl", "boy", "woman", "man", "goat", "goats", "sheep", "horse", "horses",
+    "cow", "cows", "cattle", "plant", "plants", "tree", "trees", "forest",
+    "grass", "leaf", "leaves", "cannabis", "marijuana", "sea", "ocean",
+    "wave", "waves", "beach", "lake",
 }
+
+
+def requires_visual_evidence(scene: dict) -> bool:
+    return bool(scene.get("must_show"))
+
+
+def _requires_mosquito(scene: dict) -> bool:
+    concept = scene_concept_tokens(scene)
+    must = normalize_tokens(" ".join(scene.get("must_show") or []))
+    return bool((concept | must) & {"mosquito", "mosquitoes", "dengue", "aedes"})
 
 
 def context_risks(scene: dict, asset: dict) -> list[str]:
     visual = asset_visual_tokens(asset)
+    keyword = normalize_tokens(str(asset.get("keyword") or ""))
     risks: list[str] = []
     for item in scene.get("must_not_show") or []:
         if normalize_tokens(str(item)) & visual:
             risks.append(str(item))
-    concept = scene_concept_tokens(scene)
-    if concept & {"mosquito", "dengue", "aedes"}:
+    if _requires_mosquito(scene):
         false_hits = sorted(_MOSQUITO_FALSE_POSITIVES & visual)
         has_mosquito_signal = bool(_MOSQUITO_ALIASES & visual)
+        keyword_only_signal = not visual and bool(_MOSQUITO_ALIASES & keyword)
+        if not has_mosquito_signal and not keyword_only_signal:
+            risks.append("sem mosquito visivel")
         if false_hits and not has_mosquito_signal:
             risks.append("falso positivo: " + ", ".join(false_hits[:3]))
     return risks
@@ -152,9 +170,10 @@ def context_risks(scene: dict, asset: dict) -> list[str]:
 def context_analysis(scene: dict, asset: dict) -> dict:
     """Score de contexto em [0,1] com matched/missing/risks auditaveis."""
     visual_tokens = asset_visual_tokens(asset)
+    evidence_tokens = visual_tokens or normalize_tokens(str(asset.get("keyword") or ""))
     must = [str(item).strip() for item in (scene.get("must_show") or []) if str(item).strip()]
 
-    matched = [item for item in must if _phrase_match(visual_tokens, item)]
+    matched = [item for item in must if _phrase_match(evidence_tokens, item)]
     missing = [item for item in must if item not in matched]
     risks = context_risks(scene, asset)
 
@@ -167,7 +186,7 @@ def context_analysis(scene: dict, asset: dict) -> dict:
         if not matched:
             score = min(score, 0.22)
         elif missing:
-            score = min(score, 0.55)
+            score = min(score, 0.32)
     else:
         score = 0.55 * keyword_score
         if visual_tokens and scene_concept_tokens(scene) & visual_tokens:

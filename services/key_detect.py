@@ -14,7 +14,6 @@ MAX_KEYS_FILE_BYTES = 64 * 1024
 _KEY_GUESS_PATTERNS = [
     ("groq", re.compile(r"^gsk_[A-Za-z0-9_-]{20,}$")),
     ("nvidia", re.compile(r"^nvapi-[a-z0-9_-]{20,}$", re.IGNORECASE)),
-    ("firecrawl", re.compile(r"^fc-[A-Za-z0-9_-]{20,}$", re.IGNORECASE)),
     ("kaggle_token", re.compile(r"^KGAT[a-z0-9_-]{10,}$", re.IGNORECASE)),
     ("pixabay", re.compile(r"^\d{6,10}-[0-9a-f]{20,40}$", re.IGNORECASE)),
     ("kaggle_token", re.compile(r"^[0-9a-f]{32}$")),
@@ -27,8 +26,6 @@ KEY_FIELD_LABELS = {
     "coverr": "Coverr",
     "groq": "Groq",
     "nvidia": "NVIDIA",
-    "exa": "Exa",
-    "firecrawl": "Firecrawl",
     "kaggle_username": "Kaggle username",
     "kaggle_token": "Kaggle token",
 }
@@ -46,10 +43,6 @@ def _key_field_from_label(label: str) -> Optional[str]:
         return "groq"
     if "nvidia" in low:
         return "nvidia"
-    if "firecrawl" in low or "fire crawl" in low:
-        return "firecrawl"
-    if "exa" in low:
-        return "exa"
     if "kaggle" in low:
         return "kaggle_username" if "user" in low else "kaggle_token"
     if low.strip() in {"username", "user"}:

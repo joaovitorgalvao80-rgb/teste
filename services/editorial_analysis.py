@@ -125,8 +125,6 @@ def _asset_risks(asset: Optional[dict], scene_duration: float, target_w: int, ta
         risks.append("low_height")
     if asset.get("license") == "review_required":
         risks.append("license_review_required")
-    if asset.get("source") in {"firecrawl", "exa"}:
-        risks.append("deep_source_verify_terms")
     return risks
 
 
@@ -137,8 +135,6 @@ def _recommendations(scene_reports: list[dict]) -> list[str]:
         out.append("Ha cenas sem take selecionado; elas viram avatar-only no pacote.")
     if risks.get("short_video_loop_risk"):
         out.append("Alguns videos selecionados sao curtos para a cena; prefira take maior ou imagem estatica.")
-    if risks.get("deep_source_verify_terms"):
-        out.append("Fontes vindas de pesquisa profunda exigem revisao manual de termos/licenca.")
     if risks.get("low_width") or risks.get("low_height"):
         out.append("Ha assets abaixo da resolucao alvo; podem ficar suaves ou pixelados.")
     return out

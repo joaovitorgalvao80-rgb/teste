@@ -98,6 +98,35 @@ class ScoringTest(unittest.TestCase):
         self.assertLess(ctx["context_score"], 0.33)
         self.assertTrue(any("falso positivo" in risk for risk in ctx["risks"]))
 
+    def test_mosquito_scene_rejects_water_or_animal_without_mosquito_evidence(self) -> None:
+        scene = _scene(
+            narration="Todo mosquito femea vai em direcao ao balde para botar ovo",
+            visual_goal="mosquito laying eggs near stagnant water",
+            keywords=["mosquito stagnant water", "mosquito larvae water"],
+            must_show=["mosquito", "water"],
+        )
+        ocean = _asset(7, "mosquito stagnant water", provider_payload={"tags": "sea ocean waves water"})
+        goat = _asset(8, "mosquito stagnant water", provider_payload={"tags": "goat animal grass"})
+        plant = _asset(9, "mosquito stagnant water", provider_payload={"tags": "plant leaves garden"})
+
+        for asset in (ocean, goat, plant):
+            ctx = scoring.context_analysis(scene, asset)
+            self.assertLess(ctx["context_score"], 0.33)
+            self.assertEqual(scoring.relevance_label(ctx["context_score"]), "baixa")
+            self.assertIn("sem mosquito visivel", ctx["risks"])
+
+    def test_page_url_does_not_count_as_visual_evidence(self) -> None:
+        scene = _scene(must_show=["mosquito", "water"])
+        water = _asset(
+            10,
+            "mosquito stagnant water",
+            page_url="https://stock.example/search/mosquito-water",
+            provider_payload={"tags": "water lake waves"},
+        )
+        ctx = scoring.context_analysis(scene, water)
+        self.assertLess(ctx["context_score"], 0.33)
+        self.assertIn("mosquito", ctx["missing"])
+
     def test_generic_keyword_detection(self) -> None:
         self.assertTrue(scoring.is_generic_keyword("business background"))
         self.assertTrue(scoring.is_generic_keyword("abstract concept"))
@@ -361,6 +390,20 @@ class KeywordFallbackTest(unittest.TestCase):
         self.assertIn("mosquito larvae water", joined)
         self.assertNotIn("eggs", joined)
         self.assertNotIn("female", joined)
+
+    def test_mosquito_bucket_query_does_not_become_generic_standing_water(self) -> None:
+        scene = {
+            "scene_id": "scene_001",
+            "zone": "DESENVOLVIMENTO",
+            "narration": "Todo mosquito femea esta indo em direcao a esse balde para botar ovo",
+            "query_ladder": ["mosquitoes standing water", "agora bucket botar direcao"],
+        }
+        queries = groq_service.normalized_scene_queries(scene)
+        joined = " ".join(queries).lower()
+        self.assertIn("mosquito larvae water", joined)
+        self.assertNotIn("standing water backyard", joined)
+        for bad in ("agora", "botar", "direcao", "femea"):
+            self.assertNotIn(bad, joined)
 
     def test_prompt_requests_multi_query_strategy(self) -> None:
         prompt = groq_service._build_prompt(

@@ -46,7 +46,6 @@ from services import (
     ops_status,
     packager,
     scoring,
-    source_discovery,
     vision,
 )
 from services.project_config import (
@@ -322,11 +321,7 @@ def has_visual_provider(user: dict) -> bool:
 
 
 def has_research_provider(user: dict) -> bool:
-    return bool(
-        has_visual_provider(user)
-        or user.get("exa_key")
-        or user.get("firecrawl_key")
-    )
+    return has_visual_provider(user)
 
 
 async def read_upload_limited(upload: UploadFile, max_bytes: int, what: str = "Arquivo") -> bytes:
@@ -1580,15 +1575,6 @@ def _research_one_scene(
             extra_image_banks=True,
             scene=scene,
         )
-        deep_results = source_discovery.discover_scene_assets(
-            scene,
-            keys,
-            max_w=max_w,
-            limit=max(4, int(config.get("per_keyword") or 4)),
-            existing_urls=existing | {r.get("download_url", "") for r in results},
-        )
-        if deep_results:
-            results.extend(deep_results)
     check_job_canceled(job_id)
     return db.add_assets(scene["id"], results)
 
@@ -1603,8 +1589,6 @@ def run_research_job(
     groq_model: str,
     coverr_key: str = "",
     nvidia_key: str = "",
-    exa_key: str = "",
-    firecrawl_key: str = "",
     part_idx: Optional[int] = None,
 ) -> None:
     try:
@@ -1635,8 +1619,6 @@ def run_research_job(
             "groq": groq_key,
             "groq_model": groq_model,
             "coverr": coverr_key,
-            "exa": exa_key,
-            "firecrawl": firecrawl_key,
         }
         added_total = 0
         for i, scene in enumerate(targets, 1):

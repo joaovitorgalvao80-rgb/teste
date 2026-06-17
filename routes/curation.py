@@ -197,8 +197,6 @@ def research_rejected(
         user.get("groq_model") or groq_service.DEFAULT_MODEL,
         user.get("coverr_key", ""),
         user.get("nvidia_key", ""),
-        user.get("exa_key", ""),
-        user.get("firecrawl_key", ""),
         part_idx,
     )
     suffix = f"?part={part_idx}" if part_idx is not None else ""

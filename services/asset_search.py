@@ -558,6 +558,8 @@ def _sort_and_trim_by_context(scene: Optional[dict], assets: list[dict], per_key
     if accepted:
         weak_clean = [row for row in annotated if not row[0] and not row[2]]
         keep = accepted + weak_clean[:max(0, max(4, per_keyword) - len(accepted))]
+    elif scoring.requires_visual_evidence(scene):
+        return []
     else:
         keep = annotated
 

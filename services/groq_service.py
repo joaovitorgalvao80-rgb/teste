@@ -124,6 +124,9 @@ _BAD_SEARCH_WORDS = {
     "footage", "generic", "image", "moment", "scene", "shot", "stock", "video",
     "visual", "view", "female", "male", "dead", "approaching", "towards", "toward",
     "method", "system", "control",
+    "agora", "botar", "direcao", "direcao", "todo", "toda", "todos", "todas",
+    "raio", "metro", "metros", "sitio", "indo", "esse", "essa", "aqui", "pra",
+    "para", "num", "uma", "balde", "femea",
 }
 
 
@@ -143,12 +146,14 @@ def _translated_tokens(text: str) -> list[str]:
 def _clean_query_phrase(phrase: str) -> str:
     tokens = _translated_tokens(phrase)
     tokens = [t for t in tokens if t not in _BAD_SEARCH_WORDS]
+    if tokens == ["bucket"]:
+        return ""
     if "mosquito" in tokens and "eggs" in tokens:
         tokens = ["mosquito", "larvae", "water"]
     elif "mosquito" in tokens and "bucket" in tokens:
-        tokens = ["standing", "water", "bucket"]
+        tokens = ["mosquito", "larvae", "water"]
     elif "mosquito" in tokens and "water" in tokens:
-        tokens = ["mosquito", "stagnant", "water"]
+        tokens = ["mosquito", "larvae", "water"]
     return " ".join(tokens[:4]).strip()
 
 
@@ -168,10 +173,10 @@ def _fallback_queries(scene: dict) -> list[str]:
     must = _translated_tokens(" ".join(scene.get("must_show") or []))
     if must:
         add(must[:4])
-    if "mosquito" in tokens and "water" in tokens:
-        add(["mosquito", "stagnant", "water"])
+    if "mosquito" in tokens and ("water" in tokens or "bucket" in tokens):
         add(["mosquito", "larvae", "water"])
-        add(["standing", "water", "backyard"])
+        add(["aedes", "mosquito", "close", "up"])
+        add(["mosquito", "stagnant", "water"])
     add(tokens[:4])
     add(tokens[1:5])
     for fb in _ZONE_FALLBACK.get(scene.get("zone", ""), ["close up detail", "real environment"]):
