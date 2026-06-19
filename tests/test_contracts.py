@@ -832,9 +832,9 @@ class DeployContractsTest(unittest.TestCase):
         self.assertFalse(cfg["image_fallback"])
         self.assertEqual(cfg["visual_style"], webapp.DEFAULT_CONFIG["visual_style"])
 
-    def test_long_mode_legacy_part_target_normalizes_to_two_minutes(self) -> None:
+    def test_long_mode_default_part_target_stays_two_and_half_minutes(self) -> None:
         cfg = webapp.normalize_project_config({"long_mode": True, "part_target_seconds": 150})
-        self.assertEqual(cfg["part_target_seconds"], 120)
+        self.assertEqual(cfg["part_target_seconds"], 150)
 
     def test_pexels_video_endpoint_uses_current_v1_path(self) -> None:
         self.assertEqual(asset_search.PEXELS_VIDEO_URL, "https://api.pexels.com/v1/videos/search")

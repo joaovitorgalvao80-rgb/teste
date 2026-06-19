@@ -1054,7 +1054,7 @@ def run_generate_map_job(
             })
         total_parts = 1
         if config.get("long_mode"):
-            total_parts = assign_parts(merged, config.get("part_target_seconds") or 120)
+            total_parts = assign_parts(merged, config.get("part_target_seconds") or 150)
         db.replace_scenes(project_id, merged)
         if config.get("long_mode"):
             summaries = []
