@@ -54,6 +54,8 @@ def _is_presentation(narration: str) -> bool:
 EDIT_PLAN_VERSION = 2
 NARRATION_BASENAME = "narration"
 AVATAR_BASENAME = "avatar"
+MOTION_OPTIONS = ("hold", "slow_push_in", "slow_pull_out", "drift_left", "drift_right")
+TRANSITION_OPTIONS = ("none", "fade")
 
 # Regras de alternancia avatar/b-roll quando o avatar e a base do video:
 # - o avatar nunca fica mais de 30s sozinho na tela;

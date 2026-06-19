@@ -161,7 +161,7 @@
 <!-- Partes do vídeo -->
 <div id="parts-panel" class="panel" data-active="{{ 1 if parts_job_active else 0 }}" style="margin-bottom:var(--sp-4)">
   <div class="panel-head">
-    <span class="tag">Partes do vídeo ({{ parts|length }})</span>
+    <span class="tag">Partes do vídeo ({{ parts|length }}) · alvo {{ config.part_target_seconds|int }}s</span>
     <span class="t-small t-faint" id="parts-job-msg">
       {% if all_parts_curated %}curadoria concluída — gere o pacote (03)
       {% elif search_part_active %}buscando assets da parte — mantenha o servidor aberto
@@ -261,9 +261,16 @@
       {{ editorial_report.recommendations[0] }}
     </div>
     {% endif %}
+    <div class="row plan-actions" style="margin-bottom:var(--sp-3)">
+      <form method="post" action="/projects/{{ project.id }}/edit-plan/random-motions">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="btn btn-secondary btn-sm" type="submit">randomizar motions</button>
+      </form>
+      <span class="t-small t-faint">edicoes manuais ficam travadas; o randomizador global mexe so nas cenas automaticas.</span>
+    </div>
     <table class="plan-table">
       <thead>
-        <tr><th>cena</th><th>início</th><th>dur</th>{% if edit_plan.avatar %}<th>na tela</th>{% endif %}<th>motion</th><th>transição</th><th>caption</th></tr>
+        <tr><th>cena</th><th>início</th><th>dur</th>{% if edit_plan.avatar %}<th>na tela</th>{% endif %}<th>motion</th><th>transição</th><th>caption</th><th></th></tr>
       </thead>
       <tbody>
         {% for s in edit_plan.scenes %}
@@ -274,16 +281,36 @@
           {% if edit_plan.avatar %}
           <td>{% if s.broll %}<span class="plan-chip plan-chip-broll">b-roll</span>{% else %}<span class="plan-chip plan-chip-avatar">avatar</span>{% endif %}</td>
           {% endif %}
-          <td>{{ s.motion }}</td>
+          <td>
+            <form id="plan-save-{{ s.scene_id }}" method="post" action="/projects/{{ project.id }}/edit-plan/scenes/{{ s.scene_id }}"></form>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" form="plan-save-{{ s.scene_id }}">
+            <div class="plan-motion-cell">
+              <select class="plan-select" name="motion" form="plan-save-{{ s.scene_id }}">
+                {% for opt in motion_options %}
+                  <option value="{{ opt }}" {% if s.motion == opt %}selected{% endif %}>{{ opt }}</option>
+                {% endfor %}
+              </select>
+              <form method="post" action="/projects/{{ project.id }}/edit-plan/scenes/{{ s.scene_id }}/random-motion">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button class="btn btn-ghost btn-icon-sm" type="submit" title="Randomizar motion desta cena">*</button>
+              </form>
+            </div>
+          </td>
           <td>{{ s.transition_out }}</td>
-          <td>{{ s.caption or '—' }}</td>
+          <td>
+            <input class="plan-caption-input" name="caption" value="{{ s.caption or '' }}" placeholder="sem caption" maxlength="80" form="plan-save-{{ s.scene_id }}">
+          </td>
+          <td>
+            <button class="btn btn-primary btn-sm" type="submit" form="plan-save-{{ s.scene_id }}">salvar</button>
+            {% if s.motion_locked %}<span class="plan-lock">manual</span>{% endif %}
+          </td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
     <div class="row" style="margin-top:var(--sp-3)">
       <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}/edit-plan" target="_blank">Abrir JSON do plano</a>
-      <span class="t-small t-faint">Para regerar com outras decisões, rode <strong>03 Pacote</strong> de novo.</span>
+      <span class="t-small t-faint">Alterações aqui salvam o JSON do plano e o edit_plan dentro do ZIP.</span>
     </div>
   </div>
 </div>

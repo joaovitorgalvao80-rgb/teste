@@ -704,4 +704,14 @@ def search_scene(
     if extra_image_banks:
         _search_extra_image_banks(clean_keywords, max_w, per_keyword, run)
 
-    return _sort_and_trim_by_context(scene, results[:max_raw], per_keyword)
+    sorted_results = _sort_and_trim_by_context(scene, results[:max_raw], per_keyword)
+    if (
+        extra_image_banks
+        and scene
+        and scoring.requires_visual_evidence(scene)
+        and sorted_results
+        and not any(_is_contextual_enough(scene, asset) for asset in sorted_results)
+        and all(scoring.context_analysis(scene, asset).get("risks") for asset in sorted_results)
+    ):
+        return []
+    return sorted_results

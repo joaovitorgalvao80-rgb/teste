@@ -422,6 +422,24 @@ class KeywordFallbackTest(unittest.TestCase):
         for bad in ("agora", "botar", "direcao", "femea"):
             self.assertNotIn(bad, joined)
 
+    def test_mosquito_scene_queries_become_illustrative_not_over_specific(self) -> None:
+        scene = {
+            "scene_id": "scene_001",
+            "zone": "DESENVOLVIMENTO",
+            "narration": "Todo mosquito femea, num raio de 100 metros aqui do sitio",
+            "query_ladder": [
+                "rural area with mosquitoes",
+                "mosquito breeding site",
+                "tropical landscape with mosquitoes",
+            ],
+        }
+        queries = groq_service.normalized_scene_queries(scene)
+        joined = " ".join(queries).lower()
+        self.assertIn("mosquito close up", queries)
+        self.assertIn("mosquito flying", queries)
+        for bad in ("rural area", "breeding site", "tropical landscape"):
+            self.assertNotIn(bad, joined)
+
     def test_prompt_requests_multi_query_strategy(self) -> None:
         prompt = groq_service._build_prompt(
             [{"scene_id": "scene_001", "start_time": 0.0, "end_time": 4.0, "narration": "teste"}],

@@ -832,6 +832,10 @@ class DeployContractsTest(unittest.TestCase):
         self.assertFalse(cfg["image_fallback"])
         self.assertEqual(cfg["visual_style"], webapp.DEFAULT_CONFIG["visual_style"])
 
+    def test_long_mode_legacy_part_target_normalizes_to_two_minutes(self) -> None:
+        cfg = webapp.normalize_project_config({"long_mode": True, "part_target_seconds": 150})
+        self.assertEqual(cfg["part_target_seconds"], 120)
+
     def test_pexels_video_endpoint_uses_current_v1_path(self) -> None:
         self.assertEqual(asset_search.PEXELS_VIDEO_URL, "https://api.pexels.com/v1/videos/search")
 
@@ -1536,6 +1540,12 @@ class DeployContractsTest(unittest.TestCase):
             )
             ok = client.get(f"/projects/{project_id}/edit-plan")
             page = client.get(f"/projects/{project_id}")
+            saved = client.post(
+                f"/projects/{project_id}/edit-plan/scenes/scene_001",
+                data={"motion": "drift_right", "caption": "NOVO TEXTO"},
+                follow_redirects=False,
+            )
+            edited = json.loads(plan_path.read_text(encoding="utf-8"))
         self.assertEqual(missing.status_code, 404)
         self.assertEqual(ok.status_code, 200)
         self.assertEqual(ok.json()["version"], 2)
@@ -1543,6 +1553,10 @@ class DeployContractsTest(unittest.TestCase):
         self.assertIn("Plano de edição", page.text)
         self.assertIn("determinístico", page.text)
         self.assertIn("plan-chip-broll", page.text)
+        self.assertEqual(saved.status_code, 303)
+        self.assertEqual(edited["scenes"][0]["motion"], "drift_right")
+        self.assertEqual(edited["scenes"][0]["caption"], "NOVO TEXTO")
+        self.assertTrue(edited["scenes"][0]["motion_locked"])
 
     def test_package_job_saves_edit_plan_for_review(self) -> None:
         db.init_db()

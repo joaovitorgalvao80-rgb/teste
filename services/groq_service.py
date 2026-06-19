@@ -28,6 +28,7 @@ CONTENT_TYPE_JSON = "application/json"
 BRIEF_BATCH_SIZE = 40  # cenas por chamada; roteiros longos estouram o contexto num prompt unico
 QUERY_CLOSE_UP_DETAIL = "close up detail"
 QUERY_REAL_ENVIRONMENT = "real environment"
+QUERY_STYLE_ILLUSTRATIVE = "illustrative"
 GROQ_MODELS = [
     ("llama-3.3-70b-versatile", "Llama 3.3 70B — melhor qualidade (padrão)"),
     ("llama-3.1-8b-instant",    "Llama 3.1 8B Instant — mais rápido"),
@@ -91,6 +92,8 @@ _SEARCH_TRANSLATIONS = {
     "rua": "street",
     "cidade": "city",
     "mosquito": "mosquito",
+    "mosquitos": "mosquito",
+    "mosquitoes": "mosquito",
     "dengue": "mosquito",
     "larva": "larvae",
     "larvas": "larvae",
@@ -129,6 +132,26 @@ _BAD_SEARCH_WORDS = {
     "agora", "botar", "direcao", "todo", "toda", "todos", "todas",
     "raio", "metro", "metros", "sitio", "indo", "esse", "essa", "aqui", "pra",
     "para", "num", "uma", "balde", "femea",
+    "rural", "area", "areas", "tropical", "landscape", "landscapes",
+    "breeding", "site", "sites", "environment", "environments",
+}
+
+_MOSQUITO_CONTEXT_TOKENS = {"mosquito", "dengue", "aedes"}
+_WATER_BREEDING_TOKENS = {"water", "stagnant", "larvae", "larva", "eggs", "egg", "bucket"}
+
+_ILLUSTRATIVE_QUERY_SETS = {
+    "mosquito_simple": [
+        "mosquito close up",
+        "mosquito flying",
+        "mosquito on skin",
+        "insect on wall",
+    ],
+    "mosquito_water": [
+        "mosquito larvae water",
+        "aedes mosquito close up",
+        "mosquito stagnant water",
+        "standing water bucket",
+    ],
 }
 
 
@@ -146,6 +169,10 @@ def _translated_tokens(text: str) -> list[str]:
 
 
 def _clean_query_phrase(phrase: str) -> str:
+    raw = str(phrase or "").strip().lower()
+    for known in _ILLUSTRATIVE_QUERY_SETS["mosquito_simple"] + _ILLUSTRATIVE_QUERY_SETS["mosquito_water"]:
+        if raw == known:
+            return known
     tokens = _translated_tokens(phrase)
     tokens = [t for t in tokens if t not in _BAD_SEARCH_WORDS]
     if tuple(tokens) == ("bucket",):
@@ -157,7 +184,19 @@ def _clean_query_phrase(phrase: str) -> str:
         if len(selected) >= 4:
             break
         selected.append(token)
-    return " ".join(selected).strip()
+    clean = " ".join(selected).strip()
+    if clean == "mosquito":
+        return "mosquito close up"
+    return clean
+
+
+def _illustrative_queries_from_tokens(tokens: list[str]) -> list[str]:
+    token_set = set(tokens)
+    if token_set & _MOSQUITO_CONTEXT_TOKENS:
+        if token_set & _WATER_BREEDING_TOKENS:
+            return list(_ILLUSTRATIVE_QUERY_SETS["mosquito_water"])
+        return list(_ILLUSTRATIVE_QUERY_SETS["mosquito_simple"])
+    return []
 
 
 def _fallback_queries(scene: dict) -> list[str]:
@@ -174,17 +213,36 @@ def _fallback_queries(scene: dict) -> list[str]:
             queries.append(phrase)
 
     must = _translated_tokens(" ".join(scene.get("must_show") or []))
+    for query in _illustrative_queries_from_tokens(tokens + must):
+        add(query.split())
     if must:
         add(must[:4])
-    if "mosquito" in tokens and ("water" in tokens or "bucket" in tokens):
-        add(["mosquito", "larvae", "water"])
-        add(["aedes", "mosquito", "close", "up"])
-        add(["mosquito", "stagnant", "water"])
     add(tokens[:4])
     add(tokens[1:5])
     for fb in _ZONE_FALLBACK.get(scene.get("zone", ""), [QUERY_CLOSE_UP_DETAIL, QUERY_REAL_ENVIRONMENT]):
         add(_translated_tokens(fb))
     return queries[:5]
+
+
+def _sanitize_must_show(value, scene: dict) -> list[str]:
+    """Keep must_show as simple visual anchors, not full scene requirements."""
+    raw_items = _clean_text_list(value)
+    text = " ".join([str(scene.get("narration") or ""), *raw_items])
+    tokens = set(_translated_tokens(text))
+    if tokens & _MOSQUITO_CONTEXT_TOKENS:
+        return ["mosquito"]
+    out: list[str] = []
+    for item in raw_items:
+        clean = _clean_query_phrase(item)
+        if not clean:
+            continue
+        words = clean.split()
+        anchor = " ".join(words[:2])
+        if anchor and anchor not in out:
+            out.append(anchor)
+        if len(out) >= 2:
+            break
+    return out
 
 
 def _sanitize_query_ladder(raw: list[str], scene: dict, fallback: list[str]) -> list[str]:
@@ -340,7 +398,7 @@ def _build_prompt(
         "(e.g. if the video is about mosquito eggs, NEVER search generic 'eggs' that returns chicken eggs).\n"
         if video_theme else ""
     )
-    return f"""You are a senior YouTube editor planning a 100% B-roll video from a {lang_name} script.
+    return f"""You are a senior YouTube editor planning illustrative B-roll from a {lang_name} script.
 {theme_line}
 For EACH scene below, produce concrete visual search intent for Pexels/Pixabay.
 
@@ -365,13 +423,16 @@ Return ONE JSON object only, shape:
 }}
 
 Keyword strategy (CRITICAL — bad keywords cause irrelevant footage):
+- B-roll is only visual illustration. Prefer one clear searchable object/action,
+  not the full sentence as a perfect mini-movie or tutorial.
 - Provide exactly 3 English search phrases, ORDERED by strategy:
   1) PRIMARY: the most concrete, literal depiction of the scene's main subject/action.
   2) SEMANTIC ALTERNATIVE: a different but equally on-topic angle (other object,
      environment or point of view of the same idea).
   3) SAFE FALLBACK: a broader but still on-theme phrase that is likely to return
      results even if the first two are too niche.
-- 2 to 4 words each. Concrete and filmable. NEVER single generic words like
+- 1 to 4 words each. Concrete and filmable. Prefer "mosquito close up" over
+  "rural area with mosquitoes". NEVER generic stock-bank words like
   "background", "business", "concept", "abstract", "people", "nature".
 - If the narration is METAPHORICAL or idiomatic, search for the REAL underlying
   meaning, not the literal words (e.g. "the economy is heating up" -> "stock
@@ -482,7 +543,7 @@ def _merge_brief(scene: dict, ai: dict, fb: dict, avatar_safe_area: str) -> dict
         "visual_target": str(ai.get("visual_target") or fb["visual_target"]).strip()[:160],
         "keywords": keywords or query_ladder[:3] or fb["keywords"],
         "query_ladder": query_ladder,
-        "must_show": _clean_text_list(ai.get("must_show") or ai.get("must_have")),
+        "must_show": _sanitize_must_show(ai.get("must_show") or ai.get("must_have"), {**scene, **ai}),
         "must_not_show": _clean_text_list(ai.get("must_not_show") or ai.get("avoid") or fb["must_not_show"]),
         "asset_type": ai.get("asset_type") or "video",
         "overlay_text": str(ai.get("overlay_text") or "").upper()[:60],
@@ -589,8 +650,11 @@ def _regenerate_keywords_prompt(
     rejected_assets: Optional[list[dict]],
 ) -> str:
     return (
-        "Generate 3 FRESH English video search phrases for Pexels/Pixabay for this scene, "
-        "different from obvious literal terms (the previous results were rejected).\n"
+        "Generate 3 FRESH English video search phrases for Pexels/Pixabay for this scene. "
+        "B-roll is only illustration: use simple visual elements, not a full literal scene. "
+        "Prefer broad searchable objects/actions (e.g. mosquito close up, mosquito flying) "
+        "over over-specific environments (e.g. rural area with mosquitoes). "
+        "Avoid repeating rejected ideas.\n"
         "Order them: 1) most concrete primary, 2) a different semantic angle, "
         "3) a broader safe fallback. 2-4 words each, no generic single words "
         "(background/business/concept). If the narration is metaphorical, search the "

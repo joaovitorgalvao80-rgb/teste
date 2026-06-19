@@ -351,6 +351,56 @@ button > span {
 .plan-chip-broll { background: var(--marker-dim); color: var(--marker); border: 1px solid rgba(233, 215, 92, 0.35); }
 .plan-chip-avatar { background: var(--ink-3); color: var(--paper-1); border: 1px solid var(--line-2); }
 
+.plan-actions form,
+.plan-motion-cell form {
+  margin: 0;
+}
+
+.plan-motion-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 160px;
+}
+
+.plan-select,
+.plan-caption-input {
+  width: 100%;
+  min-height: 30px;
+  padding: 5px 8px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-2);
+  background: var(--ink-1);
+  color: var(--paper-0);
+  font-size: var(--fs-small);
+}
+
+.plan-select {
+  min-width: 124px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+}
+
+.plan-caption-input {
+  min-width: 180px;
+}
+
+.btn-icon-sm {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  text-align: center;
+}
+
+.plan-lock {
+  display: block;
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--paper-2);
+  text-transform: uppercase;
+}
+
 /* ==========================================================================
    Campos de formulario
    ========================================================================== */

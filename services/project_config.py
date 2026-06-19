@@ -22,7 +22,7 @@ DEFAULT_CONFIG = {
     "per_keyword": 8,
     "max_download_mb": 90,
     "long_mode": False,
-    "part_target_seconds": 150,
+    "part_target_seconds": 120,
     # broll_density: quanto do vídeo é coberto por b-roll
     #   key_moments   → só cenas com score alto (momentos-chave, ~30-40%)
     #   moderate      → padrão: alterna com respiro a cada 22s de b-roll
@@ -136,9 +136,12 @@ def normalize_project_config(raw_config: Optional[dict] = None) -> dict:
     )
     cfg["image_fallback"] = _coerce_bool(cfg.get("image_fallback"))
     cfg["long_mode"] = _coerce_bool(cfg.get("long_mode"))
+    raw_part_target = cfg.get("part_target_seconds")
     cfg["part_target_seconds"] = _coerce_int(
         cfg.get("part_target_seconds"), DEFAULT_CONFIG["part_target_seconds"], 30, 300
     )
+    if cfg["long_mode"] and raw_part_target in {None, "", 150, "150"}:
+        cfg["part_target_seconds"] = DEFAULT_CONFIG["part_target_seconds"]
     visual_style = str(cfg.get("visual_style") or "").strip()
     cfg["visual_style"] = visual_style or DEFAULT_CONFIG["visual_style"]
     cfg["script_language"] = normalize_language(cfg.get("script_language"))

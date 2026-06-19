@@ -138,7 +138,9 @@ def _build_prompt(scenes_with_candidates: list[tuple[dict, list[dict]]]) -> str:
     blocks = "\n\n".join(_candidates_block(s, c) for s, c in scenes_with_candidates)
     return f"""You are a senior B-roll curator for a YouTube video in Brazilian Portuguese.
 For EACH scene below, pick the ONE candidate asset that best illustrates the narration
-and visual goal. Judge by the matched keyword, asset type, dimensions and duration.
+and visual goal. B-roll is only illustration: prefer a clear simple object/action
+over an over-specific full-scene match. Judge by the matched keyword, asset type,
+dimensions and duration.
 Prefer videos that cover the scene duration; avoid candidates that likely violate
 must_not_show.
 
@@ -153,6 +155,7 @@ Rules:
 - Exactly one choice per scene, same scene_id as given.
 - asset_id MUST be one of the listed candidate ids for that scene.
 - reason in Brazilian Portuguese, concise and concrete.
+- Do not require the full location/context if the central visual subject is clear.
 
 SCENES:
 {blocks}

@@ -1,17 +1,22 @@
 """Rotas de pacote, Kaggle, diagnósticos e downloads."""
 from __future__ import annotations
 
+import json
+import random
+import shutil
+import zipfile
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Form, Request, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 import database as db
-from services import diagnostics, kaggle_service
+from services import diagnostics, edit_plan, kaggle_service
 from services.project_config import project_config
 from app_shared import (
     ACTIVE_JOB_STATUSES,
     CHOSEN_ASSET_STATES,
+    EDIT_PLAN_FILENAME,
     ERROR_RESPONSES,
     MEDIA_TYPE_JSON,
     MEDIA_TYPE_MP4,
@@ -129,6 +134,138 @@ def get_edit_plan(request: Request, project_id: int):
     if not plan:
         raise HTTPException(404, "Plano de edição não encontrado. Gere o pacote (etapa 03) primeiro.")
     return JSONResponse(plan)
+
+
+def _edit_plan_path(project_id: int):
+    return project_work_dir(project_id) / EDIT_PLAN_FILENAME
+
+
+def _write_edit_plan(project_id: int, plan: dict) -> None:
+    plan_path = _edit_plan_path(project_id)
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(plan, ensure_ascii=False, indent=2)
+    plan_path.write_text(payload, encoding="utf-8")
+    zip_path = latest_zip(plan_path.parent)
+    if not zip_path:
+        return
+    tmp_path = zip_path.with_suffix(zip_path.suffix + ".tmp")
+    with zipfile.ZipFile(zip_path, "r") as src, zipfile.ZipFile(tmp_path, "w") as dst:
+        for item in src.infolist():
+            if item.filename == EDIT_PLAN_FILENAME:
+                continue
+            dst.writestr(item, src.read(item.filename))
+        dst.writestr(EDIT_PLAN_FILENAME, payload)
+    shutil.move(str(tmp_path), str(zip_path))
+
+
+def _load_edit_plan_for_update(project_id: int) -> dict:
+    plan_path = _edit_plan_path(project_id)
+    if not plan_path.exists():
+        raise HTTPException(404, "Plano de edição não encontrado. Gere o pacote primeiro.")
+    try:
+        return json.loads(plan_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise HTTPException(400, "Plano de edição inválido.") from exc
+
+
+def _find_plan_scene(plan: dict, scene_id: str) -> dict:
+    for scene in plan.get("scenes") or []:
+        if str(scene.get("scene_id")) == scene_id:
+            return scene
+    raise HTTPException(404, "Cena não encontrada no plano.")
+
+
+def _random_motion(current: str = "") -> str:
+    options = [m for m in edit_plan.MOTION_OPTIONS if m != current]
+    return random.choice(options or list(edit_plan.MOTION_OPTIONS))
+
+
+@router.post("/projects/{project_id}/edit-plan/scenes/{scene_id}", responses=ERROR_RESPONSES)
+def update_edit_plan_scene(
+    request: Request,
+    project_id: int,
+    scene_id: str,
+    motion: Annotated[str, Form()] = "",
+    caption: Annotated[str, Form()] = "",
+    csrf_token: Annotated[str, Form()] = "",
+):
+    user = require_user(request)
+    verify_csrf(request, csrf_token)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    ensure_project_not_busy(project)
+    plan = _load_edit_plan_for_update(project_id)
+    scene = _find_plan_scene(plan, scene_id)
+    clean_motion = str(motion or "").strip()
+    if clean_motion not in edit_plan.MOTION_OPTIONS:
+        raise HTTPException(400, "Motion inválido.")
+    scene["motion"] = clean_motion
+    scene["motion_source"] = "manual"
+    scene["motion_locked"] = True
+    clean_caption = str(caption or "").replace("\n", " ").strip()[:80]
+    scene["caption"] = clean_caption
+    if clean_caption:
+        start = float(scene.get("start") or 0)
+        duration = float(scene.get("duration") or 0)
+        cap_start, cap_duration = edit_plan._caption_timing(start, duration)
+        scene["caption_start"] = cap_start
+        scene["caption_duration"] = cap_duration
+    else:
+        scene["caption_start"] = None
+        scene["caption_duration"] = 0
+    _write_edit_plan(project_id, plan)
+    return RedirectResponse(f"/projects/{project_id}#edit-plan-panel", status_code=303)
+
+
+@router.post("/projects/{project_id}/edit-plan/scenes/{scene_id}/random-motion", responses=ERROR_RESPONSES)
+def randomize_edit_plan_scene_motion(
+    request: Request,
+    project_id: int,
+    scene_id: str,
+    csrf_token: Annotated[str, Form()] = "",
+):
+    user = require_user(request)
+    verify_csrf(request, csrf_token)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    ensure_project_not_busy(project)
+    plan = _load_edit_plan_for_update(project_id)
+    scene = _find_plan_scene(plan, scene_id)
+    scene["motion"] = _random_motion(str(scene.get("motion") or ""))
+    scene["motion_source"] = "random"
+    scene["motion_locked"] = False
+    _write_edit_plan(project_id, plan)
+    return RedirectResponse(f"/projects/{project_id}#edit-plan-panel", status_code=303)
+
+
+@router.post("/projects/{project_id}/edit-plan/random-motions", responses=ERROR_RESPONSES)
+def randomize_edit_plan_motions(
+    request: Request,
+    project_id: int,
+    csrf_token: Annotated[str, Form()] = "",
+):
+    user = require_user(request)
+    verify_csrf(request, csrf_token)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    ensure_project_not_busy(project)
+    plan = _load_edit_plan_for_update(project_id)
+    changed = 0
+    for scene in plan.get("scenes") or []:
+        if scene.get("motion_locked"):
+            continue
+        scene["motion"] = _random_motion(str(scene.get("motion") or ""))
+        scene["motion_source"] = "random"
+        changed += 1
+    plan["motion_policy"] = {
+        "last_randomized": changed,
+        "manual_locked": sum(1 for scene in plan.get("scenes") or [] if scene.get("motion_locked")),
+    }
+    _write_edit_plan(project_id, plan)
+    return RedirectResponse(f"/projects/{project_id}#edit-plan-panel", status_code=303)
 
 
 @router.post("/projects/{project_id}/send-to-kaggle", responses=ERROR_RESPONSES)
