@@ -35,6 +35,7 @@ from app_shared import (
     mark_project_dirty,
     project_generated_dir,
     read_upload_limited,
+    remove_project_artifacts,
     render_template,
     require_user,
     run_research_job,
@@ -385,6 +386,7 @@ def serve_generated_image(request: Request, project_id: int, filename: str):
 async def upload_media(
     request: Request,
     project_id: int,
+    background_tasks: BackgroundTasks,
     kind: Annotated[str, Form()],
     media: Annotated[UploadFile, File()],
     csrf_token: Annotated[str, Form()] = "",
@@ -403,7 +405,8 @@ async def upload_media(
         raise HTTPException(400, f"Extensao nao suportada para {kind}: use {', '.join(sorted(exts))}.")
     data = await read_upload_limited(media, MAX_MEDIA_UPLOAD_MB * 1024 * 1024)
     save_input_media_bytes(project_id, kind, data, suffix)
-    mark_project_dirty(project_id)
+    db.mark_project_needs_package(project_id)
+    background_tasks.add_task(remove_project_artifacts, project_id)
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
@@ -411,6 +414,7 @@ async def upload_media(
 def remove_media(
     request: Request,
     project_id: int,
+    background_tasks: BackgroundTasks,
     kind: Annotated[str, Form()],
     csrf_token: Annotated[str, Form()] = "",
 ):
@@ -425,5 +429,6 @@ def remove_media(
     existing = find_input_media(project_id, kind)
     if existing:
         existing.unlink(missing_ok=True)
-        mark_project_dirty(project_id)
+        db.mark_project_needs_package(project_id)
+        background_tasks.add_task(remove_project_artifacts, project_id)
     return RedirectResponse(f"/projects/{project_id}", status_code=303)

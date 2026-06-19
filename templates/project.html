@@ -261,6 +261,8 @@
       {{ editorial_report.recommendations[0] }}
     </div>
     {% endif %}
+    {% set plan_editable = edit_plan.scenes|length <= 40 %}
+    {% if plan_editable %}
     <div class="row plan-actions" style="margin-bottom:var(--sp-3)">
       <form method="post" action="/projects/{{ project.id }}/edit-plan/random-motions">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -268,6 +270,11 @@
       </form>
       <span class="t-small t-faint">edicoes manuais ficam travadas; o randomizador global mexe so nas cenas automaticas.</span>
     </div>
+    {% else %}
+    <div class="t-small t-muted" style="margin-bottom:var(--sp-3)">
+      Plano grande: exibindo em modo leve para manter a tela rapida.
+    </div>
+    {% endif %}
     <table class="plan-table">
       <thead>
         <tr><th>cena</th><th>início</th><th>dur</th>{% if edit_plan.avatar %}<th>na tela</th>{% endif %}<th>motion</th><th>transição</th><th>caption</th><th></th></tr>
@@ -281,6 +288,7 @@
           {% if edit_plan.avatar %}
           <td>{% if s.broll %}<span class="plan-chip plan-chip-broll">b-roll</span>{% else %}<span class="plan-chip plan-chip-avatar">avatar</span>{% endif %}</td>
           {% endif %}
+          {% if plan_editable %}
           <td>
             <form id="plan-save-{{ s.scene_id }}" method="post" action="/projects/{{ project.id }}/edit-plan/scenes/{{ s.scene_id }}"></form>
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}" form="plan-save-{{ s.scene_id }}">
@@ -304,13 +312,23 @@
             <button class="btn btn-primary btn-sm" type="submit" form="plan-save-{{ s.scene_id }}">salvar</button>
             {% if s.motion_locked %}<span class="plan-lock">manual</span>{% endif %}
           </td>
+          {% else %}
+          <td>{{ s.motion }}</td>
+          <td>{{ s.transition_out }}</td>
+          <td>{{ s.caption or '—' }}</td>
+          <td></td>
+          {% endif %}
         </tr>
         {% endfor %}
       </tbody>
     </table>
     <div class="row" style="margin-top:var(--sp-3)">
       <a class="btn btn-ghost btn-sm" href="/projects/{{ project.id }}/edit-plan" target="_blank">Abrir JSON do plano</a>
+      {% if plan_editable %}
       <span class="t-small t-faint">Alterações aqui salvam o JSON do plano e o edit_plan dentro do ZIP.</span>
+      {% else %}
+      <span class="t-small t-faint">Para editar este plano grande, abra o JSON ou gere um pacote menor.</span>
+      {% endif %}
     </div>
   </div>
 </div>
