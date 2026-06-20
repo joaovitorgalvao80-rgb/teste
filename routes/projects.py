@@ -8,7 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Request, HT
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 import database as db
-from services import api_usage, edit_plan, groq_service, ops_status
+from services import api_usage, groq_service, ops_status
 from services.project_config import DEFAULT_CONFIG, LANGUAGES, ALLOWED_BROLL_DENSITIES, ALLOWED_VIDEO_STYLES, _coerce_bool, normalize_project_config, project_config, resolution_width
 from app_shared import (
     ACTIVE_JOB_STATUSES,
@@ -253,7 +253,6 @@ def project_page(request: Request, project_id: int):
             "has_base_video": outputs["base"] is not None,
             "has_master_video": outputs["master"] is not None,
             "edit_plan": local_edit_plan(project_id),
-            "motion_options": edit_plan.MOTION_OPTIONS,
             "editorial_report": local_editorial_report(project_id),
             "hyperframes_status": local_hyperframes_status(project_work) or {},
             "diagnostics": diagnostics_snapshot,

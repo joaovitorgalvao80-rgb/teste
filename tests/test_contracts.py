@@ -1743,6 +1743,34 @@ class DeployContractsTest(unittest.TestCase):
             )
             self.assertIsNone(webapp.find_input_media(project_id, "narration"))
 
+    def test_upload_media_does_not_delete_render_outputs(self) -> None:
+        with TestClient(webapp.app) as client:
+            uid = db.create_user("mediafast", "password123")
+            project_id = db.create_project(uid, "proj", "script", {})
+            project_work = webapp.project_work_dir(project_id)
+            output_dir = project_work / "kaggle_output"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            old_output = output_dir / "final_master.mp4"
+            old_output.write_bytes(b"old-render")
+            db.set_project_status(project_id, "packaged")
+            client.post(
+                "/login",
+                data={"username": "mediafast", "password": "password123"},
+                follow_redirects=False,
+            )
+
+            resp = client.post(
+                f"/projects/{project_id}/upload-media",
+                data={"kind": "avatar"},
+                files={"media": ("avatar.webm", b"avatar-bytes", "video/webm")},
+                follow_redirects=False,
+            )
+
+            self.assertEqual(resp.status_code, 303)
+            self.assertTrue(old_output.exists())
+            project = db.get_project(project_id, uid)
+            self.assertEqual(project["status"], "needs_package")
+
     def test_new_project_audio_upload_becomes_narration_media(self) -> None:
         with TestClient(webapp.app) as client:
             uid = db.create_user("newmedia", "password123")
