@@ -203,6 +203,44 @@ def research_rejected(
     return RedirectResponse(f"/projects/{project_id}/review{suffix}", status_code=303)
 
 
+def _accepted_assets_by_scene(scenes: list[dict], assets_by_scene: dict[int, list[dict]]) -> dict[int, dict]:
+    chosen_by_scene = {}
+    for scene in scenes:
+        accepted = next((a for a in assets_by_scene.get(scene["id"], []) if a["state"] == "accepted"), None)
+        if accepted:
+            chosen_by_scene[scene["id"]] = accepted
+    return chosen_by_scene
+
+
+def _ensure_review_can_finish(
+    scenes: list[dict],
+    project: dict,
+    chosen_by_scene: dict[int, dict],
+) -> None:
+    if not scenes:
+        raise HTTPException(400, "Projeto sem cenas.")
+    config = project_config(project)
+    broll_required = {sid for sid, on in scene_broll_flags(scenes, config).items() if on}
+    required_scene_db_ids = {s["id"] for s in scenes if s["scene_id"] in broll_required}
+    if not broll_required and not chosen_by_scene:
+        raise HTTPException(400, "O plano atual nao tem cenas de b-roll para revisar.")
+    if config.get("missing_visual_policy") == "block_package":
+        missing = [s["scene_id"] for s in scenes if s["id"] in required_scene_db_ids and s["id"] not in chosen_by_scene]
+        if missing:
+            preview = ", ".join(missing[:8])
+            suffix = "..." if len(missing) > 8 else ""
+            raise HTTPException(400, f"Faltam takes aceitos: {preview}{suffix}")
+    if broll_required and not any(scene_id in chosen_by_scene for scene_id in required_scene_db_ids):
+        raise HTTPException(400, "Aceite ao menos um take antes de concluir a revisao.")
+
+
+def _rejected_assets_by_scene(scenes: list[dict], assets_by_scene: dict[int, list[dict]]) -> dict[int, list[dict]]:
+    return {
+        scene["id"]: [a for a in assets_by_scene.get(scene["id"], []) if a["state"] == "rejected"]
+        for scene in scenes
+    }
+
+
 @router.post("/projects/{project_id}/finish-review", responses=ERROR_RESPONSES)
 def finish_review(request: Request, project_id: int, csrf_token: Annotated[str, Form()] = ""):
     user = require_user(request)
@@ -214,37 +252,15 @@ def finish_review(request: Request, project_id: int, csrf_token: Annotated[str, 
     if project.get("status") == "reviewed" and curation_report_path(project_id).exists():
         return RedirectResponse(f"/projects/{project_id}", status_code=303)
     scenes = db.list_scenes(project_id)
-    if not scenes:
-        raise HTTPException(400, "Projeto sem cenas.")
-    broll_required = {sid for sid, on in scene_broll_flags(scenes, project_config(project)).items() if on}
     assets_by_scene = db.list_assets_for_project(project_id)
-    chosen_by_scene: dict[int, dict] = {}
-    for scene in scenes:
-        assets = assets_by_scene.get(scene["id"], [])
-        accepted = next((a for a in assets if a["state"] == "accepted"), None)
-        if accepted:
-            chosen_by_scene[scene["id"]] = accepted
-    required_scene_db_ids = {s["id"] for s in scenes if s["scene_id"] in broll_required}
-    if not broll_required and not chosen_by_scene:
-        raise HTTPException(400, "O plano atual nao tem cenas de b-roll para revisar.")
-    if project_config(project).get("missing_visual_policy") == "block_package":
-        missing = [s["scene_id"] for s in scenes if s["id"] in required_scene_db_ids and s["id"] not in chosen_by_scene]
-        if missing:
-            preview = ", ".join(missing[:8])
-            suffix = "..." if len(missing) > 8 else ""
-            raise HTTPException(400, f"Faltam takes aceitos: {preview}{suffix}")
-    if broll_required and not any(scene_id in chosen_by_scene for scene_id in required_scene_db_ids):
-        raise HTTPException(400, "Aceite ao menos um take antes de concluir a revisao.")
+    chosen_by_scene = _accepted_assets_by_scene(scenes, assets_by_scene)
+    _ensure_review_can_finish(scenes, project, chosen_by_scene)
     from services import packager
-    rejected_by_scene = {
-        scene["id"]: [a for a in assets_by_scene.get(scene["id"], []) if a["state"] == "rejected"]
-        for scene in scenes
-    }
     report = packager.build_curation_report(
         project,
         scenes,
         chosen_by_scene,
-        rejected_by_scene,
+        _rejected_assets_by_scene(scenes, assets_by_scene),
         review_round=int(project.get("review_round") or 0),
     )
     path = curation_report_path(project_id)

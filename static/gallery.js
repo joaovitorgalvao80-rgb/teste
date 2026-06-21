@@ -408,7 +408,7 @@ function jobText(job) {
   if (job && job.status === "error") {
     return job.error || job.message || "-";
   }
-  return job.message || job.error || "-";
+  return job?.message || job?.error || "-";
 }
 
 function jobMetaText(job) {

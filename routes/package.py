@@ -72,6 +72,41 @@ def quality_warnings(request: Request, project_id: int):
     return JSONResponse({"warnings": warnings, "total": len(warnings)})
 
 
+def _required_broll_scene_ids(scenes: list[dict], config: dict) -> tuple[set[str], set[int]]:
+    broll_required = {sid for sid, on in scene_broll_flags(scenes, config).items() if on}
+    required_scene_db_ids = {s["id"] for s in scenes if s["scene_id"] in broll_required}
+    return broll_required, required_scene_db_ids
+
+
+def _ensure_all_parts_curated(project_id: int) -> None:
+    parts = db.list_parts(project_id)
+    not_curated = [p["part_idx"] for p in parts if p.get("curation_status") != "curated"]
+    if not parts or not_curated:
+        preview = ", ".join(str(i) for i in not_curated[:8])
+        raise HTTPException(
+            400,
+            f"Conclua a curadoria de todas as partes antes de gerar o pacote. Faltando: {preview}",
+        )
+
+
+def _ensure_package_has_required_assets(
+    scenes: list[dict],
+    config: dict,
+    selected_by_scene: dict[int, dict],
+) -> None:
+    broll_required, required_scene_db_ids = _required_broll_scene_ids(scenes, config)
+    if not broll_required and not selected_by_scene:
+        raise HTTPException(400, "O plano atual nao tem cenas de b-roll para empacotar.")
+    if config.get("missing_visual_policy") == "block_package":
+        missing = [s["scene_id"] for s in scenes if s["id"] in required_scene_db_ids and s["id"] not in selected_by_scene]
+        if missing:
+            preview = ", ".join(missing[:8])
+            suffix = "..." if len(missing) > 8 else ""
+            raise HTTPException(400, f"Faltam takes obrigatorios: {preview}{suffix}")
+    if broll_required and not any(scene_id in selected_by_scene for scene_id in required_scene_db_ids):
+        raise HTTPException(400, "Selecione ao menos um asset antes de gerar o pacote.")
+
+
 @router.post("/projects/{project_id}/package", responses=ERROR_RESPONSES)
 def package(
     request: Request,
@@ -85,31 +120,13 @@ def package(
     if not project:
         raise HTTPException(404)
     ensure_project_not_busy(project)
-    if project_config(project).get("long_mode"):
-        parts = db.list_parts(project_id)
-        not_curated = [p["part_idx"] for p in parts if p.get("curation_status") != "curated"]
-        if not parts or not_curated:
-            preview = ", ".join(str(i) for i in not_curated[:8])
-            raise HTTPException(
-                400,
-                f"Conclua a curadoria de todas as partes antes de gerar o pacote. Faltando: {preview}",
-            )
     config = project_config(project)
+    if config.get("long_mode"):
+        _ensure_all_parts_curated(project_id)
     scenes = db.list_scenes(project_id)
-    broll_required = {sid for sid, on in scene_broll_flags(scenes, config).items() if on}
     selected_rows = db.list_assets_by_state(project_id, CHOSEN_ASSET_STATES)
     selected_by_scene = {row["scene_id"]: row for row in selected_rows}
-    required_scene_db_ids = {s["id"] for s in scenes if s["scene_id"] in broll_required}
-    if not broll_required and not selected_by_scene:
-        raise HTTPException(400, "O plano atual nao tem cenas de b-roll para empacotar.")
-    if config.get("missing_visual_policy") == "block_package":
-        missing = [s["scene_id"] for s in scenes if s["id"] in required_scene_db_ids and s["id"] not in selected_by_scene]
-        if missing:
-            preview = ", ".join(missing[:8])
-            suffix = "..." if len(missing) > 8 else ""
-            raise HTTPException(400, f"Faltam takes obrigatorios: {preview}{suffix}")
-    if broll_required and not any(scene_id in selected_by_scene for scene_id in required_scene_db_ids):
-        raise HTTPException(400, "Selecione ao menos um asset antes de gerar o pacote.")
+    _ensure_package_has_required_assets(scenes, config, selected_by_scene)
     ensure_no_active_job(project_id, "package")
     job_id = db.create_job(user["id"], "package", project_id, "Preparando pacote ZIP")
     db.set_project_status(project_id, "packaging")

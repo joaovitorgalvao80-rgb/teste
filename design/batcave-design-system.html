@@ -954,24 +954,24 @@
           <div class="micro">Inputs</div>
           <div class="grid cols-2" style="margin-top:16px">
             <div class="field">
-              <label>Modo visual</label>
-              <select class="select">
+              <label for="design-visual-mode">Modo visual</label>
+              <select class="select" id="design-visual-mode">
                 <option>100% b-roll</option>
                 <option>B-roll de IA</option>
                 <option>Manual upload</option>
               </select>
             </div>
             <div class="field">
-              <label>Politica</label>
-              <select class="select">
+              <label for="design-policy">Politica</label>
+              <select class="select" id="design-policy">
                 <option>Bloquear se faltar</option>
                 <option>Permitir parcial</option>
               </select>
             </div>
           </div>
           <div class="field" style="margin-top:12px">
-            <label>Prompt visual</label>
-            <textarea class="textarea">Preto profundo, brilho branco suave, imagem editorial, sem texto na imagem.</textarea>
+            <label for="design-visual-prompt">Prompt visual</label>
+            <textarea class="textarea" id="design-visual-prompt">Preto profundo, brilho branco suave, imagem editorial, sem texto na imagem.</textarea>
           </div>
         </div>
       </div>
@@ -1050,7 +1050,7 @@
       </div>
 
       <div class="product-surface">
-        <aside class="side-menu">
+        <aside class="side-menu" aria-label="Cenas do projeto">
           <div class="micro">Project scenes</div>
           <div class="menu-list">
             <div class="menu-item active"><span>Abertura fria</span><span>01</span></div>
@@ -1080,7 +1080,7 @@
                 <strong>Image take</strong>
               </div>
             </div>
-            <aside class="inspector">
+            <aside class="inspector" aria-label="Inspetor do take">
               <div class="upload">
                 <div>
                   <strong>Drop image</strong>

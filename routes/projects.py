@@ -205,6 +205,28 @@ def update_project_style(
     return RedirectResponse(f"/projects/{project_id}#refinamento", status_code=303)
 
 
+def _annotate_project_scenes(scenes: list[dict], assets_by_scene: dict[int, list[dict]], config: dict) -> None:
+    for scene in scenes:
+        annotated = annotate_assets_with_vision(scene, assets_by_scene.get(scene["id"], []), config)
+        annotated.sort(key=_take_sort_key, reverse=True)
+        scene["asset_pool_total"] = len(annotated)
+        scene["good_candidate_count"] = sum(
+            1 for asset in annotated
+            if not asset.get("low_relevance") and asset.get("vision_verdict") != "descartar"
+        )
+        scene["pool_fraco"] = bool(annotated) and scene["good_candidate_count"] < 6
+        scene["assets"] = annotated[:12]
+        scene["selected"] = next((asset for asset in annotated if asset["state"] in CHOSEN_ASSET_STATES), None)
+        scene["low_relevance_count"] = sum(1 for asset in annotated if asset.get("low_relevance"))
+
+
+def _gallery_scope(parts: list[dict], scenes: list[dict]) -> tuple[Optional[int], list[dict]]:
+    if not parts:
+        return None, scenes
+    current_part = _current_part_for_gallery(parts, scenes)
+    return current_part, [s for s in scenes if int(s.get("part") or 1) == current_part]
+
+
 @router.get("/projects/{project_id}", response_class=HTMLResponse, responses=ERROR_RESPONSES)
 def project_page(request: Request, project_id: int):
     user = require_user(request)
@@ -214,18 +236,7 @@ def project_page(request: Request, project_id: int):
     config = project_config(project)
     scenes = db.list_scenes(project_id)
     assets_by_scene = db.list_assets_for_project(project_id)
-    for s in scenes:
-        annotated = annotate_assets_with_vision(s, assets_by_scene.get(s["id"], []), config)
-        annotated.sort(key=_take_sort_key, reverse=True)
-        s["asset_pool_total"] = len(annotated)
-        s["good_candidate_count"] = sum(
-            1 for a in annotated
-            if not a.get("low_relevance") and a.get("vision_verdict") != "descartar"
-        )
-        s["pool_fraco"] = bool(annotated) and s["good_candidate_count"] < 6
-        s["assets"] = annotated[:12]
-        s["selected"] = next((a for a in annotated if a["state"] in CHOSEN_ASSET_STATES), None)
-        s["low_relevance_count"] = sum(1 for a in annotated if a.get("low_relevance"))
+    _annotate_project_scenes(scenes, assets_by_scene, config)
     curation_stats = annotate_broll_requirements(scenes, config)
     asset_count = sum(len(s["assets"]) for s in scenes)
     selected_count = curation_stats["selected"]
@@ -237,12 +248,7 @@ def project_page(request: Request, project_id: int):
     jobs = db.list_project_jobs(project_id, user["id"])
     active_jobs = [job for job in jobs if job.get("status") in ACTIVE_JOB_STATUSES]
     parts = db.list_parts(project_id) if config.get("long_mode") else []
-    current_part = None
-    if parts:
-        current_part = _current_part_for_gallery(parts, scenes)
-        gallery_scenes = [s for s in scenes if int(s.get("part") or 1) == current_part]
-    else:
-        gallery_scenes = scenes
+    current_part, gallery_scenes = _gallery_scope(parts, scenes)
     diagnostics_snapshot = project_diagnostics_snapshot(
         project_id,
         scenes,

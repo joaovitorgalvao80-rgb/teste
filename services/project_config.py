@@ -116,6 +116,28 @@ def _coerce_int(value: object, default: int, minimum: int, maximum: int) -> int:
     return min(max(number, minimum), maximum)
 
 
+def _normalize_visual_policy(cfg: dict) -> None:
+    if cfg.get("broll_density") not in ALLOWED_BROLL_DENSITIES:
+        cfg["broll_density"] = DEFAULT_CONFIG["broll_density"]
+    if cfg.get("video_style") not in ALLOWED_VIDEO_STYLES:
+        cfg["video_style"] = DEFAULT_CONFIG["video_style"]
+    if cfg.get("visual_source_mode") not in ALLOWED_VISUAL_SOURCE_MODES:
+        cfg["visual_source_mode"] = DEFAULT_CONFIG["visual_source_mode"]
+    if cfg.get("visual_coverage") not in ALLOWED_VISUAL_COVERAGES:
+        cfg["visual_coverage"] = (
+            "full_required" if cfg["video_style"] == "broll_only" else DEFAULT_CONFIG["visual_coverage"]
+        )
+    if cfg.get("missing_visual_policy") not in ALLOWED_MISSING_VISUAL_POLICIES:
+        cfg["missing_visual_policy"] = (
+            "block_package" if cfg["video_style"] == "broll_only" else DEFAULT_CONFIG["missing_visual_policy"]
+        )
+    if cfg["video_style"] == "broll_only":
+        cfg["visual_coverage"] = "full_required"
+        cfg["missing_visual_policy"] = "block_package"
+    if cfg["missing_visual_policy"] == "block_package":
+        cfg["visual_coverage"] = "full_required"
+
+
 def normalize_project_config(raw_config: Optional[dict] = None) -> dict:
     cfg = dict(DEFAULT_CONFIG)
     if raw_config:
@@ -148,25 +170,7 @@ def normalize_project_config(raw_config: Optional[dict] = None) -> dict:
     visual_style = str(cfg.get("visual_style") or "").strip()
     cfg["visual_style"] = visual_style or DEFAULT_CONFIG["visual_style"]
     cfg["script_language"] = normalize_language(cfg.get("script_language"))
-    if cfg.get("broll_density") not in ALLOWED_BROLL_DENSITIES:
-        cfg["broll_density"] = DEFAULT_CONFIG["broll_density"]
-    if cfg.get("video_style") not in ALLOWED_VIDEO_STYLES:
-        cfg["video_style"] = DEFAULT_CONFIG["video_style"]
-    if cfg.get("visual_source_mode") not in ALLOWED_VISUAL_SOURCE_MODES:
-        cfg["visual_source_mode"] = DEFAULT_CONFIG["visual_source_mode"]
-    if cfg.get("visual_coverage") not in ALLOWED_VISUAL_COVERAGES:
-        cfg["visual_coverage"] = (
-            "full_required" if cfg["video_style"] == "broll_only" else DEFAULT_CONFIG["visual_coverage"]
-        )
-    if cfg.get("missing_visual_policy") not in ALLOWED_MISSING_VISUAL_POLICIES:
-        cfg["missing_visual_policy"] = (
-            "block_package" if cfg["video_style"] == "broll_only" else DEFAULT_CONFIG["missing_visual_policy"]
-        )
-    if cfg["video_style"] == "broll_only":
-        cfg["visual_coverage"] = "full_required"
-        cfg["missing_visual_policy"] = "block_package"
-    if cfg["missing_visual_policy"] == "block_package":
-        cfg["visual_coverage"] = "full_required"
+    _normalize_visual_policy(cfg)
     return cfg
 
 
