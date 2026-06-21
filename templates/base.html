@@ -7,13 +7,13 @@
   <title>{% block title %}NWRCH Studio{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css?v={{ static_version }}">
 </head>
-<body>
+<body class="{% block body_class %}{% endblock %}">
   <header class="topbar">
     <a class="brand" href="/projects" aria-label="NWRCH Studio">
       <span class="brand-mark">N</span>
       <span>
         <span class="brand-name">NWRCH Studio</span><br>
-        <span class="brand-sub">Cutroom Console</span>
+        <span class="brand-sub">Noir Studio</span>
       </span>
     </a>
     <nav class="topnav">

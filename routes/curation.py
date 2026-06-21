@@ -227,6 +227,12 @@ def finish_review(request: Request, project_id: int, csrf_token: Annotated[str, 
     required_scene_db_ids = {s["id"] for s in scenes if s["scene_id"] in broll_required}
     if not broll_required and not chosen_by_scene:
         raise HTTPException(400, "O plano atual nao tem cenas de b-roll para revisar.")
+    if project_config(project).get("missing_visual_policy") == "block_package":
+        missing = [s["scene_id"] for s in scenes if s["id"] in required_scene_db_ids and s["id"] not in chosen_by_scene]
+        if missing:
+            preview = ", ".join(missing[:8])
+            suffix = "..." if len(missing) > 8 else ""
+            raise HTTPException(400, f"Faltam takes aceitos: {preview}{suffix}")
     if broll_required and not any(scene_id in chosen_by_scene for scene_id in required_scene_db_ids):
         raise HTTPException(400, "Aceite ao menos um take antes de concluir a revisao.")
     from services import packager
@@ -305,6 +311,55 @@ def preview_page(request: Request, project_id: int):
     )
 
 
+def _add_generated_image_asset(
+    project: dict,
+    scene_db_id: int,
+    data: bytes,
+    prompt: str,
+    width: str = "0",
+    height: str = "0",
+    origin: str = "ai",
+) -> dict:
+    try:
+        ext, parsed_w, parsed_h = _image_kind_and_size(data)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    w = parsed_w or _coerce_int(width, 0, 0, 16384)
+    h = parsed_h or _coerce_int(height, 0, 0, 16384)
+    clean_prompt = (prompt or "").strip()[:500]
+    folder = project_generated_dir(project["id"])
+    folder.mkdir(parents=True, exist_ok=True)
+    filename = f"gen_{uuid.uuid4().hex}{ext}"
+    dest = folder / filename
+    try:
+        dest.write_bytes(data)
+        url = f"/projects/{project['id']}/generated/{filename}"
+        added = db.add_assets(scene_db_id, [{
+            "source": "generated",
+            "source_id": filename,
+            "asset_type": "image",
+            "preview_url": url,
+            "download_url": url,
+            "page_url": "",
+            "width": w,
+            "height": h,
+            "duration": 0,
+            "keyword": clean_prompt[:60] or ("upload manual" if origin == "manual_upload" else "imagem gerada"),
+            "author": "",
+            "author_url": "",
+            "discovery_provider": origin,
+            "provider_payload": {"origin": origin, "prompt": clean_prompt},
+        }])
+    except Exception:
+        dest.unlink(missing_ok=True)
+        raise
+    if added != 1:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(500, "Falha ao registrar a imagem.")
+    mark_project_dirty(project["id"])
+    return {"added": added, "url": url}
+
+
 @router.post("/scenes/{scene_db_id}/generated-image", responses=ERROR_RESPONSES)
 async def save_generated_image(
     request: Request,
@@ -327,42 +382,31 @@ async def save_generated_image(
     data = await read_upload_limited(image, MAX_GENERATED_UPLOAD_MB * 1024 * 1024, "Imagem")
     if not data:
         raise HTTPException(400, "Imagem vazia.")
-    try:
-        ext, parsed_w, parsed_h = _image_kind_and_size(data)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    w = parsed_w or _coerce_int(width, 0, 0, 16384)
-    h = parsed_h or _coerce_int(height, 0, 0, 16384)
-    prompt = (prompt or "").strip()[:500]
-    folder = project_generated_dir(project["id"])
-    folder.mkdir(parents=True, exist_ok=True)
-    filename = f"gen_{uuid.uuid4().hex}{ext}"
-    dest = folder / filename
-    try:
-        dest.write_bytes(data)
-        url = f"/projects/{project['id']}/generated/{filename}"
-        added = db.add_assets(scene_db_id, [{
-            "source": "generated",
-            "source_id": filename,
-            "asset_type": "image",
-            "preview_url": url,
-            "download_url": url,
-            "page_url": "",
-            "width": w,
-            "height": h,
-            "duration": 0,
-            "keyword": prompt[:60] or "imagem gerada",
-            "author": "",
-            "author_url": "",
-        }])
-    except Exception:
-        dest.unlink(missing_ok=True)
-        raise
-    if added != 1:
-        dest.unlink(missing_ok=True)
-        raise HTTPException(500, "Falha ao registrar a imagem gerada.")
-    mark_project_dirty(project["id"])
-    return JSONResponse({"added": added, "url": url})
+    return JSONResponse(_add_generated_image_asset(project, scene_db_id, data, prompt, width, height, "ai"))
+
+
+@router.post("/scenes/{scene_db_id}/upload-image", responses=ERROR_RESPONSES)
+async def upload_scene_image(
+    request: Request,
+    scene_db_id: int,
+    image: Annotated[UploadFile, File()],
+    prompt: Annotated[str, Form()] = "",
+    csrf_token: Annotated[str, Form()] = "",
+):
+    user = require_user(request)
+    verify_csrf(request, csrf_token)
+    scene = db.get_scene(scene_db_id)
+    if not scene:
+        raise HTTPException(404)
+    project = db.get_project(scene["project_id"], user["id"])
+    if not project:
+        raise HTTPException(404)
+    ensure_project_not_busy(project)
+    data = await read_upload_limited(image, MAX_GENERATED_UPLOAD_MB * 1024 * 1024, "Imagem")
+    if not data:
+        raise HTTPException(400, "Imagem vazia.")
+    _add_generated_image_asset(project, scene_db_id, data, prompt, origin="manual_upload")
+    return RedirectResponse(f"/projects/{project['id']}#scene-{scene_db_id}", status_code=303)
 
 
 @router.get("/projects/{project_id}/generated/{filename}", responses=ERROR_RESPONSES)

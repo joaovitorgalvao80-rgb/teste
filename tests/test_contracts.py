@@ -342,6 +342,29 @@ class DeployContractsTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(db.list_assets(scene["id"]), [])
 
+    def test_manual_scene_image_upload_registers_generated_asset(self) -> None:
+        with TestClient(webapp.app) as client:
+            _, project_id, scene = self._project_with_scene("manualimg")
+            client.post(
+                "/login",
+                data={"username": "manualimg", "password": "password123"},
+                follow_redirects=False,
+            )
+            resp = client.post(
+                f"/scenes/{scene['id']}/upload-image",
+                files={"image": ("manual.png", self._tiny_png(), "image/png")},
+                data={"prompt": "manual frame"},
+                follow_redirects=False,
+            )
+
+        self.assertEqual(resp.status_code, 303)
+        self.assertEqual(resp.headers["location"], f"/projects/{project_id}#scene-{scene['id']}")
+        assets = db.list_assets(scene["id"])
+        self.assertEqual(len(assets), 1)
+        self.assertEqual(assets[0]["source"], "generated")
+        self.assertEqual(assets[0]["asset_type"], "image")
+        self.assertEqual(assets[0]["discovery_provider"], "manual_upload")
+
     def test_manual_curation_ui_has_explicit_auto_select_and_review_image_generation(self) -> None:
         with TestClient(webapp.app) as client:
             uid = db.create_user("manual-ui", "password123")
@@ -381,6 +404,7 @@ class DeployContractsTest(unittest.TestCase):
         self.assertIn("toggleGenPanel", review_page.text)
         self.assertIn(f"gen-panel-{scene['id']}", review_page.text)
         self.assertIn(f"generateImage({scene['id']}", review_page.text)
+        self.assertIn(f'action="/scenes/{scene["id"]}/upload-image"', project_page.text)
 
     def test_packager_copies_generated_asset_from_disk(self) -> None:
         work_dir = self.root / "work" / "project_1"
@@ -1119,6 +1143,54 @@ class DeployContractsTest(unittest.TestCase):
         self.assertEqual(calls[0][0], "upload")
         self.assertEqual(calls[1][0], "push")
 
+    def test_upload_dataset_uses_extended_upload_timeout(self) -> None:
+        zip_path = self.root / "asset_pack_video.zip"
+        zip_path.write_bytes(b"zip")
+        calls = []
+        original_run = kaggle_service._run
+        original_wait = kaggle_service._wait_dataset_ready
+
+        def fake_run(args, username, token, **kwargs):
+            calls.append((args, username, token, kwargs))
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+        try:
+            kaggle_service._run = fake_run
+            kaggle_service._wait_dataset_ready = lambda *_args, **_kwargs: None
+
+            slug = kaggle_service.upload_dataset(zip_path, "video project", "user", "token", project_id=7)
+        finally:
+            kaggle_service._run = original_run
+            kaggle_service._wait_dataset_ready = original_wait
+
+        self.assertEqual(slug, "brolls-p7-video-project")
+        self.assertEqual(calls[0][0][:2], ["datasets", "version"])
+        self.assertEqual(calls[0][3]["timeout"], kaggle_service.KAGGLE_UPLOAD_TIMEOUT_SECONDS)
+
+    def test_upload_dataset_timeout_does_not_retry_as_create(self) -> None:
+        zip_path = self.root / "asset_pack_video.zip"
+        zip_path.write_bytes(b"zip")
+        calls = []
+        original_run = kaggle_service._run
+        original_wait = kaggle_service._wait_dataset_ready
+
+        def fake_run(args, username, token, **kwargs):
+            calls.append(args)
+            raise kaggle_service.KaggleCliTimeout("timeout")
+
+        try:
+            kaggle_service._run = fake_run
+            kaggle_service._wait_dataset_ready = lambda *_args, **_kwargs: self.fail("nao deveria aguardar dataset")
+
+            with self.assertRaises(kaggle_service.KaggleCliTimeout):
+                kaggle_service.upload_dataset(zip_path, "video project", "user", "token", project_id=7)
+        finally:
+            kaggle_service._run = original_run
+            kaggle_service._wait_dataset_ready = original_wait
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][:2], ["datasets", "version"])
+
     def test_pull_output_video_prefers_hyperframes_master(self) -> None:
         original_run = kaggle_service._run
         calls = []
@@ -1627,6 +1699,34 @@ class DeployContractsTest(unittest.TestCase):
 
         self.assertEqual(db.get_job(job_id, uid)["status"], "complete")
 
+    def test_broll_only_package_blocks_missing_required_scene_assets(self) -> None:
+        db.init_db()
+        uid = db.create_user("strict-broll", "password123")
+        project_id = db.create_project(
+            uid,
+            "strict",
+            "script",
+            {"video_style": "broll_only", "missing_visual_policy": "block_package"},
+        )
+        db.replace_scenes(
+            project_id,
+            [
+                {"scene_id": "scene_001", "idx": 1, "start_time": 0, "end_time": 4, "duration": 4, "narration": "a"},
+                {"scene_id": "scene_002", "idx": 2, "start_time": 4, "end_time": 8, "duration": 4, "narration": "b"},
+            ],
+        )
+        first = db.list_scenes(project_id)[0]
+        db.add_assets(first["id"], [{"source": "generated", "download_url": "/projects/1/generated/gen_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png", "asset_type": "image"}])
+        asset = db.list_assets(first["id"])[0]
+        db.set_asset_state(asset["id"], "selected")
+        job_id = db.create_job(uid, "package", project_id, "pacote")
+
+        webapp.run_package_job(job_id, project_id, uid)
+
+        job = db.get_job(job_id, uid)
+        self.assertEqual(job["status"], "error")
+        self.assertIn("Faltando: scene_002", job["error"])
+
     def test_montador_keeps_full_audio_and_static_images(self) -> None:
         import inspect
 
@@ -2131,6 +2231,7 @@ class HardeningAndOptimizationTest(unittest.TestCase):
                 resp = client.post(f"/projects/{project_id}/package", follow_redirects=False)
                 jobs = db.list_project_jobs(project_id, uid)
                 project = db.get_project(project_id, uid)
+                page = client.get(f"/projects/{project_id}")
         finally:
             webapp.packager.build_zip = original_build
 
@@ -2138,6 +2239,7 @@ class HardeningAndOptimizationTest(unittest.TestCase):
         self.assertEqual(project["status"], "package_failed")
         self.assertEqual(jobs[0]["status"], "error")
         self.assertIn("falha inesperada", jobs[0]["error"])
+        self.assertIn("falha inesperada de disco", page.text)
 
     def test_kaggle_status_requires_credentials(self) -> None:
         with TestClient(webapp.app) as client:

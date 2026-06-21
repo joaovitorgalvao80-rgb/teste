@@ -18,7 +18,7 @@
 </div>
 
 <!-- Pipeline -->
-<div class="panel" style="margin-bottom:var(--sp-4)">
+<div class="panel pipeline-panel" style="margin-bottom:var(--sp-4)">
   <div class="pipeline">
     <form method="post" action="/projects/{{ project.id }}/generate-map" style="flex:1;display:contents" data-busy-submit>
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -61,10 +61,11 @@
     <form method="post" action="/projects/{{ project.id }}/package" style="flex:1;display:contents" data-busy-submit>
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button class="step {% if project.status == 'packaged' %}is-done{% endif %}" id="btn-package" type="submit"
+              data-missing-policy="{{ config.missing_visual_policy }}"
               {% if config.long_mode %}
                 {% if not all_parts_curated or project.status in ['mapping','searching','packaging'] %}disabled{% endif %}
               {% else %}
-                {% if selected_count == 0 or project.status in ['mapping','searching','packaging'] %}disabled{% endif %}
+                {% if selected_count == 0 or (config.missing_visual_policy == 'block_package' and selected_count < broll_required_count) or project.status in ['mapping','searching','packaging'] %}disabled{% endif %}
               {% endif %}>
         <span class="step-idx">03</span>
         <span class="step-name">Pacote ({{ selected_count }}/{{ broll_required_count }})</span>
@@ -353,7 +354,13 @@
               <b>{{ job.kind }}</b>
               <span>{{ job.status }}</span>
               <small>
-                <span class="job-message">{{ job.message or job.error or '-' }}</span>
+                <span class="job-message">
+                  {% if job.status == 'error' and job.error %}
+                    {{ job.error }}
+                  {% else %}
+                    {{ job.message or job.error or '-' }}
+                  {% endif %}
+                </span>
                 <span class="job-meta">{{ job.elapsed_label }} - atualizado {{ job.updated_label }}</span>
               </small>
               {% if job.status in active_job_statuses %}
@@ -381,28 +388,42 @@
     <!-- Estilo de edição -->
     <div style="margin-bottom:var(--sp-5);padding-bottom:var(--sp-4);border-bottom:1px solid var(--line-0)">
       <p class="tag" style="margin-bottom:var(--sp-3)">Estilo de edição</p>
-      <form method="post" action="/projects/{{ project.id }}/update-style" class="row" style="gap:var(--sp-3);flex-wrap:wrap;align-items:flex-end">
+      <form method="post" action="/projects/{{ project.id }}/update-style" class="style-settings-grid">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <label style="flex:1;min-width:200px">Estilo de vídeo
+        <label style="flex:1;min-width:200px">Estilo de video
           <select name="video_style">
             <option value="avatar_broll"{% if config.video_style == 'avatar_broll' %} selected{% endif %}>Avatar + B-roll</option>
-            <option value="broll_only"{% if config.video_style == 'broll_only' %} selected{% endif %}>Só B-roll (sem avatar)</option>
+            <option value="broll_only"{% if config.video_style == 'broll_only' %} selected{% endif %}>So B-roll (sem avatar)</option>
           </select>
         </label>
-        <label style="flex:1;min-width:220px">Distribuição de B-rolls
+        <label style="flex:1;min-width:220px">Distribuicao de B-rolls
           <select name="broll_density">
-            <option value="key_moments"{% if config.broll_density == 'key_moments' %} selected{% endif %}>Só em pontos-chave (~30-40%)</option>
-            <option value="moderate"{% if config.broll_density == 'moderate' %} selected{% endif %}>Equilibrado — padrão (~50-65%)</option>
-            <option value="full_coverage"{% if config.broll_density == 'full_coverage' %} selected{% endif %}>Vídeo inteiro, poucas pausas (~80-90%)</option>
+            <option value="key_moments"{% if config.broll_density == 'key_moments' %} selected{% endif %}>So em pontos-chave (~30-40%)</option>
+            <option value="moderate"{% if config.broll_density == 'moderate' %} selected{% endif %}>Equilibrado - padrao (~50-65%)</option>
+            <option value="full_coverage"{% if config.broll_density == 'full_coverage' %} selected{% endif %}>Video inteiro, poucas pausas (~80-90%)</option>
+          </select>
+        </label>
+        <label style="flex:1;min-width:220px">Fonte visual
+          <select name="visual_source_mode">
+            <option value="stock"{% if config.visual_source_mode == 'stock' %} selected{% endif %}>Bancos externos</option>
+            <option value="ai_preferred"{% if config.visual_source_mode == 'ai_preferred' %} selected{% endif %}>IA preferencial</option>
+            <option value="ai_required"{% if config.visual_source_mode == 'ai_required' %} selected{% endif %}>IA obrigatoria</option>
+            <option value="manual_upload"{% if config.visual_source_mode == 'manual_upload' %} selected{% endif %}>Uploads manuais</option>
+          </select>
+        </label>
+        <label style="flex:1;min-width:220px">Asset faltando
+          <select name="missing_visual_policy">
+            <option value="fallback_avatar"{% if config.missing_visual_policy == 'fallback_avatar' %} selected{% endif %}>Usar avatar quando possivel</option>
+            <option value="block_package"{% if config.missing_visual_policy == 'block_package' %} selected{% endif %}>Bloquear pacote incompleto</option>
           </select>
         </label>
         <button class="btn btn-secondary btn-sm" type="submit" style="align-self:flex-end">Salvar estilo</button>
       </form>
       <p class="t-muted t-small" style="margin-top:var(--sp-2)">
-        Alterar esses valores invalida o pacote atual — gere a etapa <strong>03 Pacote</strong> novamente para aplicar.
+        Alterar esses valores invalida o pacote atual - gere a etapa <strong>03 Pacote</strong> novamente para aplicar.
       </p>
     </div>
-    <!-- /Estilo de edição -->
+    <!-- /Estilo de edicao -->
 
     <p class="t-muted t-small" style="margin-bottom:var(--sp-4)">
       Esses arquivos entram no <code>final_master.mp4</code> composto no render do Kaggle (FFmpeg).
@@ -410,7 +431,7 @@
     </p>
     <div class="refine-grid">
       <div class="refine-item">
-        <strong>Narração</strong>
+        <strong>Narracao</strong>
         {% if narration_name %}
           <p class="t-small">Atual: <strong>{{ narration_name }}</strong></p>
           <form method="post" action="/projects/{{ project.id }}/remove-media">
@@ -422,13 +443,13 @@
         <form method="post" action="/projects/{{ project.id }}/upload-media" enctype="multipart/form-data">
           <input type="hidden" name="kind" value="narration">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <input type="file" name="media" accept=".mp3,.wav,.m4a,.aac,.ogg,.flac" required aria-label="Arquivo de narração">
-          <button class="btn btn-secondary btn-sm" type="submit">{% if narration_name %}Substituir{% else %}Enviar narração{% endif %}</button>
+          <input type="file" name="media" accept=".mp3,.wav,.m4a,.aac,.ogg,.flac" required aria-label="Arquivo de narracao">
+          <button class="btn btn-secondary btn-sm" type="submit">{% if narration_name %}Substituir{% else %}Enviar narracao{% endif %}</button>
         </form>
       </div>
       <div class="refine-item">
         <strong>Avatar</strong>
-        <p class="t-muted t-small">WebM com alpha fica transparente; MP4 aparece como retângulo.</p>
+        <p class="t-muted t-small">WebM com alpha fica transparente; MP4 aparece como retangulo.</p>
         {% if avatar_name %}
           <p class="t-small">Atual: <strong>{{ avatar_name }}</strong></p>
           <form method="post" action="/projects/{{ project.id }}/remove-media">
@@ -496,7 +517,7 @@
 <style>
   body.hide-low-rel .take[data-low="1"]:not(.is-selected):not(.is-accepted) { display: none; }
   .scene-controls { margin: var(--sp-2) 0 var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2); }
-  .kw-search { min-width: 200px; flex: 1 1 200px; max-width: 320px; }
+  .kw-search { min-width: 180px; flex: 1 1 220px; max-width: 100%; }
   .avatar-override { align-items: center; gap: var(--sp-1); }
   .avatar-override .btn.is-active { outline: 2px solid rgba(91,141,239,0.7); outline-offset: -1px; font-weight: 600; }
 </style>
@@ -536,22 +557,26 @@
       {% endif %}
 
       <div class="scene-controls">
-        <div class="row">
-          <input type="text" class="kw-search" id="kw-search-{{ scene.id }}"
-                 placeholder="palavra-chave própria…" aria-label="Buscar com palavra-chave própria"
-                 onkeydown="if(event.key==='Enter'){event.preventDefault();searchMore({{ scene.id }}, this, 'all')}">
-          <button type="button" class="btn btn-secondary btn-sm" onclick="searchMore({{ scene.id }}, this, 'all')">buscar</button>
-          <button type="button" class="btn btn-secondary btn-sm" onclick="searchMore({{ scene.id }}, this, 'video')">+ vídeos</button>
-          <button type="button" class="btn btn-secondary btn-sm" onclick="searchMore({{ scene.id }}, this, 'image')">+ imagens</button>
-          <button type="button" class="btn btn-ghost btn-sm" onclick="refreshAssets({{ scene.id }}, this, 'all')">atualizar</button>
-          <button type="button" class="btn btn-secondary btn-sm" onclick="toggleGenPanel({{ scene.id }})">✦ gerar</button>
-          <button type="button" class="btn btn-ghost btn-sm" onclick="regenKeywords({{ scene.id }})">
-            novas keywords
-            <span id="kw-{{ scene.id }}" style="display:none">{{ scene.keywords|join(', ') }}</span>
-          </button>
-          <button type="button" class="btn btn-ghost btn-sm" id="btn-edit-kw-{{ scene.id }}"
-                  onclick="editKeywords({{ scene.id }}, this)">editar</button>
-          <span id="kw-edit-{{ scene.id }}" class="row" style="display:none;flex:1;gap:var(--sp-2)">
+        <div class="scene-toolbar">
+          <div class="scene-tool-group scene-tool-search">
+            <input type="text" class="kw-search" id="kw-search-{{ scene.id }}"
+                   placeholder="Buscar keyword propria..." aria-label="Buscar com keyword propria"
+                   onkeydown="if(event.key==='Enter'){event.preventDefault();searchMore({{ scene.id }}, this, 'all')}">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="searchMore({{ scene.id }}, this, 'all')">buscar</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="searchMore({{ scene.id }}, this, 'video')">vídeos</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="searchMore({{ scene.id }}, this, 'image')">imagens</button>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="refreshAssets({{ scene.id }}, this, 'all')">atualizar</button>
+          </div>
+          <div class="scene-tool-group">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="toggleGenPanel({{ scene.id }})">IA / upload</button>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="regenKeywords({{ scene.id }})">
+              novas keywords
+              <span id="kw-{{ scene.id }}" style="display:none">{{ scene.keywords|join(', ') }}</span>
+            </button>
+            <button type="button" class="btn btn-ghost btn-sm" id="btn-edit-kw-{{ scene.id }}"
+                    onclick="editKeywords({{ scene.id }}, this)">editar keywords</button>
+          </div>
+          <span id="kw-edit-{{ scene.id }}" class="scene-keyword-edit" style="display:none">
             <input type="text" id="kw-input-{{ scene.id }}" class="kw-search"
                    value="{{ scene.keywords|join(', ') }}"
                    placeholder="keyword1, keyword2, keyword3"
@@ -573,15 +598,29 @@
         </div>
       </div>
 
-      <div class="gen-panel" id="gen-panel-{{ scene.id }}" style="display:none;margin-bottom:var(--sp-3);padding:var(--sp-3);border:1px solid var(--line-0);border-radius:var(--radius)">
-        <p class="t-small t-faint" style="margin-bottom:var(--sp-2)">
-          O gerador externo carrega somente quando você clicar em Gerar. A imagem entra como take normal.
-        </p>
-        <textarea id="gen-prompt-{{ scene.id }}" rows="3" style="width:100%;resize:vertical"
-          >{{ (scene.visual_goal or scene.narration or '')[:160] }}{% if scene.keywords %}, {{ scene.keywords[:3]|join(', ') }}{% endif %}, {{ config.visual_style }}, photorealistic, 16:9 wide shot, no text, no watermark</textarea>
-        <div class="row" style="margin-top:var(--sp-2)">
-          <button class="btn btn-secondary btn-sm" type="button" onclick="generateImage({{ scene.id }}, this)">Gerar</button>
-          <span class="t-small t-faint" id="gen-status-{{ scene.id }}"></span>
+      <div class="gen-panel" id="gen-panel-{{ scene.id }}" style="display:none">
+        <div class="gen-grid">
+          <div class="gen-box">
+            <p class="t-small t-faint" style="margin-bottom:var(--sp-2)">
+              O gerador externo carrega somente quando voce clicar em Gerar. A imagem entra como take normal.
+            </p>
+            <textarea id="gen-prompt-{{ scene.id }}" rows="3" style="width:100%;resize:vertical"
+              >{{ (scene.visual_goal or scene.narration or '')[:160] }}{% if scene.keywords %}, {{ scene.keywords[:3]|join(', ') }}{% endif %}, {{ config.visual_style }}, photorealistic, 16:9 wide shot, no text, no watermark</textarea>
+            <div class="row" style="margin-top:var(--sp-2)">
+              <button class="btn btn-secondary btn-sm" type="button" onclick="generateImage({{ scene.id }}, this)">Gerar IA</button>
+              <span class="t-small t-faint" id="gen-status-{{ scene.id }}"></span>
+            </div>
+          </div>
+          <form class="gen-box manual-upload-box" method="post" action="/scenes/{{ scene.id }}/upload-image" enctype="multipart/form-data">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label>Imagem pronta
+              <input type="file" name="image" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp" required>
+            </label>
+            <label>Nota visual
+              <input name="prompt" value="{{ (scene.visual_goal or scene.narration or '')[:90] }}">
+            </label>
+            <button class="btn btn-secondary btn-sm" type="submit">Enviar imagem</button>
+          </form>
         </div>
       </div>
 

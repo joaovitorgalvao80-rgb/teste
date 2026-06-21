@@ -54,25 +54,42 @@
     </div>
     <p class="t-muted t-small" style="margin-top:calc(-1 * var(--sp-3));margin-bottom:var(--sp-4)">Define o idioma do roteiro/transcrição e dos textos sobrepostos no vídeo. A busca de B-rolls é sempre feita em inglês (mais resultados).</p>
 
-    <div class="grid-2">
-      <label>Estilo de vídeo
-        <select name="video_style" id="video-style-select" onchange="toggleAvatarArea(this.value)">
-          <option value="avatar_broll" selected>Avatar + B-roll</option>
-          <option value="broll_only">Só B-roll (sem avatar)</option>
-        </select>
+    <input type="hidden" name="video_style" id="video-style-select" value="avatar_broll">
+    <input type="hidden" name="broll_density" id="broll-density-select" value="moderate">
+    <input type="hidden" name="visual_source_mode" id="visual-source-mode" value="stock">
+    <input type="hidden" name="visual_coverage" id="visual-coverage" value="planned">
+    <input type="hidden" name="missing_visual_policy" id="missing-visual-policy" value="fallback_avatar">
+
+    <div class="mode-picker" role="radiogroup" aria-label="Modo de producao visual">
+      <label class="mode-card is-selected">
+        <input type="radio" name="visual_preset" value="avatar_stock" checked
+               data-video-style="avatar_broll" data-broll-density="moderate"
+               data-source-mode="stock" data-coverage="planned" data-missing-policy="fallback_avatar">
+        <span class="mode-title">Avatar + B-roll</span>
+        <span class="mode-copy">Fluxo padrao com apresentador base e takes nos momentos fortes.</span>
       </label>
-      <label>Distribuição de B-rolls
-        <select name="broll_density">
-          <option value="key_moments">Só em pontos-chave (~30-40%)</option>
-          <option value="moderate" selected>Equilibrado — padrão (~50-65%)</option>
-          <option value="full_coverage">Vídeo inteiro, poucas pausas (~80-90%)</option>
-        </select>
+      <label class="mode-card">
+        <input type="radio" name="visual_preset" value="faceless_stock"
+               data-video-style="broll_only" data-broll-density="full_coverage"
+               data-source-mode="stock" data-coverage="full_required" data-missing-policy="block_package">
+        <span class="mode-title">100% B-roll + narracao</span>
+        <span class="mode-copy">Faceless: toda cena precisa de imagem ou video antes do render.</span>
+      </label>
+      <label class="mode-card">
+        <input type="radio" name="visual_preset" value="ai_broll"
+               data-video-style="avatar_broll" data-broll-density="moderate"
+               data-source-mode="ai_preferred" data-coverage="planned" data-missing-policy="fallback_avatar">
+        <span class="mode-title">B-roll de IA</span>
+        <span class="mode-copy">Mantem o estilo padrao, priorizando imagens geradas por IA.</span>
+      </label>
+      <label class="mode-card">
+        <input type="radio" name="visual_preset" value="manual_upload"
+               data-video-style="broll_only" data-broll-density="full_coverage"
+               data-source-mode="manual_upload" data-coverage="full_required" data-missing-policy="block_package">
+        <span class="mode-title">Eu envio as imagens</span>
+        <span class="mode-copy">Voce cria fora, sobe por cena e o sistema edita o video.</span>
       </label>
     </div>
-    <p class="t-muted t-small" style="margin-top:calc(-1 * var(--sp-3));margin-bottom:var(--sp-4)">
-      <strong>Estilo:</strong> "Só B-roll" é ideal para vídeos faceless; "Avatar + B-roll" mantém o apresentador como base com b-rolls por cima.
-      <strong>Distribuição:</strong> controla quantas cenas receberão b-roll no render.
-    </p>
 
     <div class="grid-2">
       <label id="avatar-area-row">Área segura do avatar
@@ -116,6 +133,28 @@ function toggleAvatarArea(value) {
   const row = document.getElementById("avatar-area-row");
   if (row) row.style.opacity = value === "broll_only" ? "0.35" : "";
 }
+function applyVisualPreset(input) {
+  if (!input) return;
+  const fields = {
+    "video-style-select": input.dataset.videoStyle,
+    "broll-density-select": input.dataset.brollDensity,
+    "visual-source-mode": input.dataset.sourceMode,
+    "visual-coverage": input.dataset.coverage,
+    "missing-visual-policy": input.dataset.missingPolicy,
+  };
+  Object.entries(fields).forEach(([id, value]) => {
+    const field = document.getElementById(id);
+    if (field && value) field.value = value;
+  });
+  document.querySelectorAll(".mode-card").forEach((card) => {
+    card.classList.toggle("is-selected", card.contains(input));
+  });
+  toggleAvatarArea(input.dataset.videoStyle || "avatar_broll");
+}
+document.querySelectorAll('input[name="visual_preset"]').forEach((input) => {
+  input.addEventListener("change", () => applyVisualPreset(input));
+});
+applyVisualPreset(document.querySelector('input[name="visual_preset"]:checked'));
 document.getElementById("audio-upload").addEventListener("change", async function () {
   const file = this.files[0];
   if (!file) return;

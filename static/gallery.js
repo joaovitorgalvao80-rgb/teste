@@ -104,10 +104,11 @@ function updateSelectedCount() {
   const statusBadge = document.querySelector(".head-status .badge");
   const status = statusBadge ? (statusBadge.dataset.status || statusBadge.textContent).trim().toLowerCase() : "";
   const busy = BUSY_PROJECT_STATUSES.has(status);
+  const requiresComplete = btn.dataset.missingPolicy === "block_package";
   // atualiza o texto do step no pipeline
   const nameSpan = btn.querySelector(".step-name");
   if (nameSpan) nameSpan.textContent = `Pacote (${selected}/${total})`;
-  btn.disabled = busy || selected === 0;
+  btn.disabled = busy || selected === 0 || (requiresComplete && selected < total);
 }
 
 async function searchMore(sceneId, btn, media) {
@@ -395,13 +396,18 @@ async function sendToKaggle(projectId) {
 function renderJob(job) {
   const txt = document.getElementById("kaggle-status-text");
   if (!txt || !job) return;
-  const msg = job.message || job.error || job.status || "job";
+  const msg = job.status === "error"
+    ? (job.error || job.message || job.status || "job")
+    : (job.message || job.error || job.status || "job");
   txt.textContent = `${job.kind}: ${job.status} - ${msg}`;
 }
 
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running", "canceling"]);
 
 function jobText(job) {
+  if (job && job.status === "error") {
+    return job.error || job.message || "-";
+  }
   return job.message || job.error || "-";
 }
 

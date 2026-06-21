@@ -1799,11 +1799,38 @@ class _PackageCtx:
         self.rejected_payload = rejected_payload
 
 
-def _validate_package_selection(selected_by_scene, broll_required, required_scene_db_ids) -> None:
+def _requires_complete_visuals(config: dict) -> bool:
+    return (
+        config.get("video_style") == "broll_only"
+        or config.get("visual_coverage") == "full_required"
+        or config.get("missing_visual_policy") == "block_package"
+    )
+
+
+def _validate_package_selection(
+    selected_by_scene,
+    broll_required,
+    required_scene_db_ids,
+    scenes: Optional[list[dict]] = None,
+    config: Optional[dict] = None,
+) -> None:
     if not broll_required:
         if selected_by_scene:
             return
         raise RuntimeError("Selecao vazia; escolha ao menos um asset antes de gerar pacote.")
+    if _requires_complete_visuals(config or {}):
+        missing_ids = required_scene_db_ids - set(selected_by_scene)
+        if missing_ids:
+            names = [
+                scene["scene_id"] for scene in (scenes or [])
+                if scene["id"] in missing_ids
+            ] or [str(scene_id) for scene_id in sorted(missing_ids)]
+            preview = ", ".join(names[:8])
+            suffix = "..." if len(names) > 8 else ""
+            raise RuntimeError(
+                "Modo visual exige take em todas as cenas de b-roll. "
+                f"Faltando: {preview}{suffix}"
+            )
     if not any(scene_id in selected_by_scene for scene_id in required_scene_db_ids):
         raise RuntimeError("Selecao vazia; escolha ao menos um asset antes de gerar pacote.")
 
@@ -1821,8 +1848,12 @@ def _validate_avatar_contract(plan: dict, avatar_file: Optional[Path]) -> None:
         raise RuntimeError("edit_plan.avatar.src nao aponta para o arquivo de avatar do pacote.")
 
 
-def _fallback_unselected_brolls_to_avatar(scenes: list[dict], selected_by_scene: dict[int, dict]) -> None:
+def _fallback_unselected_brolls_to_avatar(
+    scenes: list[dict], selected_by_scene: dict[int, dict], config: Optional[dict] = None
+) -> None:
     """Cenas b-roll sem take escolhido viram avatar no pacote/render."""
+    if _requires_complete_visuals(config or {}):
+        return
     for scene in scenes:
         if scene.get("broll") and scene["id"] not in selected_by_scene:
             scene["broll"] = False
@@ -1998,8 +2029,14 @@ def run_package_job(job_id: int, project_id: int, user_id: int) -> None:
         selected_rows = db.list_assets_by_state(project_id, CHOSEN_ASSET_STATES)
         selected_by_scene = {row["scene_id"]: row for row in selected_rows}
         rejected = db.list_assets_by_state(project_id, ["rejected"])
-        _validate_package_selection(selected_by_scene, broll_required, required_scene_db_ids)
-        _fallback_unselected_brolls_to_avatar(scenes, selected_by_scene)
+        _validate_package_selection(
+            selected_by_scene,
+            broll_required,
+            required_scene_db_ids,
+            scenes=scenes,
+            config=config,
+        )
+        _fallback_unselected_brolls_to_avatar(scenes, selected_by_scene, config)
         remove_project_artifacts(project_id)
         rejected_payload = [
             {

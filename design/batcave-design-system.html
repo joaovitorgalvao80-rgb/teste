@@ -1,0 +1,1114 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NWRCH Studio - Noir Design System</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --black: #020202;
+      --black-soft: #070707;
+      --panel: rgba(15, 15, 15, 0.72);
+      --panel-strong: rgba(24, 24, 24, 0.84);
+      --field: rgba(255, 255, 255, 0.055);
+      --line: rgba(255, 255, 255, 0.105);
+      --line-strong: rgba(255, 255, 255, 0.22);
+      --white: #f5f5f2;
+      --muted: rgba(245, 245, 242, 0.62);
+      --faint: rgba(245, 245, 242, 0.36);
+      --mist: rgba(245, 245, 242, 0.18);
+      --glow: rgba(245, 245, 242, 0.34);
+      --green: #8ea99b;
+      --danger: #c8b2b2;
+      --radius: 8px;
+      --font-display: "Helvetica Neue", "Inter Tight", "Arial Narrow", Arial, sans-serif;
+      --font-ui: "Inter", "Segoe UI", Arial, sans-serif;
+      --font-mono: "Cascadia Mono", "IBM Plex Mono", Consolas, monospace;
+      --shadow-soft: 0 34px 120px rgba(0, 0, 0, 0.72);
+      --shadow-glow: 0 0 54px rgba(245, 245, 242, 0.16);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      background: var(--black);
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.1), transparent 28rem),
+        radial-gradient(circle at 51% 46%, rgba(255, 255, 255, 0.07), transparent 24rem),
+        linear-gradient(90deg, #000 0%, #050505 18%, #090909 50%, #050505 82%, #000 100%);
+      color: var(--white);
+      font-family: var(--font-ui);
+      letter-spacing: 0;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: -2;
+      background: url("batcave-assets/noir-glow-bg.png") top center / min(100vw, 1180px) auto no-repeat;
+      opacity: 0.48;
+      filter: saturate(0) contrast(1.03);
+    }
+
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      background:
+        repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.026) 0 1px, transparent 1px 5px),
+        radial-gradient(circle at 50% 15%, transparent 0, rgba(0, 0, 0, 0.42) 48rem);
+      opacity: 0.72;
+    }
+
+    a {
+      color: inherit;
+    }
+
+    .page {
+      width: min(1120px, calc(100% - 36px));
+      margin: 0 auto;
+      padding: 26px 0 80px;
+    }
+
+    .topnav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      padding: 18px 0 42px;
+      color: var(--faint);
+      font-size: 11px;
+    }
+
+    .mark {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      color: var(--white);
+      text-decoration: none;
+    }
+
+    .mark-symbol {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background:
+        radial-gradient(circle, var(--white) 0 2px, transparent 3px),
+        conic-gradient(from 45deg, transparent, rgba(255, 255, 255, 0.42), transparent 24%);
+      box-shadow: 0 0 24px rgba(255, 255, 255, 0.32);
+    }
+
+    .toplinks {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 26px;
+    }
+
+    .toplinks a {
+      text-decoration: none;
+    }
+
+    .hero {
+      position: relative;
+      min-height: 730px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(260px, 0.95fr);
+      align-items: center;
+      gap: 34px;
+      padding: 58px 0 88px;
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: -98px;
+      width: min(520px, 70vw);
+      height: 96px;
+      translate: -50% 0;
+      border-radius: 0 0 22px 22px;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.015));
+      filter: blur(3px);
+      box-shadow: inset 0 -26px 46px rgba(255, 255, 255, 0.09), var(--shadow-glow);
+      opacity: 0.8;
+    }
+
+    .kicker {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .kicker::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--white);
+      box-shadow: 0 0 18px rgba(255, 255, 255, 0.7);
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin: 0;
+    }
+
+    h1 {
+      max-width: 520px;
+      margin-top: 34px;
+      font-family: var(--font-display);
+      font-size: 132px;
+      font-weight: 500;
+      line-height: 0.82;
+      letter-spacing: 0;
+    }
+
+    h1 span {
+      display: block;
+      color: rgba(245, 245, 242, 0.72);
+      font-weight: 300;
+    }
+
+    .hero-copy {
+      max-width: 430px;
+      margin-top: 24px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.65;
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+      margin-top: 28px;
+    }
+
+    .star {
+      position: relative;
+      width: min(330px, 52vw);
+      aspect-ratio: 1;
+      margin: 0 auto;
+      filter: drop-shadow(0 0 38px rgba(255, 255, 255, 0.42));
+    }
+
+    .star::before,
+    .star::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      translate: -50% -50%;
+      background: var(--white);
+      filter: blur(1px);
+    }
+
+    .star::before {
+      width: 32px;
+      height: 100%;
+      clip-path: polygon(50% 0, 68% 43%, 100% 50%, 68% 57%, 50% 100%, 32% 57%, 0 50%, 32% 43%);
+    }
+
+    .star::after {
+      width: 100%;
+      height: 32px;
+      clip-path: polygon(0 50%, 43% 32%, 50% 0, 57% 32%, 100% 50%, 57% 68%, 50% 100%, 43% 68%);
+      opacity: 0.88;
+    }
+
+    .section {
+      padding: 64px 0;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 22px;
+      align-items: end;
+      margin-bottom: 26px;
+    }
+
+    .section h2 {
+      max-width: 560px;
+      font-size: 58px;
+      font-weight: 400;
+      line-height: 0.96;
+      letter-spacing: 0;
+    }
+
+    .section p {
+      color: var(--muted);
+      line-height: 1.58;
+    }
+
+    .micro {
+      color: var(--faint);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 34px;
+      padding: 0 17px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.065);
+      color: var(--white);
+      font-size: 11px;
+      text-decoration: none;
+      box-shadow: inset 0 1px rgba(255, 255, 255, 0.16);
+    }
+
+    .btn.primary {
+      border-color: rgba(255, 255, 255, 0.46);
+      background: linear-gradient(180deg, #f5f5f2, #a8a8a4);
+      color: #060606;
+      box-shadow: 0 0 26px rgba(255, 255, 255, 0.22), inset 0 1px rgba(255, 255, 255, 0.86);
+    }
+
+    .btn.icon {
+      width: 34px;
+      padding: 0;
+    }
+
+    .btn svg {
+      width: 13px;
+      height: 13px;
+    }
+
+    .grid {
+      display: grid;
+      gap: 14px;
+    }
+
+    .cols-2 {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .cols-3 {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .cols-4 {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .panel {
+      position: relative;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.018)),
+        var(--panel);
+      box-shadow: var(--shadow-soft), inset 0 1px rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(24px);
+    }
+
+    .panel.pad {
+      padding: 20px;
+    }
+
+    .glass-strip {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 14px;
+      align-items: center;
+      min-height: 86px;
+      padding: 0 26px;
+      border: 1px solid var(--line-strong);
+      border-radius: 12px;
+      background:
+        radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.36), transparent 8rem),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.06) 48%, rgba(255, 255, 255, 0.12));
+      color: #070707;
+      box-shadow: var(--shadow-glow), inset 0 1px rgba(255, 255, 255, 0.7);
+    }
+
+    .glass-strip strong {
+      font-size: 42px;
+      font-weight: 500;
+      letter-spacing: 0;
+    }
+
+    .swatch {
+      height: 120px;
+      border-radius: var(--radius);
+      border: 1px solid var(--line);
+      box-shadow: inset 0 0 42px rgba(0, 0, 0, 0.38);
+    }
+
+    .token {
+      display: grid;
+      gap: 12px;
+    }
+
+    .token strong,
+    .card h3 {
+      font-size: 17px;
+      font-weight: 500;
+      letter-spacing: 0;
+    }
+
+    .token span,
+    .card span {
+      color: var(--faint);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+    }
+
+    .type-line {
+      display: grid;
+      grid-template-columns: 180px 1fr;
+      gap: 22px;
+      align-items: baseline;
+      padding: 24px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.065);
+    }
+
+    .sample-display {
+      font-size: 104px;
+      font-weight: 400;
+      line-height: 0.86;
+      letter-spacing: 0;
+    }
+
+    .sample-ui {
+      max-width: 610px;
+      font-size: 16px;
+      color: var(--muted);
+      line-height: 1.65;
+    }
+
+    .sample-mono {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+
+    .field {
+      display: grid;
+      gap: 9px;
+    }
+
+    .field label {
+      color: var(--faint);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+    }
+
+    .input,
+    .select,
+    .textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background:
+        radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.08), transparent 10rem),
+        var(--field);
+      color: var(--white);
+      font: 400 13px var(--font-ui);
+      outline: none;
+      box-shadow: inset 0 1px rgba(255, 255, 255, 0.07);
+    }
+
+    .input,
+    .select {
+      min-height: 42px;
+      padding: 0 13px;
+    }
+
+    .textarea {
+      min-height: 120px;
+      padding: 13px;
+      resize: vertical;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.035);
+    }
+
+    .toolbar-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 24px;
+      padding: 0 9px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--muted);
+      font-size: 10px;
+    }
+
+    .badge.ok {
+      color: #d8eee2;
+      border-color: rgba(142, 169, 155, 0.4);
+    }
+
+    .card {
+      min-height: 230px;
+      padding: 20px;
+      display: grid;
+      align-content: space-between;
+      gap: 22px;
+      overflow: hidden;
+    }
+
+    .card::before {
+      content: "";
+      position: absolute;
+      inset: auto 18px 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.32), transparent);
+    }
+
+    .card.featured {
+      background:
+        radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.19), transparent 9rem),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.025)),
+        var(--panel);
+    }
+
+    .card p {
+      margin-top: 12px;
+      font-size: 13px;
+    }
+
+    .card-number {
+      font-size: 30px;
+      font-weight: 300;
+      color: rgba(255, 255, 255, 0.78);
+      letter-spacing: 0;
+    }
+
+    .asset-preview {
+      min-height: 460px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background:
+        linear-gradient(180deg, rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.72)),
+        url("batcave-assets/noir-glow-bg.png") center / cover no-repeat;
+      box-shadow: var(--shadow-soft);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .asset-preview::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 52%;
+      width: 54%;
+      height: 28%;
+      translate: -50% -50%;
+      background: radial-gradient(ellipse, rgba(255, 255, 255, 0.19), transparent 65%);
+      filter: blur(12px);
+    }
+
+    .asset-caption {
+      position: absolute;
+      left: 24px;
+      right: 24px;
+      bottom: 24px;
+      z-index: 1;
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      align-items: end;
+    }
+
+    .asset-caption h3 {
+      max-width: 420px;
+      font-size: 52px;
+      font-weight: 400;
+      line-height: 0.92;
+      letter-spacing: 0;
+    }
+
+    .mini-asset {
+      min-height: 160px;
+      display: grid;
+      align-content: end;
+      padding: 16px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.035);
+      overflow: hidden;
+      position: relative;
+    }
+
+    .mini-asset::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      opacity: 0.8;
+    }
+
+    .mini-asset.glow::before {
+      background: radial-gradient(circle at 50% 38%, rgba(255, 255, 255, 0.26), transparent 7rem);
+    }
+
+    .mini-asset.grain::before {
+      background:
+        radial-gradient(circle at 18% 30%, rgba(255, 255, 255, 0.2) 0 1px, transparent 1px),
+        radial-gradient(circle at 80% 70%, rgba(255, 255, 255, 0.12) 0 1px, transparent 1px);
+      background-size: 7px 7px, 11px 11px;
+    }
+
+    .mini-asset.glass::before {
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.18), transparent 60%);
+      filter: blur(0.2px);
+    }
+
+    .mini-asset > * {
+      position: relative;
+      z-index: 1;
+    }
+
+    .product-surface {
+      display: grid;
+      grid-template-columns: minmax(220px, 0.65fr) minmax(0, 1.35fr);
+      gap: 14px;
+    }
+
+    .side-menu,
+    .work-area {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.035);
+      box-shadow: var(--shadow-soft);
+      overflow: hidden;
+    }
+
+    .side-menu {
+      padding: 16px;
+    }
+
+    .menu-list {
+      display: grid;
+      gap: 9px;
+      margin-top: 22px;
+    }
+
+    .menu-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      min-height: 48px;
+      padding: 0 12px;
+      border-radius: 10px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.035);
+    }
+
+    .menu-item.active {
+      color: var(--white);
+      border: 1px solid var(--line-strong);
+      background:
+        radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.16), transparent 6rem),
+        rgba(255, 255, 255, 0.055);
+    }
+
+    .work-head {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 16px;
+      align-items: center;
+      padding: 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .work-head h3 {
+      font-size: 34px;
+      font-weight: 400;
+      letter-spacing: 0;
+    }
+
+    .work-body {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 250px;
+      gap: 14px;
+      padding: 14px;
+    }
+
+    .preview {
+      min-height: 380px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background:
+        radial-gradient(circle at 48% 34%, rgba(255, 255, 255, 0.2), transparent 11rem),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.015));
+      position: relative;
+      overflow: hidden;
+    }
+
+    .preview::before {
+      content: "";
+      position: absolute;
+      inset: 36px 28px auto;
+      height: 190px;
+      border-radius: 12px;
+      background:
+        repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.18) 0 9px, transparent 9px 22px),
+        rgba(255, 255, 255, 0.025);
+      opacity: 0.46;
+      filter: blur(0.2px);
+    }
+
+    .preview-title {
+      position: absolute;
+      left: 24px;
+      bottom: 24px;
+    }
+
+    .preview-title strong {
+      display: block;
+      font-size: 42px;
+      font-weight: 400;
+      letter-spacing: 0;
+    }
+
+    .inspector {
+      display: grid;
+      gap: 12px;
+    }
+
+    .upload {
+      display: grid;
+      place-items: center;
+      min-height: 190px;
+      padding: 20px;
+      border: 1px dashed rgba(255, 255, 255, 0.22);
+      border-radius: 14px;
+      text-align: center;
+      background:
+        radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.14), transparent 8rem),
+        rgba(255, 255, 255, 0.03);
+    }
+
+    .upload strong {
+      display: block;
+      font-size: 24px;
+      font-weight: 400;
+      letter-spacing: 0;
+    }
+
+    .upload span {
+      display: block;
+      max-width: 190px;
+      margin-top: 8px;
+      color: var(--faint);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .timeline {
+      display: grid;
+      gap: 8px;
+      padding: 14px;
+      border-top: 1px solid var(--line);
+    }
+
+    .timeline-row {
+      display: grid;
+      grid-template-columns: 0.8fr 1.4fr 0.65fr 1fr;
+      gap: 5px;
+      height: 32px;
+    }
+
+    .clip {
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.12);
+      box-shadow: inset 0 1px rgba(255, 255, 255, 0.16);
+    }
+
+    .clip.active {
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0.16));
+    }
+
+    code {
+      color: rgba(255, 255, 255, 0.76);
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+
+    @media (max-width: 980px) {
+      .hero,
+      .product-surface,
+      .work-body,
+      .cols-4,
+      .cols-3 {
+        grid-template-columns: 1fr;
+      }
+
+      .star {
+        width: min(260px, 58vw);
+      }
+    }
+
+    @media (max-width: 720px) {
+      .page {
+        width: min(100% - 22px, 1120px);
+      }
+
+      .topnav,
+      .section-head,
+      .asset-caption,
+      .glass-strip,
+      .work-head {
+        grid-template-columns: 1fr;
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .cols-2 {
+        grid-template-columns: 1fr;
+      }
+
+      .hero {
+        padding-top: 34px;
+      }
+
+      h1 {
+        font-size: 68px;
+      }
+
+      .type-line {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <nav class="topnav" aria-label="Navegacao">
+      <a class="mark" href="#inicio">
+        <span class="mark-symbol" aria-hidden="true"></span>
+        <span>NWRCH Studio</span>
+      </a>
+      <div class="toplinks">
+        <a href="#base">Base</a>
+        <a href="#componentes">Componentes</a>
+        <a href="#assets">Assets</a>
+        <a href="#produto">Produto</a>
+      </div>
+    </nav>
+
+    <section class="hero" id="inicio">
+      <div>
+        <div class="kicker">visual direction / quiet cave</div>
+        <h1><span>Noir</span> Studio</h1>
+        <p class="hero-copy">
+          A nova direcao sai do painel tecnico pesado e entra em um dark editorial mais premium:
+          preto profundo, luz branca borrada, vidro fosco, muito espaco vazio e controles calmos.
+        </p>
+        <div class="hero-actions">
+          <a class="btn primary" href="#produto">Ver superficie</a>
+          <a class="btn" href="#componentes">Ver botoes</a>
+          <a class="btn icon" href="#assets" aria-label="Ver assets">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+          </a>
+        </div>
+      </div>
+      <div class="star" aria-hidden="true"></div>
+    </section>
+
+    <section class="section" id="base">
+      <div class="section-head">
+        <div>
+          <h2>Menos painel, mais atmosfera.</h2>
+          <p style="max-width:620px;margin-top:14px">
+            A interface ainda pode ser operacional, mas a sensacao muda: as informacoes aparecem
+            como camadas discretas, sem poluir o espaco principal.
+          </p>
+        </div>
+        <div class="micro">01 / foundation</div>
+      </div>
+
+      <div class="grid cols-4">
+        <div class="token">
+          <div class="swatch" style="background:#020202"></div>
+          <div><strong>Black room</strong><span>#020202</span></div>
+        </div>
+        <div class="token">
+          <div class="swatch" style="background:#101010"></div>
+          <div><strong>Soft panel</strong><span>#101010</span></div>
+        </div>
+        <div class="token">
+          <div class="swatch" style="background:#f5f5f2"></div>
+          <div><strong>Milk light</strong><span>#f5f5f2</span></div>
+        </div>
+        <div class="token">
+          <div class="swatch" style="background:linear-gradient(180deg,rgba(255,255,255,.24),rgba(255,255,255,.04))"></div>
+          <div><strong>Frosted gloss</strong><span>glass / blur</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>Fonte e ritmo.</h2>
+          <p style="max-width:580px;margin-top:14px">
+            Tipografia grande, leve e editorial. Metadata pequena. O luxo vem do silencio,
+            nao de encher a tela.
+          </p>
+        </div>
+        <div class="micro">02 / type</div>
+      </div>
+
+      <div class="panel pad">
+        <div class="type-line">
+          <div class="micro">Display</div>
+          <div class="sample-display">The editor room</div>
+        </div>
+        <div class="type-line">
+          <div class="micro">Interface</div>
+          <div class="sample-ui">
+            Textos menores, com bastante entrelinha, para o app parecer controlado mesmo quando tem muitas acoes.
+          </div>
+        </div>
+        <div class="type-line">
+          <div class="micro">Metadata</div>
+          <div class="sample-mono">manual_upload / full_required / scene_014 / ready_for_package</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="componentes">
+      <div class="section-head">
+        <div>
+          <h2>Componentes silenciosos.</h2>
+          <p style="max-width:620px;margin-top:14px">
+            Botoes em formato pill, inputs de vidro escuro, cards menores e comandos agrupados.
+            Tudo com menos borda dura e mais brilho branco.
+          </p>
+        </div>
+        <div class="micro">03 / components</div>
+      </div>
+
+      <div class="glass-strip">
+        <strong>Enter</strong>
+        <a class="btn primary" href="#produto">Abrir projeto</a>
+      </div>
+
+      <div class="grid cols-2" style="margin-top:14px">
+        <div class="panel pad">
+          <div class="micro">Buttons</div>
+          <div class="toolbar" style="margin-top:16px">
+            <div class="toolbar-group">
+              <button class="btn primary" type="button">Montar pacote</button>
+              <button class="btn" type="button">Gerar imagem</button>
+              <button class="btn" type="button">Upload</button>
+            </div>
+            <div class="toolbar-group">
+              <span class="badge ok">12 ok</span>
+              <span class="badge">02 pendentes</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel pad">
+          <div class="micro">Inputs</div>
+          <div class="grid cols-2" style="margin-top:16px">
+            <div class="field">
+              <label>Modo visual</label>
+              <select class="select">
+                <option>100% b-roll</option>
+                <option>B-roll de IA</option>
+                <option>Manual upload</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Politica</label>
+              <select class="select">
+                <option>Bloquear se faltar</option>
+                <option>Permitir parcial</option>
+              </select>
+            </div>
+          </div>
+          <div class="field" style="margin-top:12px">
+            <label>Prompt visual</label>
+            <textarea class="textarea">Preto profundo, brilho branco suave, imagem editorial, sem texto na imagem.</textarea>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid cols-3" style="margin-top:14px">
+        <article class="panel card">
+          <div>
+            <div class="card-number">01</div>
+            <h3>Avatar + b-roll</h3>
+            <p>O modo classico continua, mas com comandos menos espremidos.</p>
+          </div>
+          <span>baseline</span>
+        </article>
+        <article class="panel card featured">
+          <div>
+            <div class="card-number">02</div>
+            <h3>100% b-roll</h3>
+            <p>Narracao sem avatar, com cobertura visual completa e bloqueio se faltar cena.</p>
+          </div>
+          <span>full visual</span>
+        </article>
+        <article class="panel card">
+          <div>
+            <div class="card-number">03</div>
+            <h3>Eu envio imagens</h3>
+            <p>Upload manual integrado a curadoria, sem parecer uma area tecnica separada.</p>
+          </div>
+          <span>manual upload</span>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" id="assets">
+      <div class="section-head">
+        <div>
+          <h2>Assets da direcao.</h2>
+          <p style="max-width:620px;margin-top:14px">
+            Substitui o asset mais tecnico por um fundo preto editorial com brilho branco e textura discreta.
+          </p>
+        </div>
+        <div class="micro">04 / assets</div>
+      </div>
+
+      <div class="asset-preview">
+        <div class="asset-caption">
+          <h3>Noir glow background</h3>
+          <div class="micro"><code>design/batcave-assets/noir-glow-bg.png</code></div>
+        </div>
+      </div>
+
+      <div class="grid cols-3" style="margin-top:14px">
+        <div class="mini-asset glow">
+          <strong>White blur</strong>
+          <span class="micro">hero / empty states</span>
+        </div>
+        <div class="mini-asset glass">
+          <strong>Frosted panel</strong>
+          <span class="micro">cards / modals</span>
+        </div>
+        <div class="mini-asset grain">
+          <strong>Soft grain</strong>
+          <span class="micro">page overlay</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="produto">
+      <div class="section-head">
+        <div>
+          <h2>Como isso entra no app.</h2>
+          <p style="max-width:640px;margin-top:14px">
+            A tela fica mais respiravel: cenas na lateral, preview grande, inspetor simples e botoes agrupados por decisao.
+          </p>
+        </div>
+        <div class="micro">05 / product</div>
+      </div>
+
+      <div class="product-surface">
+        <aside class="side-menu">
+          <div class="micro">Project scenes</div>
+          <div class="menu-list">
+            <div class="menu-item active"><span>Abertura fria</span><span>01</span></div>
+            <div class="menu-item"><span>Prova visual</span><span>02</span></div>
+            <div class="menu-item"><span>Imagem manual</span><span>03</span></div>
+            <div class="menu-item"><span>Revisao final</span><span>04</span></div>
+          </div>
+        </aside>
+
+        <section class="work-area">
+          <div class="work-head">
+            <div>
+              <div class="micro">Operacao memoria fria</div>
+              <h3>Scene 02</h3>
+            </div>
+            <div class="toolbar-group">
+              <button class="btn" type="button">Buscar</button>
+              <button class="btn" type="button">Upload</button>
+              <button class="btn primary" type="button">Aprovar</button>
+            </div>
+          </div>
+
+          <div class="work-body">
+            <div class="preview">
+              <div class="preview-title">
+                <span class="micro">Preview</span>
+                <strong>Image take</strong>
+              </div>
+            </div>
+            <aside class="inspector">
+              <div class="upload">
+                <div>
+                  <strong>Drop image</strong>
+                  <span>Para imagens que voce criou fora do sistema.</span>
+                </div>
+              </div>
+              <div class="panel pad">
+                <div class="micro">Status</div>
+                <div class="toolbar-group" style="margin-top:14px">
+                  <span class="badge ok">selected</span>
+                  <span class="badge">manual</span>
+                </div>
+              </div>
+            </aside>
+          </div>
+
+          <div class="timeline">
+            <div class="micro">Timeline package</div>
+            <div class="timeline-row">
+              <div class="clip"></div>
+              <div class="clip active"></div>
+              <div class="clip"></div>
+              <div class="clip"></div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

@@ -32,10 +32,16 @@ DEFAULT_CONFIG = {
     #   avatar_broll → avatar como base; b-rolls sobrepõem nas cenas marcadas
     #   broll_only   → sem avatar; b-roll ocupa 100% da tela em todas as cenas
     "video_style": "avatar_broll",
+    "visual_source_mode": "stock",
+    "visual_coverage": "planned",
+    "missing_visual_policy": "fallback_avatar",
 }
 
 ALLOWED_BROLL_DENSITIES = {"key_moments", "moderate", "full_coverage"}
 ALLOWED_VIDEO_STYLES = {"avatar_broll", "broll_only"}
+ALLOWED_VISUAL_SOURCE_MODES = {"stock", "ai_preferred", "ai_required", "manual_upload"}
+ALLOWED_VISUAL_COVERAGES = {"planned", "full_required"}
+ALLOWED_MISSING_VISUAL_POLICIES = {"fallback_avatar", "block_package"}
 
 # Idiomas suportados para roteiro/transcrição/overlay. Fonte única de verdade.
 #   whisper: código ISO 639-1 enviado ao Whisper na transcrição.
@@ -146,6 +152,21 @@ def normalize_project_config(raw_config: Optional[dict] = None) -> dict:
         cfg["broll_density"] = DEFAULT_CONFIG["broll_density"]
     if cfg.get("video_style") not in ALLOWED_VIDEO_STYLES:
         cfg["video_style"] = DEFAULT_CONFIG["video_style"]
+    if cfg.get("visual_source_mode") not in ALLOWED_VISUAL_SOURCE_MODES:
+        cfg["visual_source_mode"] = DEFAULT_CONFIG["visual_source_mode"]
+    if cfg.get("visual_coverage") not in ALLOWED_VISUAL_COVERAGES:
+        cfg["visual_coverage"] = (
+            "full_required" if cfg["video_style"] == "broll_only" else DEFAULT_CONFIG["visual_coverage"]
+        )
+    if cfg.get("missing_visual_policy") not in ALLOWED_MISSING_VISUAL_POLICIES:
+        cfg["missing_visual_policy"] = (
+            "block_package" if cfg["video_style"] == "broll_only" else DEFAULT_CONFIG["missing_visual_policy"]
+        )
+    if cfg["video_style"] == "broll_only":
+        cfg["visual_coverage"] = "full_required"
+        cfg["missing_visual_policy"] = "block_package"
+    if cfg["missing_visual_policy"] == "block_package":
+        cfg["visual_coverage"] = "full_required"
     return cfg
 
 

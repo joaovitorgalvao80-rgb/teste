@@ -1,51 +1,66 @@
 {% extends "base.html" %}
 {% block title %}Entrar | NWRCH Studio{% endblock %}
+{% block body_class %}login-page{% endblock %}
 {% block content %}
-<div class="auth-wrap">
-  <section class="auth-intro">
-    <span class="tag">NWRCH Studio</span>
-    <h1>Console de produção visual com IA.</h1>
-    <p>Transforme roteiro em mapa visual, assets aprovados, pacote e render final no Kaggle sem sair do fluxo.</p>
-    <div class="auth-stats">
-      <span><strong>01</strong>Mapa visual</span>
-      <span><strong>02</strong>Asset curation</span>
-      <span><strong>03</strong>Kaggle render</span>
+<div class="login-screen">
+  <section class="login-shell" aria-label="Acesso ao NWRCH Studio">
+    <div class="login-visual" aria-hidden="true">
+      <div class="login-visual-top">
+        <span class="login-emblem">N</span>
+        <span>NWRCH Studio</span>
+      </div>
+      <div class="login-visual-copy">
+        <p class="tag">Noir editing workspace</p>
+        <h1>NWRCH Studio</h1>
+      </div>
+      <div class="login-meter-row">
+        <span></span>
+        <span></span>
+        <span></span>
+      </div>
+    </div>
+
+    <div class="login-actions">
+      {% if error %}<p class="alert">{{ error }}</p>{% endif %}
+
+      <div class="login-card login-card-primary">
+        <div class="login-card-head">
+          <p class="tag">Acessar workspace</p>
+          <h2>Entrar</h2>
+        </div>
+        <form method="post" action="/login" class="login-form">
+          <input type="hidden" name="next" value="{{ next }}">
+          <label>Usuario
+            <input name="username" required autofocus autocomplete="username">
+          </label>
+          <label>Senha
+            <input name="password" type="password" required autocomplete="current-password">
+          </label>
+          <button class="btn btn-primary" type="submit">Entrar</button>
+        </form>
+      </div>
+
+      <div class="login-card login-card-secondary">
+        <div class="login-card-head">
+          <p class="tag">Primeiro acesso</p>
+          <h2>Criar conta</h2>
+        </div>
+        <form method="post" action="/register" class="login-form">
+          <label>Usuario
+            <input name="username" required autocomplete="username">
+          </label>
+          <label>Senha <span class="label-muted">(min 8)</span>
+            <input name="password" type="password" required minlength="8" autocomplete="new-password">
+          </label>
+          {% if registration.invite_required %}
+          <label>Codigo de convite
+            <input name="invite_code" type="password" required autocomplete="off">
+          </label>
+          {% endif %}
+          <button class="btn btn-secondary" type="submit">Criar e entrar</button>
+        </form>
+      </div>
     </div>
   </section>
-
-  <div class="auth-stack">
-    <div class="panel panel-pad">
-      <p class="tag" style="margin-bottom:var(--sp-3)">Acessar workspace</p>
-      <h2 style="margin-bottom:var(--sp-4)">Entrar</h2>
-      {% if error %}<p class="alert">{{ error }}</p>{% endif %}
-      <form method="post" action="/login">
-        <input type="hidden" name="next" value="{{ next }}">
-        <label>Usuário<input name="username" required autofocus></label>
-        <label>Senha<input name="password" type="password" required></label>
-        <button class="btn btn-primary" type="submit" style="width:100%">Entrar</button>
-      </form>
-    </div>
-
-    {% if registration.enabled %}
-    <div class="panel panel-pad">
-      <p class="tag" style="margin-bottom:var(--sp-3)">Primeiro acesso</p>
-      <h2 style="margin-bottom:var(--sp-2)">Criar conta</h2>
-      <p class="t-muted t-small" style="margin-bottom:var(--sp-4)">Crie um usuário local e cadastre suas APIs para começar.</p>
-      <form method="post" action="/register">
-        <label>Usuário<input name="username" required></label>
-        <label>Senha (min 8)<input name="password" type="password" required minlength="8"></label>
-        {% if registration.invite_required %}
-          <label>Código de convite<input name="invite_code" type="password" required></label>
-        {% endif %}
-        <button class="btn btn-secondary" type="submit" style="width:100%">Criar e continuar</button>
-      </form>
-    </div>
-    {% else %}
-    <div class="panel panel-pad">
-      <p class="tag" style="margin-bottom:var(--sp-3)">Cadastro fechado</p>
-      <p class="t-muted t-small">Este deploy não aceita novos usuários sem convite.</p>
-    </div>
-    {% endif %}
-  </div>
 </div>
 {% endblock %}

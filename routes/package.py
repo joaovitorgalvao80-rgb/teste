@@ -94,13 +94,20 @@ def package(
                 400,
                 f"Conclua a curadoria de todas as partes antes de gerar o pacote. Faltando: {preview}",
             )
+    config = project_config(project)
     scenes = db.list_scenes(project_id)
-    broll_required = {sid for sid, on in scene_broll_flags(scenes, project_config(project)).items() if on}
+    broll_required = {sid for sid, on in scene_broll_flags(scenes, config).items() if on}
     selected_rows = db.list_assets_by_state(project_id, CHOSEN_ASSET_STATES)
     selected_by_scene = {row["scene_id"]: row for row in selected_rows}
     required_scene_db_ids = {s["id"] for s in scenes if s["scene_id"] in broll_required}
     if not broll_required and not selected_by_scene:
         raise HTTPException(400, "O plano atual nao tem cenas de b-roll para empacotar.")
+    if config.get("missing_visual_policy") == "block_package":
+        missing = [s["scene_id"] for s in scenes if s["id"] in required_scene_db_ids and s["id"] not in selected_by_scene]
+        if missing:
+            preview = ", ".join(missing[:8])
+            suffix = "..." if len(missing) > 8 else ""
+            raise HTTPException(400, f"Faltam takes obrigatorios: {preview}{suffix}")
     if broll_required and not any(scene_id in selected_by_scene for scene_id in required_scene_db_ids):
         raise HTTPException(400, "Selecione ao menos um asset antes de gerar o pacote.")
     ensure_no_active_job(project_id, "package")

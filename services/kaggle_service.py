@@ -37,6 +37,24 @@ MASTER_VIDEO_NAME = "final_master.mp4"
 KAGGLE_ARG_PATTERN = re.compile(r"^[\w./:@+\\\-=,()[\]|$*?]+$")
 
 
+class KaggleCliError(RuntimeError):
+    """Falha retornada pelo Kaggle CLI com stderr/stdout disponivel."""
+
+
+class KaggleCliTimeout(RuntimeError):
+    """Kaggle CLI excedeu o tempo configurado."""
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
+KAGGLE_UPLOAD_TIMEOUT_SECONDS = _env_int("KAGGLE_UPLOAD_TIMEOUT_SECONDS", 1800, 60)
+
+
 def _slug(text: str, max_len: int = 36) -> str:
     text = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
     text = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
@@ -204,6 +222,20 @@ def _run(args: list[str], username: str, token: str, **kwargs) -> subprocess.Com
             ok=result.returncode == 0,
             latency_ms=api_usage.elapsed_ms(start),
         )
+    except subprocess.TimeoutExpired as exc:
+        api_usage.record(
+            "kaggle",
+            operation,
+            ok=False,
+            latency_ms=api_usage.elapsed_ms(start),
+            detail="timeout",
+        )
+        timeout = int(exc.timeout or kwargs.get("timeout") or 0)
+        raise KaggleCliTimeout(
+            f"Timeout ao executar Kaggle CLI ({operation}) depois de {timeout}s. "
+            "No app local isso geralmente e upload lento do dataset; tente novamente ou aumente "
+            "KAGGLE_UPLOAD_TIMEOUT_SECONDS."
+        ) from exc
     except Exception as exc:
         api_usage.record(
             "kaggle",
@@ -215,7 +247,7 @@ def _run(args: list[str], username: str, token: str, **kwargs) -> subprocess.Com
         raise
     if result.returncode != 0:
         out = (result.stderr or "") + (result.stdout or "")
-        raise RuntimeError((out or "erro desconhecido")[-800:])
+        raise KaggleCliError((out or "erro desconhecido")[-800:])
     return result
 
 
@@ -253,12 +285,12 @@ def upload_dataset(
         try:
             _run(
                 ["datasets", "version", "-p", str(tmp), "-m", "update"],
-                username, token, timeout=300,
+                username, token, timeout=KAGGLE_UPLOAD_TIMEOUT_SECONDS,
             )
-        except RuntimeError:
+        except KaggleCliError:
             _run(
                 ["datasets", "create", "-p", str(tmp)],
-                username, token, timeout=300,
+                username, token, timeout=KAGGLE_UPLOAD_TIMEOUT_SECONDS,
             )
 
     _wait_dataset_ready(slug, zip_path.name, username, token)

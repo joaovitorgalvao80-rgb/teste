@@ -11,6 +11,8 @@ tools/_run_*.py
 .env
 .claude/
 .pytest_cache/
+.local-app/
+.venv-local/
 docs/CATALOGO_SKILLS_IA.md
 
 # Midia de teste/entrega (binarios grandes, fora do versionamento)

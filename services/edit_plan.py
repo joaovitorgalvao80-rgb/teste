@@ -435,6 +435,21 @@ def _apply_editorial_hints(plan_scenes: list[dict], editorial_report: dict | Non
 
 
 
+def _source_rules(source_mode: str, missing_policy: str) -> list[str]:
+    labels = {
+        "stock": "Fonte visual principal: bancos externos e curadoria normal.",
+        "ai_preferred": "Fonte visual principal: imagens geradas por IA, com stock como apoio.",
+        "ai_required": "Fonte visual principal: imagens geradas por IA.",
+        "manual_upload": "Fonte visual principal: imagens enviadas manualmente por cena.",
+    }
+    rules = [labels.get(source_mode, labels["stock"])]
+    if missing_policy == "block_package":
+        rules.append("Cena visual obrigatoria sem take bloqueia o pacote.")
+    else:
+        rules.append("Cena b-roll sem take pode cair para avatar quando houver avatar base.")
+    return rules
+
+
 def _structure_rules(video_style: str) -> list[str]:
     if video_style == "broll_only":
         return [
@@ -472,11 +487,12 @@ def _density_rules(density: str) -> list[str]:
     ]
 
 
-def _pipeline_rules(video_style: str, density: str) -> list[str]:
+def _pipeline_rules(video_style: str, density: str, source_mode: str, missing_policy: str) -> list[str]:
     """Retorna as regras concretas do pipeline de edicao."""
     return [
         *_structure_rules(video_style),
         *_density_rules(density),
+        *_source_rules(source_mode, missing_policy),
         "Cenas com override manual sem b-roll nunca recebem b-roll.",
         "Cenas com override manual forcar b-roll sempre recebem b-roll.",
         "Cenas de apresentacao/saudacao nunca levam b-roll.",
@@ -497,7 +513,9 @@ def _broll_only_policy(plan_scenes: list[dict], scenes: list[dict]) -> dict:
     }
 
 
-def _build_editorial_pipeline(video_style: str, density: str) -> dict:
+def _build_editorial_pipeline(
+    video_style: str, density: str, source_mode: str, missing_policy: str
+) -> dict:
     density_label = {
         "key_moments": "b-roll so em pontos-chave (~30-40% das cenas)",
         "moderate": "b-roll moderado com respiro (padrao)",
@@ -507,10 +525,18 @@ def _build_editorial_pipeline(video_style: str, density: str) -> dict:
         "avatar_broll": "avatar como base + b-roll sobreposto",
         "broll_only": "so b-roll (sem avatar na tela)",
     }
+    source_label = {
+        "stock": "bancos externos",
+        "ai_preferred": "IA preferencial",
+        "ai_required": "IA obrigatoria",
+        "manual_upload": "upload manual por cena",
+    }
     return {
         "video_style": style_label.get(video_style, video_style),
         "broll_density": density_label.get(density, density),
-        "rules": _pipeline_rules(video_style, density),
+        "visual_source_mode": source_label.get(source_mode, source_mode),
+        "missing_visual_policy": missing_policy,
+        "rules": _pipeline_rules(video_style, density, source_mode, missing_policy),
     }
 
 
@@ -545,6 +571,9 @@ def build_edit_plan(
     safe_area = (config.get("avatar_safe_area") or "right").lower()
     density = config.get("broll_density", "moderate")
     video_style = config.get("video_style", "avatar_broll")
+    source_mode = config.get("visual_source_mode", "stock")
+    visual_coverage = config.get("visual_coverage", "planned")
+    missing_policy = config.get("missing_visual_policy", "fallback_avatar")
     avatar_required = bool(avatar_file and video_style != "broll_only")
     captioned_indexes = _caption_indexes(scenes)
     broll_flags = _broll_flags(scenes, density=density, video_style=video_style)
@@ -574,7 +603,10 @@ def build_edit_plan(
         "editorial_assist": editorial_assist,
         "broll_density": density,
         "video_style": video_style,
-        "editorial_pipeline": _build_editorial_pipeline(video_style, density),
+        "visual_source_mode": source_mode,
+        "visual_coverage": visual_coverage,
+        "missing_visual_policy": missing_policy,
+        "editorial_pipeline": _build_editorial_pipeline(video_style, density, source_mode, missing_policy),
         "broll_policy": broll_policy,
         "scenes": plan_scenes,
         "audio": None,

@@ -9,7 +9,19 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 import database as db
 from services import api_usage, groq_service, ops_status
-from services.project_config import DEFAULT_CONFIG, LANGUAGES, ALLOWED_BROLL_DENSITIES, ALLOWED_VIDEO_STYLES, _coerce_bool, normalize_project_config, project_config, resolution_width
+from services.project_config import (
+    DEFAULT_CONFIG,
+    LANGUAGES,
+    ALLOWED_BROLL_DENSITIES,
+    ALLOWED_MISSING_VISUAL_POLICIES,
+    ALLOWED_VIDEO_STYLES,
+    ALLOWED_VISUAL_COVERAGES,
+    ALLOWED_VISUAL_SOURCE_MODES,
+    _coerce_bool,
+    normalize_project_config,
+    project_config,
+    resolution_width,
+)
 from app_shared import (
     ACTIVE_JOB_STATUSES,
     CHOSEN_ASSET_STATES,
@@ -97,6 +109,9 @@ class NewProjectConfig:
     script_language: Annotated[str, Form()] = DEFAULT_CONFIG["script_language"]
     broll_density: Annotated[str, Form()] = DEFAULT_CONFIG["broll_density"]
     video_style: Annotated[str, Form()] = DEFAULT_CONFIG["video_style"]
+    visual_source_mode: Annotated[str, Form()] = DEFAULT_CONFIG["visual_source_mode"]
+    visual_coverage: Annotated[str, Form()] = DEFAULT_CONFIG["visual_coverage"]
+    missing_visual_policy: Annotated[str, Form()] = DEFAULT_CONFIG["missing_visual_policy"]
 
 
 @router.get("/projects/new", response_class=HTMLResponse, responses=ERROR_RESPONSES)
@@ -135,6 +150,9 @@ async def new_project(
         "script_language": cfg.script_language,
         "broll_density": cfg.broll_density,
         "video_style": cfg.video_style,
+        "visual_source_mode": cfg.visual_source_mode,
+        "visual_coverage": cfg.visual_coverage,
+        "missing_visual_policy": cfg.missing_visual_policy,
     })
     pid = db.create_project(user["id"], name.strip() or "projeto", script, config)
     if prepared_narration:
@@ -160,6 +178,9 @@ def update_project_style(
     project_id: int,
     broll_density: Annotated[str, Form()] = "",
     video_style: Annotated[str, Form()] = "",
+    visual_source_mode: Annotated[str, Form()] = "",
+    visual_coverage: Annotated[str, Form()] = "",
+    missing_visual_policy: Annotated[str, Form()] = "",
     csrf_token: Annotated[str, Form()] = "",
 ):
     user = require_user(request)
@@ -172,6 +193,13 @@ def update_project_style(
         cfg["broll_density"] = broll_density
     if video_style and video_style in ALLOWED_VIDEO_STYLES:
         cfg["video_style"] = video_style
+    if visual_source_mode and visual_source_mode in ALLOWED_VISUAL_SOURCE_MODES:
+        cfg["visual_source_mode"] = visual_source_mode
+    if visual_coverage and visual_coverage in ALLOWED_VISUAL_COVERAGES:
+        cfg["visual_coverage"] = visual_coverage
+    if missing_visual_policy and missing_visual_policy in ALLOWED_MISSING_VISUAL_POLICIES:
+        cfg["missing_visual_policy"] = missing_visual_policy
+    cfg = normalize_project_config(cfg)
     db.set_project_config(project_id, cfg)
     mark_project_dirty(project_id)
     return RedirectResponse(f"/projects/{project_id}#refinamento", status_code=303)
@@ -221,6 +249,11 @@ def project_page(request: Request, project_id: int):
         selected_count,
         curation_stats["required"],
     )
+    has_visual_path = has_visual_provider(user) or config.get("visual_source_mode") in {
+        "ai_preferred",
+        "ai_required",
+        "manual_upload",
+    }
     api_summary = db.api_usage_summary(user["id"], project_id=project_id)
     scene_alerts = problem_scenes(scenes, config)
     operational_state = ops_status.project_state(
@@ -232,7 +265,7 @@ def project_page(request: Request, project_id: int):
         parts=parts,
         outputs=outputs,
         diagnostics=diagnostics_snapshot,
-        has_asset_keys=has_visual_provider(user),
+        has_asset_keys=has_visual_path,
     )
     return render_template(
         request,
@@ -247,7 +280,7 @@ def project_page(request: Request, project_id: int):
             "accepted_count": accepted_count,
             "broll_required_count": curation_stats["required"],
             "avatar_only_count": curation_stats["avatar_only"],
-            "has_keys": has_visual_provider(user),
+            "has_keys": has_visual_path,
             "narration_name": narration_file.name if narration_file else "",
             "avatar_name": avatar_file.name if avatar_file else "",
             "has_base_video": outputs["base"] is not None,
