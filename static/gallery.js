@@ -405,7 +405,7 @@ function renderJob(job) {
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running", "canceling"]);
 
 function jobText(job) {
-  if (job && job.status === "error") {
+  if (job?.status === "error") {
     return job.error || job.message || "-";
   }
   return job?.message || job?.error || "-";

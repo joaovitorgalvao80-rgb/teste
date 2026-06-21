@@ -2825,13 +2825,13 @@ body:not(.nwrch-lite-off) .step:where(:not(.nwrch-sonar-75)){
 
 body:not(.nwrch-lite-off) .step:disabled{
   opacity: 0.58;
-  color: rgba(245, 245, 242, 0.5);
+  color: #d7d7d2;
   background: rgba(255, 255, 255, 0.028);
 }
 
 body:not(.nwrch-lite-off) .step:disabled .step-idx,
 body:not(.nwrch-lite-off) .step:disabled .step-name{
-  color: rgba(245, 245, 242, 0.5);
+  color: #d7d7d2;
 }
 
 body:not(.nwrch-lite-off) .step.is-active:where(:not(.nwrch-sonar-76)),

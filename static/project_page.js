@@ -17,11 +17,13 @@ document.addEventListener("DOMContentLoaded", () => {
         const lines = data.warnings
           .map((warning) => `- ${warning.scene_id}: ${warning.issues.join(", ")}`)
           .join("\n");
+        const plural = data.total === 1 ? "" : "s";
         proceed = confirm(
-          `Alertas de qualidade (${data.total} cena${data.total !== 1 ? "s" : ""}):\n\n${lines}\n\nGerar o pacote mesmo assim?`,
+          `Alertas de qualidade (${data.total} cena${plural}):\n\n${lines}\n\nGerar o pacote mesmo assim?`,
         );
       }
-    } catch (_) {
+    } catch (error) {
+      console.warn("Falha ao checar qualidade antes do pacote.", error);
       proceed = true;
     }
     if (proceed) {
