@@ -701,7 +701,7 @@ def search_scene(
 
     # Fallback dirigido: so consulta bancos extras (Wikimedia/Openverse) quando o
     # pool mainstream veio fraco. Mantem o pool enxuto e a visao dentro do limite.
-    if extra_image_banks:
+    if extra_image_banks and media != "video":
         _search_extra_image_banks(clean_keywords, max_w, per_keyword, run)
 
     sorted_results = _sort_and_trim_by_context(scene, results[:max_raw], per_keyword)

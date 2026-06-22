@@ -152,6 +152,7 @@ class DeployContractsTest(unittest.TestCase):
         self.assertIn("package", resp.text)
         self.assertIn("Parar", resp.text)
         self.assertIn("atualizado", resp.text)
+        self.assertIn(f"window.NWRCH_PROJECT_ID = {project_id}", resp.text)
 
     def test_project_page_shows_api_usage_and_problem_scenes(self) -> None:
         with TestClient(webapp.app) as client:
@@ -870,6 +871,29 @@ class DeployContractsTest(unittest.TestCase):
     def test_pixabay_per_page_respects_api_minimum(self) -> None:
         self.assertEqual(asset_search._bounded_per_page(1, minimum=3), 3)
         self.assertEqual(asset_search._bounded_per_page(2, minimum=3), 3)
+
+    def test_video_search_does_not_query_image_fallback_banks(self) -> None:
+        original_mainstream = asset_search._search_mainstream_ladder
+        original_extra = asset_search._search_extra_image_banks
+        calls = []
+        try:
+            asset_search._search_mainstream_ladder = lambda *args, **kwargs: None
+            asset_search._search_extra_image_banks = lambda *args, **kwargs: calls.append("extra")
+            out = asset_search.search_scene(
+                ["mosquito"],
+                pexels_key="",
+                pixabay_key="",
+                max_w=1920,
+                per_keyword=4,
+                media="video",
+                extra_image_banks=True,
+            )
+        finally:
+            asset_search._search_mainstream_ladder = original_mainstream
+            asset_search._search_extra_image_banks = original_extra
+
+        self.assertEqual(out, [])
+        self.assertEqual(calls, [])
 
     def test_kaggle_status_complete_when_video_output_exists(self) -> None:
         original_video = kaggle_service.get_video_url
@@ -2184,7 +2208,7 @@ class HardeningAndOptimizationTest(unittest.TestCase):
              patch.object(asset_search, "search_wikimedia_images", lambda *a, **k: wiki), \
              patch.object(asset_search, "search_openverse_images", lambda *a, **k: []):
             results = asset_search.search_scene(
-                ["kw1"], "pk", "bk", max_w=1920, per_keyword=6, media="video", extra_image_banks=True
+                ["kw1"], "pk", "bk", max_w=1920, per_keyword=6, media="all", extra_image_banks=True
             )
         self.assertNotIn("wikimedia", {r["source"] for r in results})
 
@@ -2194,7 +2218,7 @@ class HardeningAndOptimizationTest(unittest.TestCase):
              patch.object(asset_search, "search_wikimedia_images", lambda *a, **k: wiki), \
              patch.object(asset_search, "search_openverse_images", lambda *a, **k: []):
             results = asset_search.search_scene(
-                ["kw1"], "pk", "bk", max_w=1920, per_keyword=6, media="video", extra_image_banks=True
+                ["kw1"], "pk", "bk", max_w=1920, per_keyword=6, media="all", extra_image_banks=True
             )
         self.assertIn("wikimedia", {r["source"] for r in results})
 

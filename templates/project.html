@@ -742,5 +742,6 @@
 {% endblock %}
 
 {% block scripts %}
+<script>window.NWRCH_PROJECT_ID = {{ project.id }};</script>
 <script src="/static/project_page.js?v={{ static_version }}"></script>
 {% endblock %}

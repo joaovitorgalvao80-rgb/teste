@@ -43,7 +43,9 @@ async function postForm(url, data) {
   const body = new URLSearchParams(data || {});
   const token = csrfToken();
   if (token && !body.has("csrf_token")) body.set("csrf_token", token);
-  const resp = await fetch(url, { method: "POST", body, headers: token ? { "x-csrf-token": token } : {} });
+  const headers = { accept: "application/json" };
+  if (token) headers["x-csrf-token"] = token;
+  const resp = await fetch(url, { method: "POST", body, headers });
   if (!resp.ok) {
     let msg = `HTTP ${resp.status}`;
     try { const j = await resp.json(); msg = j.detail || j.error || msg; }
@@ -54,6 +56,14 @@ async function postForm(url, data) {
     throw new Error(msg);
   }
   return resp.json();
+}
+
+function currentProjectId() {
+  if (globalThis.NWRCH_PROJECT_ID) return String(globalThis.NWRCH_PROJECT_ID);
+  const pageHead = document.querySelector("[data-project-id]");
+  if (pageHead?.dataset.projectId) return pageHead.dataset.projectId;
+  const match = globalThis.location.pathname.match(/^\/projects\/(\d+)/);
+  return match ? match[1] : "";
 }
 
 function csrfToken() {
@@ -470,7 +480,7 @@ async function cancelJob(jobId, btn) {
   }
   try {
     const job = await postForm(`/jobs/${jobId}/cancel`, {});
-    const projectId = globalThis.NWRCH_PROJECT_ID;
+    const projectId = currentProjectId();
     if (projectId) {
       await refreshProjectJobs(projectId);
       startProjectJobRefresh(true);
@@ -688,8 +698,9 @@ function initBusySubmitForms() {
 document.addEventListener("DOMContentLoaded", () => {
   initBusySubmitForms();
   const partsPanel = document.getElementById("parts-panel");
-  if (partsPanel?.dataset.active === "1" && globalThis.NWRCH_PROJECT_ID) {
-    startPartsPolling(globalThis.NWRCH_PROJECT_ID);
+  const projectId = currentProjectId();
+  if (partsPanel?.dataset.active === "1" && projectId) {
+    startPartsPolling(projectId);
   }
   const bar = document.getElementById("kaggle-status-bar");
   const txt = document.getElementById("kaggle-status-text");
@@ -708,7 +719,7 @@ const BUSY_PROJECT_STATUSES = new Set(["mapping", "searching", "packaging", "aut
 let _projectJobRefreshActive = false;
 
 function startProjectJobRefresh(force) {
-  const projectId = globalThis.NWRCH_PROJECT_ID;
+  const projectId = currentProjectId();
   if (!projectId) return;
   if (_projectJobRefreshActive) return;
   const statusBadge = document.querySelector(".head-status .badge");
