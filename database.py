@@ -121,6 +121,16 @@ CREATE TABLE IF NOT EXISTS users (
     created_at      REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS login_sessions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id       INTEGER NOT NULL,
+    sid_hash      TEXT UNIQUE NOT NULL,
+    created_at    REAL NOT NULL,
+    last_seen_at  REAL NOT NULL,
+    revoked_at    REAL DEFAULT 0,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS projects (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id     INTEGER NOT NULL,
@@ -378,6 +388,65 @@ def count_users() -> int:
     try:
         row = conn.execute("SELECT COUNT(*) AS total FROM users").fetchone()
         return int(row["total"] if row else 0)
+    finally:
+        conn.close()
+
+
+def _login_session_hash(session_id: str) -> str:
+    return hashlib.sha256((session_id or "").encode("utf-8")).hexdigest()
+
+
+def create_login_session(user_id: int) -> str:
+    session_id = secrets.token_urlsafe(48)
+    now = time.time()
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT INTO login_sessions (user_id, sid_hash, created_at, last_seen_at) VALUES (?, ?, ?, ?)",
+            (user_id, _login_session_hash(session_id), now, now),
+        )
+        conn.commit()
+        return session_id
+    finally:
+        conn.close()
+
+
+def get_user_for_session(session_id: str) -> Optional[dict]:
+    if not session_id:
+        return None
+    conn = _connect()
+    try:
+        row = conn.execute(
+            """
+            SELECT u.*
+              FROM login_sessions s
+              JOIN users u ON u.id = s.user_id
+             WHERE s.sid_hash = ? AND COALESCE(s.revoked_at, 0) = 0
+            """,
+            (_login_session_hash(session_id),),
+        ).fetchone()
+        if not row:
+            return None
+        conn.execute(
+            "UPDATE login_sessions SET last_seen_at = ? WHERE sid_hash = ?",
+            (time.time(), _login_session_hash(session_id)),
+        )
+        conn.commit()
+        return _user_to_dict(row)
+    finally:
+        conn.close()
+
+
+def revoke_login_session(session_id: str) -> None:
+    if not session_id:
+        return
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE login_sessions SET revoked_at = ? WHERE sid_hash = ? AND COALESCE(revoked_at, 0) = 0",
+            (time.time(), _login_session_hash(session_id)),
+        )
+        conn.commit()
     finally:
         conn.close()
 

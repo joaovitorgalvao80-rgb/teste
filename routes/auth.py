@@ -12,6 +12,7 @@ from app_shared import (
     ERROR_RESPONSES,
     INVITE_CODE,
     PROJECTS_PATH,
+    current_user,
     registration_state,
     render_template,
     require_user,
@@ -24,7 +25,6 @@ router = APIRouter()
 
 @router.get("/", response_class=HTMLResponse, responses=ERROR_RESPONSES)
 def home(request: Request):
-    from app_shared import current_user
     if current_user(request):
         return RedirectResponse(PROJECTS_PATH, status_code=303)
     return RedirectResponse("/login", status_code=303)
@@ -32,6 +32,8 @@ def home(request: Request):
 
 @router.get("/login", response_class=HTMLResponse, responses=ERROR_RESPONSES)
 def login_page(request: Request, error: str = "", next: str = ""):
+    if current_user(request):
+        return RedirectResponse(PROJECTS_PATH, status_code=303)
     return render_template(request, "login.html", {"error": error, "next": next})
 
 
@@ -41,12 +43,14 @@ def login(
     username: Annotated[str, Form()],
     password: Annotated[str, Form()],
     next: Annotated[str, Form()] = "",
+    csrf_token: Annotated[str, Form()] = "",
 ):
+    verify_csrf(request, csrf_token)
     user = db.get_user_by_name(username.strip())
     if not user or not db.verify_password(password, user["password_hash"]):
         return RedirectResponse("/login?error=Credenciais+invalidas", status_code=303)
     request.session.clear()
-    request.session["user_id"] = user["id"]
+    request.session["session_id"] = db.create_login_session(user["id"])
     return RedirectResponse(safe_next_url(next), status_code=303)
 
 
@@ -56,7 +60,9 @@ def register(
     username: Annotated[str, Form()],
     password: Annotated[str, Form()],
     invite_code: Annotated[str, Form()] = "",
+    csrf_token: Annotated[str, Form()] = "",
 ):
+    verify_csrf(request, csrf_token)
     state = registration_state()
     if not state["enabled"]:
         return RedirectResponse("/login?error=Cadastro+desativado", status_code=303)
@@ -69,11 +75,12 @@ def register(
         return RedirectResponse("/login?error=Usuario+ja+existe", status_code=303)
     uid = db.create_user(username, password)
     request.session.clear()
-    request.session["user_id"] = uid
+    request.session["session_id"] = db.create_login_session(uid)
     return RedirectResponse("/settings", status_code=303)
 
 
 @router.get("/logout", responses=ERROR_RESPONSES)
 def logout(request: Request):
+    db.revoke_login_session(request.session.get("session_id", ""))
     request.session.clear()
     return RedirectResponse("/login", status_code=303)

@@ -3367,7 +3367,157 @@ body.login-page:not(.nwrch-login-off) .label-muted{
     font-size: clamp(3.2rem, 18vw, 5rem);
   }
 
-  body.login-page:not(.nwrch-login-off) .login-card:where(:not(.nwrch-sonar-100)){
+body.login-page:not(.nwrch-login-off) .login-card:where(:not(.nwrch-sonar-100)){
     padding: 18px;
+  }
+}
+
+/* ==========================================================================
+   21st.dev-inspired native components
+   Adapted from FileUpload, Progressive Flux Loader and HeroUI Pagination.
+   ========================================================================== */
+.file-upload-card {
+  transition: border-color var(--speed) var(--ease), background var(--speed) var(--ease);
+}
+
+.file-upload-zone {
+  display: grid !important;
+  gap: var(--sp-1);
+  padding: var(--sp-3);
+  border: 1px dashed var(--line-2);
+  border-radius: var(--radius);
+  background: var(--ink-3);
+  cursor: pointer;
+}
+
+.file-upload-zone:hover,
+.file-upload-card.is-drag-active .file-upload-zone {
+  border-color: var(--paper-0);
+  background: var(--ink-2);
+}
+
+.file-upload-zone small,
+.file-upload-list {
+  color: var(--paper-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.file-upload-icon {
+  display: inline-grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  color: var(--paper-0);
+}
+
+.file-upload-list {
+  display: grid;
+  gap: var(--sp-1);
+}
+
+.file-upload-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  min-height: 30px;
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid var(--line-0);
+  border-radius: var(--radius);
+  background: var(--ink-3);
+}
+
+.progressive-flux-row,
+.transcribe-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.progressive-flux-row {
+  margin-bottom: var(--sp-3);
+}
+
+.progressive-flux-loader {
+  position: relative;
+  width: min(220px, 100%);
+  height: 8px;
+  overflow: hidden;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  background: var(--ink-3);
+}
+
+.progressive-flux-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 42%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--paper-2), var(--paper-0), var(--marker));
+  box-shadow: 0 0 18px rgba(233, 215, 92, 0.28);
+  animation: progressive-flux 1.45s ease-in-out infinite;
+}
+
+.flux-phase {
+  color: var(--paper-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.flux-phase:nth-of-type(2) { color: var(--paper-1); }
+.flux-phase:nth-of-type(3) { color: var(--marker); }
+
+@keyframes progressive-flux {
+  0% { transform: translateX(-110%); width: 36%; }
+  50% { width: 62%; }
+  100% { transform: translateX(260%); width: 36%; }
+}
+
+.nwrch-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  margin: var(--sp-4) 0 var(--sp-5);
+  min-height: 36px;
+}
+
+.nwrch-page-btn {
+  display: inline-grid;
+  min-width: 34px;
+  height: 34px;
+  place-items: center;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  background: var(--ink-1);
+  color: var(--paper-1);
+}
+
+.nwrch-page-btn:hover:not(:disabled),
+.nwrch-page-btn.is-active {
+  border-color: var(--paper-0);
+  background: var(--ink-2);
+  color: var(--paper-0);
+}
+
+.nwrch-page-btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+@media (max-width: 620px) {
+  .nwrch-pagination {
+    justify-content: flex-start;
+    overflow-x: auto;
+    padding-bottom: var(--sp-1);
   }
 }

@@ -695,8 +695,106 @@ function initBusySubmitForms() {
 }
 
 // Inicia polling se já tinha kernel rodando ao carregar a página.
+function formatFileSize(bytes) {
+  if (!bytes) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const idx = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / (1024 ** idx)).toFixed(idx ? 1 : 0)} ${units[idx]}`;
+}
+
+function renderFileUploadList(root, files) {
+  const name = root.querySelector("[data-file-name]");
+  const list = root.querySelector(".file-upload-list");
+  const fileArray = Array.from(files || []);
+  if (name) {
+    name.textContent = fileArray.length
+      ? fileArray.map((file) => file.name).join(", ")
+      : "Arraste ou escolha um arquivo";
+  }
+  if (!list) return;
+  list.innerHTML = "";
+  fileArray.forEach((file) => {
+    const item = document.createElement("span");
+    item.className = "file-upload-item";
+    const fileName = document.createElement("span");
+    fileName.textContent = file.name;
+    const size = document.createElement("small");
+    size.textContent = formatFileSize(file.size);
+    item.append(fileName, size);
+    list.appendChild(item);
+  });
+}
+
+function initFileUploadControls() {
+  document.querySelectorAll("[data-file-upload]").forEach((root) => {
+    const input = root.querySelector('input[type="file"]');
+    if (!input) return;
+    ["dragenter", "dragover"].forEach((eventName) => {
+      root.addEventListener(eventName, (event) => {
+        event.preventDefault();
+        root.classList.add("is-drag-active");
+      });
+    });
+    ["dragleave", "drop"].forEach((eventName) => {
+      root.addEventListener(eventName, () => root.classList.remove("is-drag-active"));
+    });
+    root.addEventListener("drop", (event) => {
+      event.preventDefault();
+      if (!event.dataTransfer?.files?.length) return;
+      input.files = event.dataTransfer.files;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    input.addEventListener("change", () => renderFileUploadList(root, input.files));
+  });
+}
+
+function initScenePagination() {
+  const pager = document.querySelector(".nwrch-pagination");
+  if (!pager) return;
+  const scenes = Array.from(document.querySelectorAll("section.scene"));
+  const pageSize = Number(pager.dataset.pageSize || 6);
+  if (scenes.length <= pageSize) {
+    pager.remove();
+    return;
+  }
+  const totalPages = Math.ceil(scenes.length / pageSize);
+  let currentPage = 1;
+  const hashId = decodeURIComponent(location.hash || "").slice(1);
+  const hashedIndex = hashId ? scenes.findIndex((scene) => scene.id === hashId) : -1;
+  if (hashedIndex >= 0) currentPage = Math.floor(hashedIndex / pageSize) + 1;
+
+  const makePageButton = (label, page, disabled, active) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "nwrch-page-btn" + (active ? " is-active" : "");
+    btn.textContent = label;
+    btn.disabled = disabled;
+    btn.addEventListener("click", () => showPage(page, true));
+    return btn;
+  };
+
+  const showPage = (page, scroll) => {
+    currentPage = Math.max(1, Math.min(totalPages, page));
+    scenes.forEach((scene, idx) => {
+      const start = (currentPage - 1) * pageSize;
+      scene.hidden = idx < start || idx >= start + pageSize;
+    });
+    pager.innerHTML = "";
+    pager.appendChild(makePageButton("‹", currentPage - 1, currentPage === 1, false));
+    for (let pageNumber = 1; pageNumber <= totalPages; pageNumber += 1) {
+      pager.appendChild(makePageButton(String(pageNumber), pageNumber, false, pageNumber === currentPage));
+    }
+    pager.appendChild(makePageButton("›", currentPage + 1, currentPage === totalPages, false));
+    if (scroll) pager.scrollIntoView({ behavior: "smooth", block: "center" });
+  };
+
+  showPage(currentPage, false);
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   initBusySubmitForms();
+  initFileUploadControls();
+  initScenePagination();
   const partsPanel = document.getElementById("parts-panel");
   const projectId = currentProjectId();
   if (partsPanel?.dataset.active === "1" && projectId) {

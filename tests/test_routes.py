@@ -142,6 +142,33 @@ class AuthRoutesTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 303)
         self.assertIn("login", resp.headers["location"])
 
+    def test_two_clients_keep_independent_login_sessions(self) -> None:
+        with TestClient(webapp.app) as alice_client, TestClient(webapp.app) as bob_client:
+            alice_id = db.create_user("alice-session", AUTH_VALUE)
+            bob_id = db.create_user("bob-session", AUTH_VALUE)
+            db.create_project(alice_id, "alice private project", "script", {})
+            db.create_project(bob_id, "bob private project", "script", {})
+
+            _login(alice_client, "alice-session")
+            _login(bob_client, "bob-session")
+
+            alice_resp = alice_client.get("/projects")
+            bob_resp = bob_client.get("/projects")
+
+        self.assertEqual(alice_resp.status_code, 200)
+        self.assertIn("alice private project", alice_resp.text)
+        self.assertNotIn("bob private project", alice_resp.text)
+        self.assertEqual(bob_resp.status_code, 200)
+        self.assertIn("bob private project", bob_resp.text)
+        self.assertNotIn("alice private project", bob_resp.text)
+
+    def test_login_uses_named_server_session_cookie(self) -> None:
+        with TestClient(webapp.app) as client:
+            db.create_user("cookie-session", AUTH_VALUE)
+            _login(client, "cookie-session")
+
+        self.assertIn("nwrch_session", client.cookies)
+
 
 # ---------------------------------------------------------------------------
 # Settings

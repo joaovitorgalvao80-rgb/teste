@@ -17,16 +17,23 @@
       <input name="name" required placeholder="video_dengue_bti">
     </label>
 
-    <div class="transcribe-zone" id="transcribe-zone">
+    <div class="transcribe-zone file-upload-card" id="transcribe-zone" data-file-upload>
       <div class="transcribe-header">
         <span class="t-small t-muted">Tem a narração gravada?</span>
-        <label class="audio-pick-btn" for="audio-upload">
+        <label class="audio-pick-btn file-upload-zone" for="audio-upload">
           Transcrever áudio automaticamente
+          <small data-file-name>Arraste ou escolha audio/video</small>
           <input type="file" id="audio-upload" name="narration_media" accept="audio/*,video/*" style="display:none">
         </label>
       </div>
       <div id="transcribe-progress" style="display:none" class="transcribe-progress">
+        <div class="progressive-flux-loader" aria-hidden="true">
+          <span class="progressive-flux-fill"></span>
+        </div>
         <span class="spinner"></span> Transcrevendo com Groq Whisper…
+        <span class="flux-phase">uploading</span>
+        <span class="flux-phase">processing</span>
+        <span class="flux-phase">finalizing</span>
       </div>
       <div id="transcribe-error" class="alert" style="display:none"></div>
     </div>

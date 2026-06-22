@@ -2694,13 +2694,30 @@ class HardeningAndOptimizationTest(unittest.TestCase):
         try:
             with TestClient(webapp.app) as client:
                 db.create_user("csrf", "password123")
+                login_page = client.get("/login")
+                token = re.search(r'name="csrf_token" value="([^"]+)"', login_page.text).group(1)
                 client.post(
                     "/login",
-                    data={"username": "csrf", "password": "password123"},
+                    data={"username": "csrf", "password": "password123", "csrf_token": token},
                     follow_redirects=False,
                 )
                 client.get("/settings")
                 resp = client.post("/settings", data={"groq_model": ""}, follow_redirects=False)
+        finally:
+            webapp.ENFORCE_CSRF = old
+        self.assertEqual(resp.status_code, 403)
+
+    def test_production_csrf_blocks_login_without_token(self) -> None:
+        old = webapp.ENFORCE_CSRF
+        webapp.ENFORCE_CSRF = True
+        try:
+            with TestClient(webapp.app) as client:
+                db.create_user("login-csrf", "password123")
+                resp = client.post(
+                    "/login",
+                    data={"username": "login-csrf", "password": "password123"},
+                    follow_redirects=False,
+                )
         finally:
             webapp.ENFORCE_CSRF = old
         self.assertEqual(resp.status_code, 403)

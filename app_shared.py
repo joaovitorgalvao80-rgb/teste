@@ -347,8 +347,11 @@ def _wants_json(request: Request) -> bool:
 
 
 def current_user(request: Request) -> Optional[dict]:
-    uid = request.session.get("user_id")
-    return db.get_user(uid) if uid else None
+    session_id = request.session.get("session_id", "")
+    user = db.get_user_for_session(session_id) if session_id else None
+    if not user and session_id:
+        request.session.clear()
+    return user
 
 
 def require_user(request: Request) -> dict:

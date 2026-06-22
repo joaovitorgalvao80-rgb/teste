@@ -76,6 +76,7 @@ app = FastAPI(title="NWRCH Studio", lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
     secret_key=_require_secret(),
+    session_cookie="nwrch_session",
     max_age=60 * 60 * 24 * 7,
     https_only=APP_ENV == "production",
     same_site="lax",

@@ -347,6 +347,19 @@
       <span class="tag">Jobs recentes</span>
     </div>
     <div class="jobs-panel" style="padding:var(--sp-4) var(--sp-5)">
+      {% set queued_jobs = jobs | selectattr('status', 'equalto', 'queued') | list %}
+      {% set running_jobs = jobs | selectattr('status', 'equalto', 'running') | list %}
+      {% set canceling_jobs = jobs | selectattr('status', 'equalto', 'canceling') | list %}
+      {% if queued_jobs or running_jobs or canceling_jobs %}
+      <div class="progressive-flux-row" aria-label="Job em andamento">
+        <div class="progressive-flux-loader" aria-hidden="true">
+          <span class="progressive-flux-fill"></span>
+        </div>
+        <span class="flux-phase">queued</span>
+        <span class="flux-phase">running</span>
+        <span class="flux-phase">finalizing</span>
+      </div>
+      {% endif %}
       {% if jobs %}
         <ul class="job-list" id="job-list">
           {% for job in jobs %}
@@ -523,6 +536,10 @@
 </style>
 {% endif %}
 
+{% if gallery_scenes|length > 6 %}
+<nav class="nwrch-pagination" data-page-size="6" aria-label="Paginacao de cenas"></nav>
+{% endif %}
+
 {% for scene in gallery_scenes %}
   {% if config.long_mode and loop.first %}
     <h3 class="part-divider" id="part-{{ scene.part }}">Parte {{ '%02d'|format(scene.part or 1) }} · curando esta parte</h3>
@@ -611,11 +628,13 @@
               <span class="t-small t-faint" id="gen-status-{{ scene.id }}"></span>
             </div>
           </div>
-          <form class="gen-box manual-upload-box" method="post" action="/scenes/{{ scene.id }}/upload-image" enctype="multipart/form-data">
+          <form class="gen-box manual-upload-box file-upload-card" method="post" action="/scenes/{{ scene.id }}/upload-image" enctype="multipart/form-data" data-file-upload>
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <label>Imagem pronta
+            <label class="file-upload-zone">Imagem pronta
+              <small data-file-name>Arraste ou escolha PNG, JPG ou WebP</small>
               <input type="file" name="image" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp" required>
             </label>
+            <div class="file-upload-list" aria-live="polite"></div>
             <label>Nota visual
               <input name="prompt" value="{{ (scene.visual_goal or scene.narration or '')[:90] }}">
             </label>
