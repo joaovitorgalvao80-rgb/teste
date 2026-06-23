@@ -13,6 +13,9 @@ tools/_run_*.py
 .pytest_cache/
 docs/CATALOGO_SKILLS_IA.md
 
+deploy/
+deploy_melhorias_nwrch/
+
 # Midia de teste/entrega (binarios grandes, fora do versionamento)
 vídeo teste/
 *.mp4

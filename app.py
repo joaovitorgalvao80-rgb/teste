@@ -202,6 +202,12 @@ app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 templates = Jinja2Templates(directory=str(ROOT / "templates"))
 
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
 # Labels de status em PT-BR para a UI (o valor cru segue nas classes CSS/data-attrs)
 STATUS_LABELS = {
     "created": "Criado",
