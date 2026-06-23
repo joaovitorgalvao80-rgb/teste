@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 import re
 
+from .project_config import is_broll_only
 from .script_parser import remove_accents
 
 # Frases de apresentacao/saudacao: nessas cenas o apresentador fica na tela
@@ -247,6 +248,8 @@ def decide_broll(scenes: list[dict], config: "dict | None" = None) -> list[bool]
     """Decisao FINAL de b-roll por cena (a mesma que o render usa): flags base +
     regra de apresentacao + guarda de avatar-solo. Determinístico, para a busca
     saber de antemao quais cenas NAO levam imagem (e nem buscar pra elas)."""
+    if is_broll_only(config):
+        return [True for _ in scenes]
     density = (config or {}).get("broll_density", "moderate")
     video_style = (config or {}).get("video_style", "avatar_broll")
     flags = _broll_flags(scenes, density=density, video_style=video_style)
@@ -489,22 +492,25 @@ def _density_rules(density: str) -> list[str]:
 
 def _pipeline_rules(video_style: str, density: str, source_mode: str, missing_policy: str) -> list[str]:
     """Retorna as regras concretas do pipeline de edicao."""
-    return [
+    rules = [
         *_structure_rules(video_style),
         *_density_rules(density),
         *_source_rules(source_mode, missing_policy),
-        "Cenas com override manual sem b-roll nunca recebem b-roll.",
-        "Cenas com override manual forcar b-roll sempre recebem b-roll.",
-        "Cenas de apresentacao/saudacao nunca levam b-roll.",
         f"Legendas em ate {int(MAX_CAPTION_DENSITY * 100)}% das cenas.",
         "Transicao padrao: corte seco; fade a cada 4 cenas ou mudanca de zona narrativa.",
     ]
+    if video_style != "broll_only":
+        rules[3:3] = [
+            "Cenas com override manual sem b-roll nunca recebem b-roll.",
+            "Cenas com override manual forcar b-roll sempre recebem b-roll.",
+            "Cenas de apresentacao/saudacao nunca levam b-roll.",
+        ]
+    return rules
 
 
 def _broll_only_policy(plan_scenes: list[dict], scenes: list[dict]) -> dict:
-    for idx_ps, ps in enumerate(plan_scenes):
-        if _broll_override(scenes[idx_ps]) != -1:
-            ps["broll"] = True
+    for ps in plan_scenes:
+        ps["broll"] = True
     return {
         "coverage": 1.0,
         "max_avatar_solo_seconds": 0,

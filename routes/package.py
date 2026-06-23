@@ -11,7 +11,7 @@ from fastapi import APIRouter, BackgroundTasks, Form, Request, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 import database as db
-from services import diagnostics, edit_plan, kaggle_service
+from services import diagnostics, edit_plan, kaggle_service, preflight
 from services.project_config import project_config
 from app_shared import (
     ACTIVE_JOB_STATUSES,
@@ -20,7 +20,6 @@ from app_shared import (
     ERROR_RESPONSES,
     MEDIA_TYPE_JSON,
     MEDIA_TYPE_MP4,
-    _asset_quality_issues,
     _enrich_complete_kaggle_status,
     annotate_assets_with_vision,
     annotate_broll_requirements,
@@ -60,16 +59,25 @@ def quality_warnings(request: Request, project_id: int):
     from services.project_config import resolution_width
     target_w = resolution_width(config)
     selected_rows = db.list_assets_by_state(project_id, CHOSEN_ASSET_STATES)
-    scenes = {s["id"]: s for s in db.list_scenes(project_id)}
-    warnings = []
-    for row in selected_rows:
-        scene = scenes.get(row.get("scene_id"))
-        scene_dur = float(scene.get("duration") or 4.0) if scene else 4.0
-        scene_code = scene.get("scene_id", "?") if scene else "?"
-        issues = _asset_quality_issues(row, scene_dur, target_w)
-        if issues:
-            warnings.append({"scene_id": scene_code, "issues": issues})
-    return JSONResponse({"warnings": warnings, "total": len(warnings)})
+    scenes = db.list_scenes(project_id)
+    assets_by_scene = db.list_assets_for_project(project_id)
+    for scene in scenes:
+        assets = annotate_assets_with_vision(scene, assets_by_scene.get(scene["id"], []), config)
+        scene["assets"] = assets
+        scene["selected"] = next((asset for asset in assets if asset.get("state") in CHOSEN_ASSET_STATES), None)
+        scene["low_relevance_count"] = sum(1 for asset in assets if asset.get("low_relevance"))
+    curation_stats = annotate_broll_requirements(scenes, config)
+    _, required_scene_db_ids = _required_broll_scene_ids(scenes, config)
+    payload = preflight.build_package_preflight(
+        scenes=scenes,
+        config=config,
+        selected_rows=selected_rows,
+        required_scene_db_ids=required_scene_db_ids,
+        target_w=target_w,
+        problem_items=problem_scenes(scenes, config),
+    )
+    payload["curation"] = curation_stats
+    return JSONResponse(payload)
 
 
 def _required_broll_scene_ids(scenes: list[dict], config: dict) -> tuple[set[str], set[int]]:

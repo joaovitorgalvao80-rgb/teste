@@ -1,0 +1,51 @@
+1. Sistema de Envio e Nomeação de Imagens Próprias
+Melhorar o sistema de envio de imagens próprias. Criar suporte para upload de um pacote/pasta/zip com os arquivos (imagens e vídeos) já nomeados. O sistema deve identificar automaticamente qual imagem vai para cada cena com base em uma nomenclatura padrão.
+
+2. Geração e Mesclagem de B-rolls
+As imagens estão sendo geradas em lote no flow do Google. No projeto, farei o upload dessas imagens para juntá-las com b-rolls reais. O foco não é mais fazer vídeos 100% com b-rolls reais. A estratégia agora é misturar gerados com reais, pois é mais fácil, esteticamente superior e mais rápido.
+
+3. Renderização, Sincronia e Transcrição
+Melhorar a etapa de renderização. O sincronismo de voz e boca está ruim. Para corrigir isso, alterar o sistema de transcrição: ele precisa aceitar tanto vídeo quanto áudio.
+A lógica de funcionamento deve ser:
+
+Com Avatar: O vídeo do avatar já possui áudio, portanto, não é necessário fazer upload da narração separadamente. O sistema deve usar o áudio do próprio avatar para a transcrição.
+
+Sem Avatar: O vídeo é apenas narração, então a transcrição usa o arquivo de áudio.
+Isso evita bugs no processo.
+
+4. Animação de Imagens e Ajuste de FPS
+As imagens próprias enviadas estão sem movimento (apenas com fade in e fade out). Adicionar efeito de zoom in. Além disso, o FPS está baixo demais, o que deixa a imagem com um aspecto "travado". Ajustar isso para melhorar a fluidez.
+
+5. Remoção de Etapas Redundantes (Revisão)
+No modo de upload manual de imagens próprias, o sistema pede a seleção da imagem no início e exige uma nova seleção na etapa de revisão. Remover a etapa de revisão. Se a imagem já foi selecionada no upload, a escolha é definitiva.
+
+6. Limpeza de Interface e Remoção de Funcionalidades Inúteis
+
+Remover o botão de "área segura do avatar".
+
+Remover a opção de "duração média por cena".
+
+Remover o modo "b-roll de IA". Manter apenas o modo de envio próprio de imagens e as demais opções.
+
+Abaixo da opção de vídeo longo (>6 min), remover ou reformular o botão de "estilo visual". Atualmente ele não tem utilidade prática.
+
+7. Simplificação Geral
+A interface possui muitas funções que só servem para atrapalhar. O objetivo é tornar a ferramenta mais simples, intuitiva e direta.
+
+Propostas de Melhorias para Simplificar o Sistema
+Como você exigiu um sistema sem "encheção de saco", o foco aqui é eliminar redundâncias e automatizar as decisões do seu fluxo.
+
+1. Interface Condicional (Esconder o que não importa)
+Se o sistema é poluído, oculte as opções dinamicamente. Se você marcar um checkbox "Usar Avatar", o botão de "Upload de Narração" deve desaparecer imediatamente. A interface só deve mostrar o que é estritamente necessário para o fluxo selecionado.
+
+2. Presets de Projeto em vez de Botões Soltos
+Em vez de configurar estilos visuais quebrados ou durações a cada novo vídeo, crie botões de "Presets". Você clica em "Preset Dark" ou "Preset Sobrevivência" e o sistema já preenche o FPS correto, o tipo de transição (fade/zoom) e ignora a área segura. Um clique resolve cinco etapas.
+
+3. Automação Estrita na Nomenclatura do ZIP
+Para o envio do ZIP funcionar sem falhas e sem precisar da tela de revisão, crie uma regra de regex inflexível. O sistema só aceita o ZIP se os arquivos estiverem nomeados como cena01_img.jpg e cena02_vid.mp4. Se estiver fora do padrão, ele rejeita no ato do upload. Isso joga a responsabilidade para a automação da pasta e limpa a interface web.
+
+4. Padronização Global de FPS e Transição
+Se o FPS travado é um problema e as imagens estáticas precisam de zoom, remova isso da interface de escolha e coloque direto no código de renderização (ex: FFmpeg). Defina globalmente o projeto para rodar a 30fps ou 60fps com uma escala de zoom in de 10% padrão para todas as imagens estáticas. Menos um botão na tela, zero encheção de saco.
+
+E também quero o estudo de uma possivel criação de uma extensão de navegador, onde, dentro do flow, com as imagens criadas, com essa extensão eu posso abrir-la, selecionar as imagens que quero, ele renomeia no padrão criado por nós, e ele mesmo já envia pro NWRCH dentro do projeto que estamos criando.
+

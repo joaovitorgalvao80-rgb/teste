@@ -23,6 +23,7 @@ DEFAULT_CONFIG = {
     "max_download_mb": 90,
     "long_mode": False,
     "part_target_seconds": 150,
+    "fps": 30,
     # broll_density: quanto do vídeo é coberto por b-roll
     #   key_moments   → só cenas com score alto (momentos-chave, ~30-40%)
     #   moderate      → padrão: alterna com respiro a cada 22s de b-roll
@@ -42,6 +43,18 @@ ALLOWED_VIDEO_STYLES = {"avatar_broll", "broll_only"}
 ALLOWED_VISUAL_SOURCE_MODES = {"stock", "ai_preferred", "ai_required", "manual_upload"}
 ALLOWED_VISUAL_COVERAGES = {"planned", "full_required"}
 ALLOWED_MISSING_VISUAL_POLICIES = {"fallback_avatar", "block_package"}
+
+
+def is_broll_only(config: dict | None) -> bool:
+    return (config or {}).get("video_style") == "broll_only"
+
+
+def allows_avatar(config: dict | None) -> bool:
+    return not is_broll_only(config)
+
+
+def allows_scene_broll_override(config: dict | None) -> bool:
+    return allows_avatar(config)
 
 # Idiomas suportados para roteiro/transcrição/overlay. Fonte única de verdade.
 #   whisper: código ISO 639-1 enviado ao Whisper na transcrição.

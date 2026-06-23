@@ -66,6 +66,7 @@
     <input type="hidden" name="visual_source_mode" id="visual-source-mode" value="stock">
     <input type="hidden" name="visual_coverage" id="visual-coverage" value="planned">
     <input type="hidden" name="missing_visual_policy" id="missing-visual-policy" value="fallback_avatar">
+    <input type="hidden" name="visual_style" value="{{ config.visual_style }}">
 
     <div class="mode-picker" role="radiogroup" aria-label="Modo de producao visual">
       <label class="mode-card is-selected">
@@ -83,30 +84,11 @@
         <span class="mode-copy">Faceless: toda cena precisa de imagem ou video antes do render.</span>
       </label>
       <label class="mode-card">
-        <input type="radio" name="visual_preset" value="ai_broll"
-               data-video-style="avatar_broll" data-broll-density="moderate"
-               data-source-mode="ai_preferred" data-coverage="planned" data-missing-policy="fallback_avatar">
-        <span class="mode-title">B-roll de IA</span>
-        <span class="mode-copy">Mantem o estilo padrao, priorizando imagens geradas por IA.</span>
-      </label>
-      <label class="mode-card">
         <input type="radio" name="visual_preset" value="manual_upload"
                data-video-style="broll_only" data-broll-density="full_coverage"
                data-source-mode="manual_upload" data-coverage="full_required" data-missing-policy="block_package">
         <span class="mode-title">Eu envio as imagens</span>
         <span class="mode-copy">Voce cria fora, sobe por cena e o sistema edita o video.</span>
-      </label>
-    </div>
-
-    <div class="grid-2">
-      <label id="avatar-area-row">Área segura do avatar
-        <select name="avatar_safe_area">
-          <option value="right" selected>Direita</option>
-          <option value="left">Esquerda</option>
-        </select>
-      </label>
-      <label>Duração média por cena (s) — usada sem timestamps
-        <input name="scene_duration" type="number" step="0.5" min="2" max="8" value="4">
       </label>
     </div>
 
@@ -126,10 +108,6 @@
       </p>
     </div>
 
-    <label>Estilo visual
-      <input name="visual_style" value="{{ config.visual_style }}">
-    </label>
-
     <button class="btn btn-primary" type="submit">Criar projeto</button>
   </form>
 </div>
@@ -138,7 +116,12 @@
 <script>
 function toggleAvatarArea(value) {
   const row = document.getElementById("avatar-area-row");
-  if (row) row.style.opacity = value === "broll_only" ? "0.35" : "";
+  if (!row) return;
+  const disabled = value === "broll_only";
+  row.style.display = disabled ? "none" : "";
+  row.querySelectorAll("select,input").forEach((field) => {
+    field.disabled = disabled;
+  });
 }
 function applyVisualPreset(input) {
   if (!input) return;

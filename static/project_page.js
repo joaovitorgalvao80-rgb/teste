@@ -13,13 +13,24 @@ document.addEventListener("DOMContentLoaded", () => {
     let proceed = true;
     try {
       const data = await getJSON(`/projects/${projectIdFromPage()}/quality-warnings`);
-      if (data.warnings && data.warnings.length > 0) {
-        const lines = data.warnings
-          .map((warning) => `- ${warning.scene_id}: ${warning.issues.join(", ")}`)
-          .join("\n");
-        const plural = data.total === 1 ? "" : "s";
+      const blockers = Array.isArray(data.blockers) ? data.blockers : [];
+      const warnings = Array.isArray(data.warnings) ? data.warnings : [];
+      const problemScenes = Array.isArray(data.problem_scenes) ? data.problem_scenes : [];
+      const formatIssue = (item) => {
+        const label = item.scene_id || "projeto";
+        const issues = item.issues || item.reasons || [];
+        return `- ${label}: ${issues.join(", ")}`;
+      };
+      if (blockers.length > 0 || data.status === "blocked") {
+        const lines = blockers.slice(0, 10).map(formatIssue).join("\n");
+        alert(`Preflight bloqueou o pacote:\n\n${lines}\n\nRevise essas cenas antes de gerar o ZIP.`);
+        proceed = false;
+      } else if (warnings.length > 0 || problemScenes.length > 0) {
+        const lines = warnings.concat(problemScenes).slice(0, 10).map(formatIssue).join("\n");
+        const total = warnings.length + problemScenes.length;
+        const plural = total === 1 ? "" : "s";
         proceed = confirm(
-          `Alertas de qualidade (${data.total} cena${plural}):\n\n${lines}\n\nGerar o pacote mesmo assim?`,
+          `Preflight encontrou ${total} alerta${plural}:\n\n${lines}\n\nGerar o pacote mesmo assim?`,
         );
       }
     } catch (error) {

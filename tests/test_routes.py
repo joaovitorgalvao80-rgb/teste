@@ -284,7 +284,9 @@ class ProjectsRoutesTest(unittest.TestCase):
 
     def test_update_project_style_changes_config(self) -> None:
         with TestClient(webapp.app) as client:
-            user_id, project_id = _seed_project("styleuser")
+            user_id, project_id = _seed_project("styleuser", scenes=[SCENE])
+            scene_id = db.list_scenes(project_id)[0]["id"]
+            db.update_scene_broll_override(scene_id, -1)
             _login(client, "styleuser")
             resp = client.post(
                 f"/projects/{project_id}/update-style",
@@ -294,6 +296,7 @@ class ProjectsRoutesTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 303)
         cfg = project_config(db.get_project(project_id, user_id))
         self.assertEqual(cfg.get("broll_density"), "full_coverage")
+        self.assertEqual(db.get_scene(scene_id)["broll_override"], 0)
 
     def test_long_mode_project_page_opens_part_with_visible_assets(self) -> None:
         scenes = [
@@ -586,6 +589,19 @@ class PackageRoutesTest(unittest.TestCase):
         data = resp.json()
         self.assertIn("warnings", data)
         self.assertEqual(data["total"], 0)
+
+    def test_quality_warnings_blocks_missing_required_broll(self) -> None:
+        with TestClient(webapp.app) as client:
+            _, project_id = _seed_project("qwblock", scenes=[SCENE])
+            db.set_project_config(project_id, {"video_style": "broll_only"})
+            _login(client, "qwblock")
+            resp = client.get(f"/projects/{project_id}/quality-warnings")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["status"], "blocked")
+        self.assertEqual(data["blocker_total"], 1)
+        self.assertEqual(data["blockers"][0]["scene_id"], "scene_001")
+        self.assertIn("sem take obrigatorio escolhido", data["blockers"][0]["issues"])
 
     def test_quality_warnings_404_unknown(self) -> None:
         with TestClient(webapp.app) as client:

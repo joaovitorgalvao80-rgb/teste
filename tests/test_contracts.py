@@ -1755,8 +1755,8 @@ class DeployContractsTest(unittest.TestCase):
         import inspect
 
         source = inspect.getsource(montador)
-        # imagens nao tem mais zoom proprio (o motion vem do HyperFrames)
-        self.assertNotIn("zoompan", source)
+        # imagens usam zoom-in lento via zoompan (100% -> ~110%)
+        self.assertIn("zoompan", source)
         # audio mais longo que o video estende o ultimo frame em vez de cortar
         self.assertIn("tpad=stop_mode=clone", source)
         self.assertNotIn('"-shortest"', source)

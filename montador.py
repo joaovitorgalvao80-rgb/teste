@@ -337,12 +337,19 @@ def build_clip(
         # asset curto: loop infinito + corte por -t preenche a cena
         cmd = ["ffmpeg", "-y", "-stream_loop", "-1", *seek, "-i", str(src), *common_out]
     else:
-        # imagem (fallback): frame estatico; o motion (zoom/pan) e aplicado
-        # depois pelo HyperFrames. Zoom aqui causava movimento duplicado e
-        # o "pulo" visual no inicio da cena.
+        # imagem: zoom-in lento (100% -> ~110%) usando zoompan do FFmpeg
+        total_frames = int(duration * fps)
+        zoom_filter = (
+            f"zoompan=z='min(zoom+0.0005,1.1)'"
+            f":d={total_frames}"
+            f":x='iw/2-(iw/zoom/2)'"
+            f":y='ih/2-(ih/zoom/2)'"
+            f":s={width}x{height}"
+            f":fps={fps}"
+        )
         cmd = [
             "ffmpeg", "-y", "-loop", "1", "-i", str(src),
-            "-t", f"{duration:.3f}", "-vf", ",".join(vf), "-an",
+            "-t", f"{duration:.3f}", "-vf", zoom_filter, "-an",
             "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
             "-pix_fmt", "yuv420p", str(out),
         ]

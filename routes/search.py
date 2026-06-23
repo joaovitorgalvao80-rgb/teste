@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 import database as db
 from services import api_usage, asset_search, groq_service, scoring
-from services.project_config import project_config, resolution_width
+from services.project_config import allows_scene_broll_override, project_config, resolution_width
 from app_shared import (
     ERROR_RESPONSES,
     MSG_NO_API_KEYS,
@@ -397,6 +397,8 @@ def set_avatar_override(
     if not project:
         raise HTTPException(404)
     ensure_project_not_busy(project)
+    if not allows_scene_broll_override(project_config(project)):
+        raise HTTPException(400, "Modo apenas B-roll nao aceita controle de avatar por cena.")
     value = {"no_avatar": 1, "no_broll": -1, "auto": 0}.get(mode)
     if value is None:
         raise HTTPException(400, "modo invalido (use auto, no_avatar ou no_broll)")

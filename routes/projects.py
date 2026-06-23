@@ -18,6 +18,7 @@ from services.project_config import (
     ALLOWED_VISUAL_COVERAGES,
     ALLOWED_VISUAL_SOURCE_MODES,
     _coerce_bool,
+    is_broll_only,
     normalize_project_config,
     project_config,
     resolution_width,
@@ -200,6 +201,9 @@ def update_project_style(
     if missing_visual_policy and missing_visual_policy in ALLOWED_MISSING_VISUAL_POLICIES:
         cfg["missing_visual_policy"] = missing_visual_policy
     cfg = normalize_project_config(cfg)
+    if is_broll_only(cfg):
+        for scene in db.list_scenes(project_id):
+            db.update_scene_broll_override(scene["id"], 0)
     db.set_project_config(project_id, cfg)
     mark_project_dirty(project_id)
     return RedirectResponse(f"/projects/{project_id}#refinamento", status_code=303)

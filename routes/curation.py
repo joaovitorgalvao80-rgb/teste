@@ -1,7 +1,10 @@
 """Rotas de curadoria: estado de assets, revisão, visão, preview, imagens geradas."""
 from __future__ import annotations
 
+import re
+import tempfile
 import uuid
+import zipfile
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -10,7 +13,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 
 import database as db
 from services import api_usage, groq_service
-from services.project_config import project_config
+from services.project_config import allows_avatar, project_config
 from app_shared import (
     CHOSEN_ASSET_STATES,
     ERROR_RESPONSES,
@@ -43,6 +46,14 @@ from app_shared import (
     scene_broll_flags,
     verify_csrf,
 )
+
+# Regex para nomes de arquivo de upload: cenaNN_img.jpg, scene_01_vid.mp4, ep01_img.png etc
+_UPLOAD_FILENAME_RE = re.compile(
+    r"^(?:cena|scene|ep)[_\-\s]?(\d+)[_\-\s]?(img|vid|image|video)?\.(jpg|jpeg|png|webp|mp4|mov|webm)$",
+    re.IGNORECASE,
+)
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+_VIDEO_EXTS = {".mp4", ".mov", ".webm"}
 
 router = APIRouter()
 
@@ -455,6 +466,8 @@ async def upload_media(
     if not project:
         raise HTTPException(404)
     ensure_project_not_busy(project)
+    if kind == "avatar" and not allows_avatar(project_config(project)):
+        raise HTTPException(400, "Modo apenas B-roll nao usa avatar.")
     exts = MEDIA_KINDS.get(kind)
     if not exts:
         raise HTTPException(400, "Tipo de midia invalido.")
@@ -487,3 +500,148 @@ def remove_media(
         existing.unlink(missing_ok=True)
         db.mark_project_needs_package(project_id)
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+
+def _parse_scene_number(filename: str) -> Optional[int]:
+    """Extrai o numero da cena de um nome de arquivo seguindo o padrao de upload."""
+    match = _UPLOAD_FILENAME_RE.match(filename)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _find_scene_by_number(project_id: int, scenes: list[dict], scene_number: int) -> Optional[dict]:
+    """Encontra uma cena pelo numero (1-based) no scene_id ou pelo indice."""
+    for scene in scenes:
+        scene_id = scene.get("scene_id", "")
+        match = re.search(r"(\d+)$", scene_id)
+        if match and int(match.group(1)) == scene_number:
+            return scene
+    if 1 <= scene_number <= len(scenes):
+        return scenes[scene_number - 1]
+    return None
+
+
+@router.post("/projects/{project_id}/upload-images-zip", responses=ERROR_RESPONSES)
+async def upload_images_zip(
+    request: Request,
+    project_id: int,
+    zip_file: Annotated[UploadFile, File()],
+    csrf_token: Annotated[str, Form()] = "",
+):
+    user = require_user(request)
+    verify_csrf(request, csrf_token)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    ensure_project_not_busy(project)
+    if not zip_file.filename or not zip_file.filename.lower().endswith(".zip"):
+        raise HTTPException(400, "Envie um arquivo ZIP.")
+    data = await read_upload_limited(zip_file, 500 * 1024 * 1024, "ZIP")
+    if not data:
+        raise HTTPException(400, "ZIP vazio.")
+    scenes = db.list_scenes(project_id)
+    if not scenes:
+        raise HTTPException(400, "Gere o mapa visual antes de enviar imagens.")
+    results = {"success": 0, "errors": [], "skipped": 0}
+    with tempfile.TemporaryDirectory() as tmp:
+        zip_path = Path(tmp) / "upload.zip"
+        zip_path.write_bytes(data)
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(Path(tmp) / "extracted")
+        extract_dir = Path(tmp) / "extracted"
+        for file_path in extract_dir.rglob("*"):
+            if not file_path.is_file():
+                continue
+            filename = file_path.name
+            scene_number = _parse_scene_number(filename)
+            if scene_number is None:
+                results["errors"].append(f"Nome de arquivo invalido: {filename}")
+                continue
+            scene = _find_scene_by_number(project_id, scenes, scene_number)
+            if not scene:
+                results["errors"].append(f"Cena {scene_number} nao encontrada para {filename}")
+                continue
+            ext = file_path.suffix.lower()
+            if ext not in _IMAGE_EXTS and ext not in _VIDEO_EXTS:
+                results["errors"].append(f"Extensao nao suportada: {filename}")
+                continue
+            file_data = file_path.read_bytes()
+            if not file_data:
+                results["errors"].append(f"Arquivo vazio: {filename}")
+                continue
+            try:
+                _add_generated_image_asset(
+                    project, scene["id"], file_data, filename, origin="manual_upload"
+                )
+                results["success"] += 1
+            except Exception as exc:
+                results["errors"].append(f"Erro ao processar {filename}: {str(exc)}")
+    return JSONResponse(results)
+
+
+@router.post("/projects/{project_id}/upload-images-batch", responses=ERROR_RESPONSES)
+async def upload_images_batch(
+    request: Request,
+    project_id: int,
+    zip_file: Annotated[UploadFile, File()],
+    csrf_token: Annotated[str, Form()] = "",
+):
+    user = require_user(request)
+    verify_csrf(request, csrf_token)
+    project = db.get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404)
+    ensure_project_not_busy(project)
+    if not zip_file.filename or not zip_file.filename.lower().endswith(".zip"):
+        raise HTTPException(400, "Envie um arquivo ZIP.")
+    data = await read_upload_limited(zip_file, 500 * 1024 * 1024, "ZIP")
+    if not data:
+        raise HTTPException(400, "ZIP vazio.")
+    scenes = db.list_scenes(project_id)
+    if not scenes:
+        raise HTTPException(400, "Gere o mapa visual antes de enviar imagens.")
+    results = {"success": 0, "errors": [], "skipped": 0}
+    with tempfile.TemporaryDirectory() as tmp:
+        zip_path = Path(tmp) / "upload.zip"
+        zip_path.write_bytes(data)
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(Path(tmp) / "extracted")
+        extract_dir = Path(tmp) / "extracted"
+        for file_path in extract_dir.rglob("*"):
+            if not file_path.is_file():
+                continue
+            filename = file_path.name
+            scene_number = _parse_scene_number(filename)
+            if scene_number is None:
+                results["errors"].append(f"Nome de arquivo invalido: {filename}")
+                continue
+            scene = _find_scene_by_number(project_id, scenes, scene_number)
+            if not scene:
+                results["errors"].append(f"Cena {scene_number} nao encontrada para {filename}")
+                continue
+            ext = file_path.suffix.lower()
+            if ext not in _IMAGE_EXTS and ext not in _VIDEO_EXTS:
+                results["errors"].append(f"Extensao nao suportada: {filename}")
+                continue
+            file_data = file_path.read_bytes()
+            if not file_data:
+                results["errors"].append(f"Arquivo vazio: {filename}")
+                continue
+            try:
+                asset_result = _add_generated_image_asset(
+                    project, scene["id"], file_data, filename, origin="manual_upload"
+                )
+                assets = db.list_assets_for_project(project_id).get(scene["id"], [])
+                newest = max(assets, key=lambda a: a.get("id", 0), default=None)
+                if newest:
+                    db.set_asset_state(newest["id"], "accepted")
+                results["success"] += 1
+            except Exception as exc:
+                results["errors"].append(f"Erro ao processar {filename}: {str(exc)}")
+    if results["success"] > 0:
+        db.set_project_status(project_id, "reviewing")
+    return JSONResponse(results)

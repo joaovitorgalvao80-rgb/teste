@@ -391,58 +391,19 @@
   </div>
 </div>
 
-<!-- Refinamento (narração + avatar) -->
+<!-- Refinamento (narração e mídia) -->
 <div class="panel" style="margin-bottom:var(--sp-7)" id="refinamento">
   <div class="panel-head">
-    <span class="tag">Refinamento · narração e avatar</span>
+    <span class="tag">Refinamento · {% if config.video_style == 'broll_only' %}narração{% else %}narração e avatar{% endif %}</span>
   </div>
   <div style="padding:var(--sp-4) var(--sp-5)">
-
-    <!-- Estilo de edição -->
-    <div style="margin-bottom:var(--sp-5);padding-bottom:var(--sp-4);border-bottom:1px solid var(--line-0)">
-      <p class="tag" style="margin-bottom:var(--sp-3)">Estilo de edição</p>
-      <form method="post" action="/projects/{{ project.id }}/update-style" class="style-settings-grid">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <label style="flex:1;min-width:200px">Estilo de video
-          <select name="video_style">
-            <option value="avatar_broll"{% if config.video_style == 'avatar_broll' %} selected{% endif %}>Avatar + B-roll</option>
-            <option value="broll_only"{% if config.video_style == 'broll_only' %} selected{% endif %}>So B-roll (sem avatar)</option>
-          </select>
-        </label>
-        <label style="flex:1;min-width:220px">Distribuicao de B-rolls
-          <select name="broll_density">
-            <option value="key_moments"{% if config.broll_density == 'key_moments' %} selected{% endif %}>So em pontos-chave (~30-40%)</option>
-            <option value="moderate"{% if config.broll_density == 'moderate' %} selected{% endif %}>Equilibrado - padrao (~50-65%)</option>
-            <option value="full_coverage"{% if config.broll_density == 'full_coverage' %} selected{% endif %}>Video inteiro, poucas pausas (~80-90%)</option>
-          </select>
-        </label>
-        <label style="flex:1;min-width:220px">Fonte visual
-          <select name="visual_source_mode">
-            <option value="stock"{% if config.visual_source_mode == 'stock' %} selected{% endif %}>Bancos externos</option>
-            <option value="ai_preferred"{% if config.visual_source_mode == 'ai_preferred' %} selected{% endif %}>IA preferencial</option>
-            <option value="ai_required"{% if config.visual_source_mode == 'ai_required' %} selected{% endif %}>IA obrigatoria</option>
-            <option value="manual_upload"{% if config.visual_source_mode == 'manual_upload' %} selected{% endif %}>Uploads manuais</option>
-          </select>
-        </label>
-        <label style="flex:1;min-width:220px">Asset faltando
-          <select name="missing_visual_policy">
-            <option value="fallback_avatar"{% if config.missing_visual_policy == 'fallback_avatar' %} selected{% endif %}>Usar avatar quando possivel</option>
-            <option value="block_package"{% if config.missing_visual_policy == 'block_package' %} selected{% endif %}>Bloquear pacote incompleto</option>
-          </select>
-        </label>
-        <button class="btn btn-secondary btn-sm" type="submit" style="align-self:flex-end">Salvar estilo</button>
-      </form>
-      <p class="t-muted t-small" style="margin-top:var(--sp-2)">
-        Alterar esses valores invalida o pacote atual - gere a etapa <strong>03 Pacote</strong> novamente para aplicar.
-      </p>
-    </div>
-    <!-- /Estilo de edicao -->
 
     <p class="t-muted t-small" style="margin-bottom:var(--sp-4)">
       Esses arquivos entram no <code>final_master.mp4</code> composto no render do Kaggle (FFmpeg).
       Envie antes de <strong>03 Preparar pacote</strong> para que sigam no ZIP.
     </p>
     <div class="refine-grid">
+      {% if config.video_style == 'broll_only' %}
       <div class="refine-item">
         <strong>Narracao</strong>
         {% if narration_name %}
@@ -460,6 +421,7 @@
           <button class="btn btn-secondary btn-sm" type="submit">{% if narration_name %}Substituir{% else %}Enviar narracao{% endif %}</button>
         </form>
       </div>
+      {% else %}
       <div class="refine-item">
         <strong>Avatar</strong>
         <p class="t-muted t-small">WebM com alpha fica transparente; MP4 aparece como retangulo.</p>
@@ -478,6 +440,7 @@
           <button class="btn btn-secondary btn-sm" type="submit">{% if avatar_name %}Substituir{% else %}Enviar avatar{% endif %}</button>
         </form>
       </div>
+      {% endif %}
     </div>
   </div>
 </div>
@@ -751,6 +714,7 @@
           </li>
           {% endfor %}
         </ul>
+        <p class="t-small t-faint">O preflight usa esses sinais antes de gerar o pacote.</p>
       {% else %}
         <p class="t-muted t-small">Nenhum alerta forte de curadoria agora.</p>
       {% endif %}
