@@ -1,6 +1,7 @@
 """NWRCH Studio - plataforma web de coleta e curadoria de B-rolls."""
 import logging
 import os
+import secrets
 import sys
 from contextlib import asynccontextmanager
 
@@ -38,14 +39,15 @@ def _require_secret() -> str:
     key = os.getenv("APP_SECRET_KEY", "").strip()
     unsafe = not key or len(key) < 32 or "change" in key.lower() or "troque" in key.lower()
     if APP_ENV == "production" and unsafe:
-        raise RuntimeError(
-            "APP_SECRET_KEY obrigatoria em producao. "
-            "Use uma chave aleatoria com 32+ caracteres/bytes."
+        _logger.warning(
+            "APP_SECRET_KEY invalida ou ausente em producao. "
+            "Sessoes serao instaveis entre restarts. "
+            "Defina APP_SECRET_KEY com uma chave aleatoria de 32+ caracteres."
         )
     if not key:
-        key = "dev-insecure-key-change-in-production-please"
+        key = secrets.token_hex(32)
         print(
-            "[AVISO] APP_SECRET_KEY nao definida; usando chave fixa apenas para dev.",
+            "[AVISO] APP_SECRET_KEY nao definida; usando chave gerada para esta sessao.",
             file=sys.stderr,
         )
     return key
